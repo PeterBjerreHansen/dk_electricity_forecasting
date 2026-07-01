@@ -1,0 +1,111 @@
+{
+  "panel_artifact": "data/model_ready/price_panel_hourly_v1_eda.parquet",
+  "qa_artifact": "data/model_ready/price_panel_hourly_v1_eda.qa.json",
+  "row_count": 43822,
+  "rows_by_area": {
+    "DK1": 21911,
+    "DK2": 21911
+  },
+  "min_ds_utc": "2023-12-31T23:00:00+00:00",
+  "max_ds_utc": "2026-07-01T21:00:00+00:00",
+  "min_ds_local": "2024-01-01T00:00:00+01:00",
+  "max_ds_local": "2026-07-01T23:00:00+02:00",
+  "qa_artifact_status": "final_historical",
+  "dataset_version": "v1_eda",
+  "qa_transition": "pass",
+  "qa_shared_coverage": "pass",
+  "qa_missing_hour_count": 0,
+  "qa_negative_price_count": 1566,
+  "source_counts": {
+    "DayAheadPrices|DK1": 6576,
+    "DayAheadPrices|DK2": 6576,
+    "Elspotprices|DK1": 15335,
+    "Elspotprices|DK2": 15335
+  },
+  "areas": [
+    "DK1",
+    "DK2"
+  ],
+  "dk1_dk2_corr": 0.957,
+  "spread_mean": -8.42,
+  "spread_median": 0.0,
+  "spread_p95_abs": 224.02,
+  "spread_max_abs": 4002.73,
+  "share_same_price_exact": 0.3714,
+  "share_abs_spread_under_10": 0.6581,
+  "share_abs_spread_over_100": 0.1208,
+  "dk1_hourly_median_min_hour": 13,
+  "dk1_hourly_median_max_hour": 20,
+  "dk2_hourly_median_min_hour": 13,
+  "dk2_hourly_median_max_hour": 19,
+  "dk1_hourly_median_range": 532.04,
+  "dk2_hourly_median_range": 546.24,
+  "weekend_minus_weekday_dk1": -116.14,
+  "weekend_minus_weekday_dk2": -141.12,
+  "dst_days": [
+    {
+      "area": "DK1",
+      "local_date": "2024-03-31",
+      "hour_count": 23
+    },
+    {
+      "area": "DK1",
+      "local_date": "2024-10-27",
+      "hour_count": 25
+    },
+    {
+      "area": "DK1",
+      "local_date": "2025-03-30",
+      "hour_count": 23
+    },
+    {
+      "area": "DK1",
+      "local_date": "2025-10-26",
+      "hour_count": 25
+    },
+    {
+      "area": "DK1",
+      "local_date": "2026-03-29",
+      "hour_count": 23
+    },
+    {
+      "area": "DK2",
+      "local_date": "2024-03-31",
+      "hour_count": 23
+    },
+    {
+      "area": "DK2",
+      "local_date": "2024-10-27",
+      "hour_count": 25
+    },
+    {
+      "area": "DK2",
+      "local_date": "2025-03-30",
+      "hour_count": 23
+    },
+    {
+      "area": "DK2",
+      "local_date": "2025-10-26",
+      "hour_count": 25
+    },
+    {
+      "area": "DK2",
+      "local_date": "2026-03-29",
+      "hour_count": 23
+    }
+  ],
+  "lowest_price": {
+    "area": "DK1",
+    "ds_utc": "2024-04-14 11:00:00+00:00",
+    "ds_local": "2024-04-14 13:00:00+02:00",
+    "y": -448.019989,
+    "source_dataset": "Elspotprices"
+  },
+  "highest_price": {
+    "area": "DK2",
+    "ds_utc": "2024-12-12 16:00:00+00:00",
+    "ds_local": "2024-12-12 17:00:00+01:00",
+    "y": 6982.640137,
+    "source_dataset": "Elspotprices"
+  }
+}

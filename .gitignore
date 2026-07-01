@@ -1,0 +1,14 @@
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+*.egg-info/
+.venv/
+venv/
+
+data/raw/
+data/normalized/
+data/features/
+data/model_ready/
+results/
