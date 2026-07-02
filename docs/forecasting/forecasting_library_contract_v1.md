@@ -170,6 +170,60 @@ current origin by default. This is stricter than what may be available in real
 day-ahead publication workflows, but it keeps the v1 backtest contract simple
 and audit-friendly.
 
+## Forecast Weather Feature Contract
+
+Forecast weather features are allowed only as separate experiment artifacts.
+They must not be written into the canonical price panel.
+
+Current v1 source contract:
+
+```text
+docs/data-processing/open_meteo_weather_v1.md
+```
+
+Weather feature tables should be joined by:
+
+```text
+area
+ds_utc
+```
+
+Every forecast-weather feature must carry an availability timestamp:
+
+```text
+forecast_available_at_utc
+```
+
+The join rule is:
+
+```text
+forecast_available_at_utc <= forecast_origin_utc
+```
+
+Any value that fails this rule must be null in the experiment frame. This is
+especially important for Open-Meteo `previous_day1`: for a 10:00 UTC day-ahead
+forecast origin, late delivery-hour values may still have
+`forecast_available_at_utc` after the model origin.
+
+The first weather feature builder lives in:
+
+```text
+dkenergy_forecast.features.weather_features
+```
+
+Rules:
+
+1. Keep price/calendar/lag features separate from source-specific weather
+   preprocessing.
+2. Coverage-failing weather feature groups are excluded by default.
+3. Individual weather rows with insufficient basket-point coverage are excluded
+   even when the broader feature group passes.
+4. Missing weather values stay null in v1; no forward fill or interpolation.
+5. Weather ablations must skip model groups with no usable feature columns
+   rather than silently running a price-only model under a weather label.
+6. Ensemble weather summaries are derived only from availability-masked model
+   feature columns.
+
 ## Forecast Output Contract
 
 Prediction functions should return one row per forecasted `(unique_id, ds_utc,

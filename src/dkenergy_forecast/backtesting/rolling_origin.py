@@ -63,7 +63,7 @@ def rolling_origin_backtest(
         predictions = normalize_utc_column(predictions, "ds_utc")
         predictions = normalize_utc_column(predictions, "forecast_origin_utc")
         _validate_prediction_keys(predictions, future_for_model, origin)
-        outputs.append(_join_actuals_and_metadata(predictions, panel_utc))
+        outputs.append(_join_actuals_and_metadata(predictions, panel_utc, future_for_model))
 
     if not outputs:
         return pd.DataFrame(columns=PREDICTION_REQUIRED_COLUMNS + ["y"])
@@ -106,9 +106,39 @@ def _validate_prediction_keys(
         )
 
 
-def _join_actuals_and_metadata(predictions: pd.DataFrame, panel: pd.DataFrame) -> pd.DataFrame:
+def _join_actuals_and_metadata(
+    predictions: pd.DataFrame,
+    panel: pd.DataFrame,
+    future: pd.DataFrame,
+) -> pd.DataFrame:
+    key_cols = ["unique_id", "ds_utc"]
     metadata_cols = [column for column in METADATA_JOIN_COLUMNS if column in panel.columns]
-    actuals = panel[metadata_cols].drop_duplicates(["unique_id", "ds_utc"])
+    future_metadata_cols = [
+        column
+        for column in METADATA_JOIN_COLUMNS
+        if column != "y" and column in future.columns
+    ]
+    panel_metadata = panel[metadata_cols].drop_duplicates(key_cols)
+    if future_metadata_cols:
+        future_metadata = future[future_metadata_cols].drop_duplicates(key_cols)
+        actuals = future_metadata.merge(
+            panel_metadata,
+            on=key_cols,
+            how="left",
+            suffixes=("", "_panel"),
+        )
+        for column in metadata_cols:
+            if column in key_cols:
+                continue
+            panel_column = f"{column}_panel"
+            if panel_column in actuals.columns:
+                missing = actuals[column].isna() & actuals[panel_column].notna()
+                if bool(missing.any()):
+                    actuals.loc[missing, column] = actuals.loc[missing, panel_column]
+                actuals = actuals.drop(columns=[panel_column])
+    else:
+        actuals = panel_metadata
+
     output = predictions.drop(
         columns=[
             column

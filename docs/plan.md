@@ -15,9 +15,11 @@ Start with:
    * For the first price dataset, stitch discontinued `Elspotprices` history through 2025-09-30 with `DayAheadPrices` from 2025-10-01 onward.
    * Data-processing decisions for v1 live in `docs/data-processing/energi_data_service_v1.md`.
 
-2. **DMI weather data**
+2. **Forecast weather data**
 
-   * Add only after the first EDS-only baseline works.
+   * Use Open-Meteo Previous Runs first as the MVP historical forecast source.
+   * Keep Open-Meteo preprocessing separate from EDS price preprocessing.
+   * Add direct DMI HARMONIE archiving later as a production provenance track.
    * Use temperature, wind, cloud/solar proxies, etc.
 
 3. **ENTSO-E**
@@ -167,9 +169,11 @@ q10, q50, q90
 
 Save predictions, metrics, and feature importance.
 
-### Milestone 4: Add DMI weather
+### Milestone 4: Add forecast weather
 
-Only after the EDS-only model works, add weather features and compare performance against the EDS-only model.
+Only after the EDS-only model works, add availability-masked forecast weather
+features and compare performance against the EDS-only model. Open-Meteo
+Previous Runs is the first MVP source.
 
 ## Important Constraints
 

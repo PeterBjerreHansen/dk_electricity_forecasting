@@ -67,7 +67,20 @@ Run the optional CatBoost quantile backtest after installing CatBoost:
 python scripts/run_catboost_backtest.py
 ```
 
-Outputs are written under `results/`.
+Backtest outputs are written under `results/`. Scripted backtests now write the
+production-facing score artifact as `model_scores.parquet` and keep
+`metrics.parquet` as a compatibility alias.
+
+Publish a file-based forecast run for the production-learning dashboard path:
+
+```bash
+python scripts/run_publish_forecast.py
+```
+
+This writes an immutable run under `artifacts/forecast_runs/<run_id>/`, updates
+`results/latest_forecast/predictions.parquet`, writes
+`results/recent_scores/model_scores.parquet`, and exports
+`app_data/forecast_dashboard.json`.
 
 The forecasting contract is documented in:
 
@@ -89,8 +102,31 @@ The notebooks are explanatory workspaces. Canonical reusable logic lives in
 
 ## Weather
 
-DMI weather is planned but not yet joined into the price panel. The current
-weather research and v1 plan live in:
+Open-Meteo Previous Runs is the MVP forecast-weather source. Fetch and build it
+separately from the canonical EDS price panel:
+
+```bash
+python scripts/fetch_open_meteo_previous_runs.py --start 2024-07-01 --end YYYY-MM-DD
+python scripts/build_open_meteo_weather_features.py
+python scripts/build_weather_experiment_frame.py
+```
+
+Run the optional weather-feature CatBoost ablation after installing CatBoost:
+
+```bash
+python scripts/run_weather_feature_backtest.py
+```
+
+Weather outputs are experiment artifacts under `data/features/`; they do not
+modify `data/model_ready/price_panel_hourly_v1.parquet`. The Open-Meteo
+processing contract lives in:
+
+```text
+docs/data-processing/open_meteo_weather_v1.md
+```
+
+DMI direct weather archiving is still planned as a separate provenance track.
+The DMI research note lives in:
 
 ```text
 docs/data-processing/dmi_weather_v1_plan.md

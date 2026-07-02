@@ -3,6 +3,7 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .ipynb_checkpoints/
+notebooks/figures/
 *.egg-info/
 .venv/
 venv/
@@ -12,3 +13,5 @@ data/normalized/
 data/features/
 data/model_ready/
 results/
+artifacts/
+app_data/

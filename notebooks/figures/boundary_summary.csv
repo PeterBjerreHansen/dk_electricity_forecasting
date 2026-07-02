@@ -1,5 +1,0 @@
-source_dataset,area,size,mean,median,min,max
-DayAheadPrices,DK1,168,491.35,529.98,-27.29,2538.35
-DayAheadPrices,DK2,168,548.9,632.29,-14.26,2538.52
-Elspotprices,DK1,168,702.72,678.16,30.6,3036.12
-Elspotprices,DK2,168,747.19,702.83,63.74,3032.62

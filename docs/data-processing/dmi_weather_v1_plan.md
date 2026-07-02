@@ -20,8 +20,16 @@ docs/forecasting/forecasting_library_contract_v1.md
 
 ## Status
 
-Research and design only. No weather source module, raw archive, normalized
-weather tables, or model-ready weather features have been added yet.
+Research and design only for direct DMI ingestion. The implemented forecast
+weather MVP currently uses Open-Meteo Previous Runs and is documented separately
+in:
+
+```text
+docs/data-processing/open_meteo_weather_v1.md
+```
+
+DMI remains the planned direct-archive provenance track, especially for
+HARMONIE going forward.
 
 ## Source Facts Checked
 
