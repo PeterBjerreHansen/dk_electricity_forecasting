@@ -29,7 +29,7 @@ tuning = [
   "optuna>=4.0",
 ]
 chronos = [
-  "chronos-forecasting>=1.5",
+  "chronos-forecasting[extras]>=2.2",
 ]
 lightgbm = [
   "lightgbm>=4.0",

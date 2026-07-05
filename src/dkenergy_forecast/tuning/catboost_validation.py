@@ -20,10 +20,16 @@ from dkenergy_forecast.tuning.catboost_common import (
     suggest_catboost_params,
     trials_to_frame,
 )
+from dkenergy_forecast.types import require_columns
 
 
 RESIDUAL_BASELINE_COLUMN = "baseline_wdwe_weighted_median_y_pred"
 DEFAULT_CATBOOST_MODEL_PREFIX = "catboost"
+FEATURE_FRAME_BASELINE_COLUMNS = {
+    "same_hour_last_week": "lag_168h",
+    "rolling_median_hour_weekend_56d": "seasonal_median_hour_weekend",
+    "median_weekday_exp_hl4_floor10_42d__median_weekend_exp_hl28_floor20_56d": RESIDUAL_BASELINE_COLUMN,
+}
 
 
 @dataclass(frozen=True)
@@ -715,6 +721,73 @@ def run_baseline_comparator(
     output = pd.concat(frames, ignore_index=True)
     output["outer_month"] = origin_month_labels(output["forecast_origin_utc"])
     return add_prediction_diagnostics(output)
+
+
+def baseline_predictions_from_feature_frame(
+    frame: pd.DataFrame,
+    *,
+    origins: pd.DataFrame | None = None,
+    baseline_columns: dict[str, str] | None = None,
+) -> pd.DataFrame:
+    """Build notebook baseline predictions from an existing policy feature frame.
+
+    This is equivalent to the default production baselines when the frame was
+    built with the default ``PriceFeatureConfig``. It avoids rerunning rolling
+    baseline models over thousands of origins in notebook policy comparisons.
+    """
+
+    prepared = prepare_nested_frame(frame)
+    mapping = baseline_columns or FEATURE_FRAME_BASELINE_COLUMNS
+    missing_columns = sorted(set(mapping.values()) - set(prepared.columns))
+    if missing_columns:
+        raise ValueError(
+            "Feature-frame baseline comparison is missing required column(s): "
+            f"{missing_columns}"
+        )
+
+    if origins is not None:
+        require_columns(origins, ["forecast_origin_utc"], "origins")
+        selected_origins = set(
+            pd.to_datetime(origins["forecast_origin_utc"], utc=True).drop_duplicates()
+        )
+        prepared = prepared[prepared["forecast_origin_utc"].isin(selected_origins)].copy()
+
+    metadata_columns = [
+        column
+        for column in [
+            "unique_id",
+            "ds_utc",
+            "forecast_origin_utc",
+            "horizon",
+            "y",
+            "area",
+            "ds_local",
+            "local_date",
+            "local_hour",
+            "local_day_of_week",
+            "local_month",
+            "is_weekend",
+            "is_dst",
+            "utc_offset_hours",
+            "dataset_version",
+        ]
+        if column in prepared.columns
+    ]
+    frames: list[pd.DataFrame] = []
+    for model_label, feature_column in mapping.items():
+        predictions = prepared[metadata_columns].copy()
+        predictions["model_name"] = model_label
+        predictions["model_version"] = "feature_frame_v1"
+        predictions["y_pred"] = prepared[feature_column].to_numpy()
+        predictions["model_label"] = model_label
+        frames.append(predictions)
+
+    output = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if output.empty:
+        return output
+    output = add_prediction_diagnostics(output)
+    output["outer_month"] = origin_month_labels(output["forecast_origin_utc"])
+    return output
 
 
 def write_catboost_validation_artifacts(

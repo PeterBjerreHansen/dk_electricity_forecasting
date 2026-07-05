@@ -3,7 +3,15 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from dkenergy_forecast.tuning import recency_sample_weights, suggest_catboost_params
+from dkenergy_forecast.backtesting.horizons import make_daily_origins
+from dkenergy_forecast.features.price_features import build_price_experiment_frame
+from dkenergy_forecast.tuning import (
+    baseline_predictions_from_feature_frame,
+    recency_sample_weights,
+    run_baseline_comparator,
+    suggest_catboost_params,
+)
+from dkenergy_forecast.types import add_copenhagen_calendar
 
 
 def test_tuning_recency_sample_weights_support_floor() -> None:
@@ -71,6 +79,45 @@ def test_catboost_search_requires_iteration_budget_that_matches_space() -> None:
         )
 
 
+def test_feature_frame_baseline_predictions_match_rolling_comparator() -> None:
+    panel = _two_area_panel(periods=24 * 120)
+    origins = make_daily_origins(
+        panel,
+        start="2024-03-15T00:00:00Z",
+        end="2024-03-18T00:00:00Z",
+        at_hour_utc=10,
+    )
+    feature_frame = build_price_experiment_frame(panel, origins)
+
+    rolling = run_baseline_comparator(panel, origins=origins, min_train_days=60)
+    from_frame = baseline_predictions_from_feature_frame(feature_frame, origins=origins)
+
+    key = ["model_label", "unique_id", "forecast_origin_utc", "ds_utc"]
+    merged = rolling[key + ["y_pred"]].merge(
+        from_frame[key + ["y_pred"]],
+        on=key,
+        suffixes=("_rolling", "_frame"),
+    )
+
+    assert len(merged) == len(rolling) == len(from_frame)
+    assert (merged["y_pred_rolling"] - merged["y_pred_frame"]).abs().max() == pytest.approx(0.0)
+
+
+def test_feature_frame_baseline_predictions_require_materialized_columns() -> None:
+    with pytest.raises(ValueError, match="missing required column"):
+        baseline_predictions_from_feature_frame(
+            pd.DataFrame(
+                {
+                    "unique_id": ["x"],
+                    "area": ["DK1"],
+                    "ds_utc": [pd.Timestamp("2024-01-01T00:00:00Z")],
+                    "forecast_origin_utc": [pd.Timestamp("2024-01-01T10:00:00Z")],
+                    "y": [1.0],
+                }
+            )
+        )
+
+
 class RecordingTrial:
     def __init__(self, *, bootstrap_type: str = "Bayesian") -> None:
         self.bootstrap_type = bootstrap_type
@@ -91,3 +138,20 @@ class RecordingTrial:
     def suggest_float(self, name: str, low: float, high: float, log: bool = False) -> float:
         self.float_calls[name] = (low, high, log)
         return low
+
+
+def _two_area_panel(*, periods: int) -> pd.DataFrame:
+    timestamps = pd.date_range("2024-01-01T00:00:00Z", periods=periods, freq="h")
+    rows = []
+    for area_index, area in enumerate(["DK1", "DK2"]):
+        for index, timestamp in enumerate(timestamps):
+            rows.append(
+                {
+                    "unique_id": f"day_ahead_price_{area}",
+                    "area": area,
+                    "ds_utc": timestamp,
+                    "y": float(index + area_index * 10 + (index % 24) * 0.5),
+                    "dataset_version": "test",
+                }
+            )
+    return add_copenhagen_calendar(pd.DataFrame(rows))

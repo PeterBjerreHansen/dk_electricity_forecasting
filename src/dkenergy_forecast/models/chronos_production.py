@@ -207,7 +207,7 @@ def _chronos_pipeline_class() -> Any:
         raise ImportError(
             "Chronos production models require the optional Chronos dependency. "
             'Install it with `pip install -e ".[chronos]"` or '
-            "`pip install chronos-forecasting>=1.5`."
+            "`pip install 'chronos-forecasting[extras]>=2.2'`."
         ) from exc
 
     pipeline_cls = (
