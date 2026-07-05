@@ -12,10 +12,12 @@ Project source name:
 dmi_weather_v1
 ```
 
-Forecasting dependency:
+Forecasting contract:
 
 ```text
-docs/forecasting/forecasting_library_contract_v1.md
+src/dkenergy_forecast/types.py
+src/dkenergy_forecast/backtesting/
+src/dkenergy_forecast/models/registry.py
 ```
 
 ## Status

@@ -1,0 +1,40 @@
+services:
+  dashboard:
+    build: .
+    image: dk-energy-forecasts:local
+    ports:
+      - "${STREAMLIT_PORT:-8501}:8501"
+    environment:
+      DKENERGY_PANEL_PATH: /app/data/model_ready/price_panel_hourly_v1.parquet
+      DKENERGY_DASHBOARD_JSON: /app/app_data/forecast_dashboard.json
+      DKENERGY_LATEST_PREDICTIONS_PATH: /app/results/latest_forecast/predictions.parquet
+      DKENERGY_RECENT_SCORES_PATH: /app/results/recent_scores/model_scores.parquet
+    volumes:
+      - ./data:/app/data
+      - ./results:/app/results
+      - ./artifacts:/app/artifacts
+      - ./app_data:/app/app_data
+
+  pipeline:
+    build: .
+    image: dk-energy-forecasts:local
+    profiles:
+      - jobs
+    command: ["python", "scripts/run_daily_pipeline.py"]
+    environment:
+      EDS_START: ${EDS_START:-2024-07-01}
+      EDS_END: ${EDS_END:-}
+      OPEN_METEO_START: ${OPEN_METEO_START:-2024-07-01}
+      OPEN_METEO_END: ${OPEN_METEO_END:-}
+      FORECAST_AT_HOUR_UTC: ${FORECAST_AT_HOUR_UTC:-10}
+      MIN_TRAIN_DAYS: ${MIN_TRAIN_DAYS:-60}
+      SCORE_DAYS: ${SCORE_DAYS:-14}
+      SCORE_MAX_ORIGINS: ${SCORE_MAX_ORIGINS:-7}
+      SCORE_HOLDOUT_DAYS: ${SCORE_HOLDOUT_DAYS:-2}
+      PUBLISH_MODELS: ${PUBLISH_MODELS:-}
+      WITH_WEATHER: ${WITH_WEATHER:-0}
+    volumes:
+      - ./data:/app/data
+      - ./results:/app/results
+      - ./artifacts:/app/artifacts
+      - ./app_data:/app/app_data
