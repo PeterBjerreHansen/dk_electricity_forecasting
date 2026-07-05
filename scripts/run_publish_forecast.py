@@ -41,6 +41,11 @@ def main() -> None:
         print_model_registry()
         return
 
+    try:
+        factories = latest_publish_model_factories(args.models)
+    except (ValueError, ImportError) as exc:
+        raise SystemExit(str(exc)) from exc
+
     panel_path = Path(args.panel_path)
     qa_path = Path(args.qa_path) if args.qa_path else None
     panel = load_price_panel(
@@ -49,11 +54,6 @@ def main() -> None:
         require_final_historical=not args.allow_incomplete_panel,
     )
     forecast_origin = resolve_forecast_origin(panel, args.forecast_origin_utc, args.at_hour_utc)
-
-    try:
-        factories = latest_publish_model_factories(args.models)
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
 
     model_labels = list(factories)
     predictions = publish_predictions_for_origins(
@@ -109,6 +109,7 @@ def main() -> None:
             "score_max_origins": int(args.score_max_origins),
             "score_holdout_days": int(args.score_holdout_days),
             "model_registry_labels": model_labels,
+            "model_registry": selected_model_registry_metadata(model_labels),
         },
     )
     dashboard = build_dashboard_payload(
@@ -178,7 +179,7 @@ def parse_args() -> argparse.Namespace:
         "--models",
         nargs="+",
         help=(
-            "Production model labels to publish. Defaults to baseline models only: "
+            "Production model labels to publish. Defaults to registry defaults: "
             f"{default_production_model_labels()}."
         ),
     )
@@ -241,8 +242,27 @@ def print_model_registry() -> None:
     for label, spec in specs.items():
         default_marker = "default" if spec.default_enabled else "optional"
         publish_marker = "latest-publish" if spec.supports_latest_publish else "backtest-only"
-        print(f"- {label}: {spec.family}, {default_marker}, {publish_marker}")
+        extra_marker = f"extra={spec.required_extra}" if spec.required_extra else "extra=base"
+        quantile_marker = "quantiles" if spec.emits_quantiles else "point"
+        print(
+            f"- {label}: {spec.family}, {default_marker}, {publish_marker}, "
+            f"{extra_marker}, {quantile_marker}"
+        )
         print(f"  {spec.description}")
+
+
+def selected_model_registry_metadata(labels: list[str]) -> dict[str, dict[str, object]]:
+    specs = production_model_specs()
+    return {
+        label: {
+            "family": specs[label].family,
+            "default_enabled": specs[label].default_enabled,
+            "supports_latest_publish": specs[label].supports_latest_publish,
+            "required_extra": specs[label].required_extra,
+            "emits_quantiles": specs[label].emits_quantiles,
+        }
+        for label in labels
+    }
 
 
 def resolve_forecast_origin(

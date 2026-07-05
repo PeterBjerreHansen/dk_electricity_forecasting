@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import numpy as np
 import pandas as pd
 
 from dkenergy_forecast.backtesting.horizons import make_danish_delivery_day_horizon
 from dkenergy_forecast.features.price_features import (
     PriceFeatureConfig,
-    build_price_feature_frame,
+    build_price_experiment_frame,
 )
 from dkenergy_forecast.types import normalize_utc_column, require_columns, to_utc_timestamp
 
@@ -24,6 +25,18 @@ def join_weather_features(
     """Join availability-masked weather features to a future/feature frame."""
 
     require_columns(frame, ["area", "ds_utc", "forecast_origin_utc"], "frame")
+    weather = _prepare_weather_features(
+        area_features_long,
+        require_feature_group_pass=require_feature_group_pass,
+    )
+    return _join_prepared_weather_features(frame, weather)
+
+
+def _prepare_weather_features(
+    area_features_long: pd.DataFrame,
+    *,
+    require_feature_group_pass: bool = True,
+) -> pd.DataFrame:
     require_columns(
         area_features_long,
         [
@@ -38,17 +51,23 @@ def join_weather_features(
         ],
         "area_features_long",
     )
-
-    base = normalize_utc_column(frame, "ds_utc")
-    base = normalize_utc_column(base, "forecast_origin_utc").reset_index(drop=True)
-    base["_weather_row_id"] = range(len(base))
-
     weather = normalize_utc_column(area_features_long, "ds_utc")
     weather = normalize_utc_column(weather, "forecast_available_at_utc")
     if require_feature_group_pass:
         weather = weather[
             weather["feature_group_pass"] & weather["location_coverage_pass"]
         ].copy()
+    return weather.reset_index(drop=True)
+
+
+def _join_prepared_weather_features(
+    frame: pd.DataFrame,
+    weather: pd.DataFrame,
+) -> pd.DataFrame:
+    require_columns(frame, ["area", "ds_utc", "forecast_origin_utc"], "frame")
+    base = normalize_utc_column(frame, "ds_utc")
+    base = normalize_utc_column(base, "forecast_origin_utc").reset_index(drop=True)
+    base["_weather_row_id"] = range(len(base))
 
     merged = base[["_weather_row_id", "area", "ds_utc", "forecast_origin_utc"]].merge(
         weather,
@@ -95,33 +114,28 @@ def build_weather_experiment_frame(
     price_feature_config: PriceFeatureConfig | None = None,
     horizon_builder: HorizonBuilder = make_danish_delivery_day_horizon,
     add_ensemble_features: bool = True,
+    add_derived_features: bool = True,
 ) -> pd.DataFrame:
     """Build price + availability-safe weather feature rows for backtests."""
 
     require_columns(origins, ["forecast_origin_utc"], "origins")
     panel_utc = normalize_utc_column(panel, "ds_utc")
     origins_utc = normalize_utc_column(origins, "forecast_origin_utc")
-    frames: list[pd.DataFrame] = []
-
-    for origin in origins_utc["forecast_origin_utc"].sort_values().drop_duplicates():
-        origin = to_utc_timestamp(origin)
-        future = horizon_builder(panel_utc, origin)
-        price_features = build_price_feature_frame(
-            panel_utc,
-            future,
-            forecast_origin_utc=origin,
-            include_target=True,
-            config=price_feature_config,
-        )
-        with_weather = join_weather_features(price_features, area_features_long)
-        frames.append(with_weather)
-
-    if not frames:
+    weather = _prepare_weather_features(area_features_long)
+    price_features = build_price_experiment_frame(
+        panel_utc,
+        origins_utc,
+        config=price_feature_config,
+        horizon_builder=horizon_builder,
+    )
+    if price_features.empty:
         return pd.DataFrame()
 
-    output = pd.concat(frames, ignore_index=True)
+    output = _join_prepared_weather_features(price_features, weather)
     if add_ensemble_features:
         output = add_weather_ensemble_features(output)
+    if add_derived_features:
+        output = add_weather_derived_features(output)
     return output.reset_index(drop=True)
 
 
@@ -162,6 +176,132 @@ def add_weather_ensemble_features(frame: pd.DataFrame) -> pd.DataFrame:
         output[f"{prefix}_spread"] = output[f"{prefix}_max"] - output[f"{prefix}_min"]
 
     return output
+
+
+def add_weather_derived_features(frame: pd.DataFrame) -> pd.DataFrame:
+    """Add physically motivated weather transforms without touching availability columns."""
+
+    output = frame.copy()
+    output = _add_weather_physics_features(output)
+    output = _add_weather_lead_delta_features(output)
+    output = _add_weather_area_spread_features(output)
+    return output
+
+
+def _add_weather_physics_features(frame: pd.DataFrame) -> pd.DataFrame:
+    output = frame.copy()
+    groups = _weather_columns_by_model_lead(output)
+
+    for (model, lead), columns in groups.items():
+        prefix = f"weather_{model}_{lead}"
+        direction = columns.get("wind_direction_10m")
+        speed_10m = columns.get("wind_speed_10m")
+        speed_100m = columns.get("wind_speed_100m")
+        shortwave = columns.get("shortwave_radiation")
+        cloud = columns.get("cloud_cover")
+
+        if direction is not None:
+            radians = np.deg2rad(output[direction].astype(float) % 360)
+            output[f"{prefix}_wind_direction_10m_sin"] = np.sin(radians)
+            output[f"{prefix}_wind_direction_10m_cos"] = np.cos(radians)
+            if speed_10m is not None:
+                output[f"{prefix}_wind10_u"] = -output[speed_10m] * np.sin(radians)
+                output[f"{prefix}_wind10_v"] = -output[speed_10m] * np.cos(radians)
+
+        if speed_10m is not None and speed_100m is not None:
+            output[f"{prefix}_wind_shear_100m_minus_10m"] = (
+                output[speed_100m] - output[speed_10m]
+            )
+
+        if shortwave is not None and cloud is not None:
+            cloud_fraction = output[cloud] / 100.0
+            output[f"{prefix}_shortwave_x_cloud_cover"] = (
+                output[shortwave] * cloud_fraction
+            )
+            output[f"{prefix}_shortwave_x_clear_sky_proxy"] = (
+                output[shortwave] * (1 - cloud_fraction)
+            )
+
+    return output
+
+
+def _add_weather_lead_delta_features(frame: pd.DataFrame) -> pd.DataFrame:
+    output = frame.copy()
+    groups = _weather_columns_by_model_lead(output)
+    by_model_parameter: dict[tuple[str, str], dict[str, str]] = {}
+    for (model, lead), columns in groups.items():
+        for parameter, column in columns.items():
+            by_model_parameter.setdefault((model, parameter), {})[lead] = column
+
+    for (model, parameter), lead_columns in by_model_parameter.items():
+        lead1 = lead_columns.get("lead1d")
+        lead2 = lead_columns.get("lead2d")
+        if lead1 is None or lead2 is None:
+            continue
+        output[f"weather_{model}_lead1d_minus_lead2d_{parameter}"] = (
+            output[lead1] - output[lead2]
+        )
+    return output
+
+
+def _add_weather_area_spread_features(frame: pd.DataFrame) -> pd.DataFrame:
+    if not {"area", "forecast_origin_utc", "ds_utc"}.issubset(frame.columns):
+        return frame
+
+    output = frame.copy()
+    key_columns = ["forecast_origin_utc", "ds_utc"]
+    source_columns = [
+        column
+        for column in weather_value_columns(output)
+        if "_dk1_minus_dk2" not in column
+    ]
+    if not source_columns:
+        return output
+
+    wide = output.pivot_table(
+        index=key_columns,
+        columns="area",
+        values=source_columns,
+        aggfunc="last",
+    )
+    if "DK1" not in wide.columns.get_level_values("area") or "DK2" not in wide.columns.get_level_values("area"):
+        return output
+
+    spread_columns: dict[str, pd.Series] = {}
+    for column in source_columns:
+        if (column, "DK1") not in wide.columns or (column, "DK2") not in wide.columns:
+            continue
+        spread_columns[f"{column}_dk1_minus_dk2"] = wide[(column, "DK1")] - wide[(column, "DK2")]
+
+    if not spread_columns:
+        return output
+
+    spread = pd.DataFrame(spread_columns, index=wide.index).reset_index()
+    output = output.merge(spread, on=key_columns, how="left")
+
+    return output
+
+
+def _weather_columns_by_model_lead(frame: pd.DataFrame) -> dict[tuple[str, str], dict[str, str]]:
+    groups: dict[tuple[str, str], dict[str, str]] = {}
+    base_parameters = {
+        "temperature_2m",
+        "wind_speed_10m",
+        "wind_direction_10m",
+        "wind_speed_100m",
+        "shortwave_radiation",
+        "cloud_cover",
+        "precipitation",
+    }
+    for column in weather_value_columns(frame):
+        parsed = _parse_weather_feature_column(column)
+        if parsed is None:
+            continue
+        model, lead, parameter = parsed
+        if parameter not in base_parameters:
+            continue
+        groups.setdefault((model, lead), {})[parameter] = column
+    return groups
 
 
 def _parse_weather_feature_column(column: str) -> tuple[str, str, str] | None:

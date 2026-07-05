@@ -18,9 +18,13 @@ from dkenergy_forecast.evaluation.probabilistic_metrics import (
     interval_coverage,
     pinball_loss,
 )
-from dkenergy_forecast.evaluation.value_metrics import cheapest_k_hit_rate
 from dkenergy_forecast.io import load_price_panel
-from dkenergy_forecast.models.baselines import LagNaive, SeasonalRollingMedian
+from dkenergy_forecast.models.baselines import (
+    LagNaive,
+    SeasonalRollingMedian,
+    WeekdayWeekendWeightedMedian,
+    WeightedSeasonalMedian,
+)
 from dkenergy_forecast.types import add_copenhagen_calendar
 
 
@@ -119,6 +123,147 @@ def test_seasonal_rolling_median_respects_origin_window_keys_and_min_periods() -
 
     assert prediction["y_pred"].iloc[0] == 20.0
     assert pd.isna(insufficient["y_pred"].iloc[0])
+
+
+def test_weighted_seasonal_median_supports_equal_linear_floor_and_exponential_weights() -> None:
+    origin = pd.Timestamp("2024-01-10T00:00:00Z")
+    future = pd.DataFrame(
+        {
+            "unique_id": ["x"],
+            "ds_utc": [pd.Timestamp("2024-01-10T01:00:00Z")],
+            "forecast_origin_utc": [origin],
+            "horizon": [1],
+            "local_hour": [1],
+        }
+    )
+    history = pd.DataFrame(
+        {
+            "unique_id": ["x", "x", "x", "x"],
+            "ds_utc": [
+                pd.Timestamp("2024-01-07T00:00:00Z"),
+                pd.Timestamp("2024-01-08T00:00:00Z"),
+                pd.Timestamp("2024-01-09T00:00:00Z"),
+                pd.Timestamp("2024-01-09T01:00:00Z"),
+            ],
+            "local_hour": [1, 1, 1, 2],
+            "y": [100.0, 50.0, 0.0, -999.0],
+        }
+    )
+
+    common = {
+        "lookback_days": 4,
+        "seasonal_keys": ("local_hour",),
+        "min_periods": 3,
+    }
+    equal = WeightedSeasonalMedian(weight_family="equal", **common).predict(
+        future,
+        history=history,
+    )
+    linear = WeightedSeasonalMedian(weight_family="linear", **common).predict(
+        future,
+        history=history,
+    )
+    linear_floor = WeightedSeasonalMedian(
+        weight_family="linear_floor",
+        floor=0.2,
+        **common,
+    ).predict(future, history=history)
+    exponential = WeightedSeasonalMedian(
+        weight_family="exponential",
+        half_life_days=1,
+        **common,
+    ).predict(future, history=history)
+    exponential_floor = WeightedSeasonalMedian(
+        weight_family="exponential",
+        half_life_days=1,
+        floor=1.0,
+        **common,
+    ).predict(future, history=history)
+
+    assert equal["y_pred"].iloc[0] == 50.0
+    assert linear["y_pred"].iloc[0] == 0.0
+    assert linear_floor["y_pred"].iloc[0] == 50.0
+    assert exponential["y_pred"].iloc[0] == 0.0
+    assert exponential_floor["y_pred"].iloc[0] == 50.0
+
+
+def test_weekday_weekend_weighted_median_uses_separate_parameter_sets() -> None:
+    origin = pd.Timestamp("2024-01-15T00:00:00Z")
+    future = pd.DataFrame(
+        {
+            "unique_id": ["x", "x"],
+            "ds_utc": [
+                pd.Timestamp("2024-01-15T01:00:00Z"),
+                pd.Timestamp("2024-01-20T01:00:00Z"),
+            ],
+            "forecast_origin_utc": [origin, origin],
+            "horizon": [1, 2],
+            "local_hour": [1, 1],
+            "is_weekend": [False, True],
+        }
+    )
+    history = pd.DataFrame(
+        {
+            "unique_id": ["x"] * 6,
+            "ds_utc": [
+                pd.Timestamp("2024-01-12T01:00:00Z"),
+                pd.Timestamp("2024-01-13T01:00:00Z"),
+                pd.Timestamp("2024-01-14T01:00:00Z"),
+                pd.Timestamp("2024-01-12T01:00:00Z"),
+                pd.Timestamp("2024-01-13T01:00:00Z"),
+                pd.Timestamp("2024-01-14T01:00:00Z"),
+            ],
+            "local_hour": [1, 1, 1, 1, 1, 1],
+            "is_weekend": [False, False, False, True, True, True],
+            "y": [100.0, 50.0, 0.0, 1000.0, 500.0, 0.0],
+        }
+    )
+
+    prediction = WeekdayWeekendWeightedMedian(
+        weekday_lookback_days=4,
+        weekday_half_life_days=1,
+        weekday_floor=None,
+        weekend_lookback_days=4,
+        weekend_half_life_days=10,
+        weekend_floor=1.0,
+        min_periods=3,
+    ).predict(future, history=history)
+
+    assert prediction["y_pred"].tolist() == [0.0, 500.0]
+
+
+def test_weighted_seasonal_median_linear_boundary_weight_does_not_count_for_min_periods() -> None:
+    origin = pd.Timestamp("2024-01-10T00:00:00Z")
+    future = pd.DataFrame(
+        {
+            "unique_id": ["x"],
+            "ds_utc": [pd.Timestamp("2024-01-10T01:00:00Z")],
+            "forecast_origin_utc": [origin],
+            "horizon": [1],
+            "local_hour": [1],
+        }
+    )
+    history = pd.DataFrame(
+        {
+            "unique_id": ["x", "x", "x"],
+            "ds_utc": [
+                pd.Timestamp("2024-01-07T00:00:00Z"),
+                pd.Timestamp("2024-01-08T00:00:00Z"),
+                pd.Timestamp("2024-01-09T00:00:00Z"),
+            ],
+            "local_hour": [1, 1, 1],
+            "y": [100.0, 50.0, 0.0],
+        }
+    )
+
+    prediction = WeightedSeasonalMedian(
+        lookback_days=3,
+        seasonal_keys=("local_hour",),
+        min_periods=3,
+        weight_family="linear",
+    ).predict(future, history=history)
+
+    assert pd.isna(prediction["y_pred"].iloc[0])
 
 
 def test_next_utc_horizon_is_target_free_and_daily_origins_are_utc_bounded() -> None:
@@ -248,27 +393,6 @@ def test_point_and_probabilistic_metrics_are_hand_computed() -> None:
     assert pinball_loss(predictions, quantile=0.5) == 0.5
     assert interval_coverage(predictions) == pytest.approx(2 / 3)
     assert average_interval_width(predictions) == pytest.approx(4 / 3)
-
-
-def test_cheapest_k_hit_rate_is_grouped_by_origin_area_and_local_date() -> None:
-    predictions = pd.DataFrame(
-        {
-            "forecast_origin_utc": [pd.Timestamp("2024-01-01T10:00:00Z")] * 4,
-            "area": ["DK1"] * 4,
-            "local_date": ["2024-01-02"] * 4,
-            "ds_utc": pd.date_range("2024-01-02T00:00:00Z", periods=4, freq="h"),
-            "y": [1.0, 5.0, 2.0, 9.0],
-            "y_pred": [2.0, 1.0, 8.0, 9.0],
-        }
-    )
-
-    result = cheapest_k_hit_rate(predictions, k=2)
-
-    assert result["hit_count"].iloc[0] == 1
-    assert result["candidate_count"].iloc[0] == 4
-    assert result["selected_count"].iloc[0] == 2
-    assert result["available_count"].iloc[0] == 2
-    assert result["hit_rate"].iloc[0] == 0.5
 
 
 def _panel(

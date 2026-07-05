@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from dkenergy_forecast.features.weather_features import (
+    add_weather_derived_features,
     add_weather_ensemble_features,
     join_weather_features,
     weather_value_columns,
@@ -132,3 +133,33 @@ def test_weather_ensemble_features_use_model_values_only() -> None:
     assert "weather_icon_eu_lead1d_temperature_2m_coverage_ratio" not in weather_value_columns(output)
     second_output = add_weather_ensemble_features(output)
     assert not any(column.startswith("weather_ensemble_lead1d_temperature_2m_mean_") for column in second_output)
+
+
+def test_weather_derived_features_add_physics_lead_delta_and_area_spread() -> None:
+    frame = pd.DataFrame(
+        {
+            "area": ["DK1", "DK2"],
+            "forecast_origin_utc": [pd.Timestamp("2025-01-01T10:00:00Z")] * 2,
+            "ds_utc": [pd.Timestamp("2025-01-02T00:00:00Z")] * 2,
+            "weather_gfs_global_lead1d_temperature_2m": [10.0, 4.0],
+            "weather_gfs_global_lead2d_temperature_2m": [8.0, 3.0],
+            "weather_gfs_global_lead1d_wind_speed_10m": [10.0, 8.0],
+            "weather_gfs_global_lead1d_wind_direction_10m": [90.0, 180.0],
+            "weather_gfs_global_lead1d_wind_speed_100m": [15.0, 9.0],
+            "weather_gfs_global_lead1d_shortwave_radiation": [100.0, 60.0],
+            "weather_gfs_global_lead1d_cloud_cover": [50.0, 25.0],
+        }
+    )
+
+    output = add_weather_derived_features(frame)
+
+    assert output.loc[0, "weather_gfs_global_lead1d_wind_direction_10m_sin"] == pytest.approx(1.0)
+    assert output.loc[0, "weather_gfs_global_lead1d_wind_direction_10m_cos"] == pytest.approx(0.0)
+    assert output.loc[0, "weather_gfs_global_lead1d_wind10_u"] == pytest.approx(-10.0)
+    assert output.loc[0, "weather_gfs_global_lead1d_wind_shear_100m_minus_10m"] == pytest.approx(5.0)
+    assert output.loc[0, "weather_gfs_global_lead1d_shortwave_x_cloud_cover"] == pytest.approx(50.0)
+    assert output.loc[0, "weather_gfs_global_lead1d_shortwave_x_clear_sky_proxy"] == pytest.approx(50.0)
+    assert output.loc[0, "weather_gfs_global_lead1d_minus_lead2d_temperature_2m"] == pytest.approx(2.0)
+    spread = "weather_gfs_global_lead1d_temperature_2m_dk1_minus_dk2"
+    assert output[spread].tolist() == pytest.approx([6.0, 6.0])
+    assert spread in weather_value_columns(output)

@@ -1,20 +1,14 @@
 from __future__ import annotations
 
-import importlib.util
-
 import pandas as pd
 import pytest
 
 from dkenergy_forecast.backtesting.horizons import make_next_utc_hours_horizon
 from dkenergy_forecast.features.price_features import (
     PriceFeatureConfig,
+    WEIGHTED_MEDIAN_BASELINE_COLUMN,
     build_price_feature_frame,
     build_training_matrix,
-)
-from dkenergy_forecast.models.catboost_quantile import (
-    CatBoostQuantileModel,
-    _load_catboost,
-    _repair_quantile_crossing,
 )
 from dkenergy_forecast.types import add_copenhagen_calendar
 
@@ -82,61 +76,55 @@ def test_training_matrix_keeps_complete_training_horizons_before_origin() -> Non
     )
 
 
-def test_catboost_optional_dependency_error_is_clear_when_missing() -> None:
-    if importlib.util.find_spec("catboost") is not None:
-        pytest.skip("CatBoost is installed in this environment")
-
-    with pytest.raises(ImportError, match="optional CatBoost dependency"):
-        _load_catboost()
-
-
-def test_catboost_quantile_columns_are_sorted_by_alpha_for_repair() -> None:
-    model = CatBoostQuantileModel(
-        quantiles={"q90": 0.9, "q10": 0.1, "q50": 0.5},
-        iterations=1,
+def test_weighted_median_baseline_feature_is_origin_safe() -> None:
+    panel = _two_area_panel(periods=24 * 20)
+    origin = pd.Timestamp("2024-01-16T10:00:00Z")
+    future = make_next_utc_hours_horizon(panel, origin, hours=24)
+    config = PriceFeatureConfig(
+        lag_hours=(24,),
+        rolling_windows_hours=(24,),
+        seasonal_lookback_days=7,
+        spread_lag_hours=(24,),
     )
-    frame = pd.DataFrame({"q10": [50.0], "q50": [90.0], "q90": [10.0]})
 
-    repaired = _repair_quantile_crossing(frame, list(model.quantiles))
+    clean = build_price_feature_frame(
+        panel,
+        future,
+        forecast_origin_utc=origin,
+        include_target=False,
+        config=config,
+    )
+    leaky_panel = panel.copy()
+    leaky_panel.loc[leaky_panel["ds_utc"] >= origin, "y"] = 999999.0
+    leaky = build_price_feature_frame(
+        leaky_panel,
+        future,
+        forecast_origin_utc=origin,
+        include_target=False,
+        config=config,
+    )
+    disabled = build_price_feature_frame(
+        panel,
+        future,
+        forecast_origin_utc=origin,
+        include_target=False,
+        config=PriceFeatureConfig(
+            lag_hours=(24,),
+            rolling_windows_hours=(24,),
+            seasonal_lookback_days=7,
+            spread_lag_hours=(24,),
+            include_weighted_median_baseline=False,
+        ),
+    )
 
-    assert list(model.quantiles) == ["q10", "q50", "q90"]
-    assert repaired.loc[0, ["q10", "q50", "q90"]].tolist() == [10.0, 50.0, 90.0]
-
-
-def test_catboost_rejects_duplicate_quantile_values() -> None:
-    with pytest.raises(ValueError, match="Duplicate quantile value"):
-        CatBoostQuantileModel(quantiles={"q10": 0.1, "q_low": 0.1}, iterations=1)
-
-
-def test_catboost_feature_importance_frame_uses_last_models() -> None:
-    class FakeBackendModel:
-        def get_feature_importance(self) -> list[float]:
-            return [2.0, 1.0]
-
-    model = CatBoostQuantileModel()
-    model.last_feature_columns_ = ["lag_24h", "area"]
-    model.last_models_ = {
-        "2024-01-02T10:00:00+00:00": {
-            "q50": FakeBackendModel(),
-        }
-    }
-
-    result = model.feature_importance_frame()
-
-    assert result.to_dict(orient="records") == [
-        {
-            "forecast_origin_utc": "2024-01-02T10:00:00+00:00",
-            "quantile": "q50",
-            "feature": "lag_24h",
-            "importance": 2.0,
-        },
-        {
-            "forecast_origin_utc": "2024-01-02T10:00:00+00:00",
-            "quantile": "q50",
-            "feature": "area",
-            "importance": 1.0,
-        },
-    ]
+    assert WEIGHTED_MEDIAN_BASELINE_COLUMN in config.feature_columns
+    assert clean[WEIGHTED_MEDIAN_BASELINE_COLUMN].notna().any()
+    pd.testing.assert_series_equal(
+        clean[WEIGHTED_MEDIAN_BASELINE_COLUMN],
+        leaky[WEIGHTED_MEDIAN_BASELINE_COLUMN],
+        check_names=False,
+    )
+    assert WEIGHTED_MEDIAN_BASELINE_COLUMN not in disabled.columns
 
 
 def _two_area_panel(*, periods: int) -> pd.DataFrame:

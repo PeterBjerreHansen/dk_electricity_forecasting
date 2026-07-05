@@ -11,6 +11,7 @@ from dkenergy_data.build.open_meteo_weather_v1 import (
     build_area_feature_long,
     build_area_feature_wide,
     normalize_batch,
+    normalize_batches,
 )
 
 
@@ -163,9 +164,65 @@ def test_area_feature_wide_keeps_values_coverage_flags_and_availability() -> Non
     assert row[f"{feature}_available_at_utc"] == pd.Timestamp("2025-01-01T00:00:00Z")
 
 
-def _raw_batch(location_id: str, *, payload: dict) -> OpenMeteoRawBatch:
+def test_normalize_batches_deduplicates_repeated_raw_fetches() -> None:
+    payload = {
+        "hourly": {
+            "time": ["2025-01-02T00:00"],
+            "temperature_2m_previous_day1": [3.0],
+        },
+        "hourly_units": {"temperature_2m_previous_day1": "degC"},
+    }
+
+    normalized = normalize_batches(
+        [
+            _raw_batch("dk1_a", batch_id="batch-a", payload=payload),
+            _raw_batch("dk1_a", batch_id="batch-b", payload=payload),
+        ],
+        locations=[WeatherLocation("dk1_a", "DK1", 56.0, 10.0)],
+        base_variables=["temperature_2m"],
+        lead_time_days=[1],
+    )
+
+    assert len(normalized) == 1
+    assert normalized.loc[0, "raw_batch_id"] == "batch-b"
+
+
+def test_normalize_batches_rejects_conflicting_repeated_raw_fetches() -> None:
+    first = {
+        "hourly": {
+            "time": ["2025-01-02T00:00"],
+            "temperature_2m_previous_day1": [3.0],
+        },
+        "hourly_units": {"temperature_2m_previous_day1": "degC"},
+    }
+    second = {
+        "hourly": {
+            "time": ["2025-01-02T00:00"],
+            "temperature_2m_previous_day1": [4.0],
+        },
+        "hourly_units": {"temperature_2m_previous_day1": "degC"},
+    }
+
+    with pytest.raises(ValueError, match="Conflicting duplicate normalized Open-Meteo rows"):
+        normalize_batches(
+            [
+                _raw_batch("dk1_a", batch_id="batch-a", payload=first),
+                _raw_batch("dk1_a", batch_id="batch-b", payload=second),
+            ],
+            locations=[WeatherLocation("dk1_a", "DK1", 56.0, 10.0)],
+            base_variables=["temperature_2m"],
+            lead_time_days=[1],
+        )
+
+
+def _raw_batch(
+    location_id: str,
+    *,
+    payload: dict,
+    batch_id: str | None = None,
+) -> OpenMeteoRawBatch:
     return OpenMeteoRawBatch(
-        batch_id=f"batch-{location_id}",
+        batch_id=batch_id or f"batch-{location_id}",
         weather_model="gfs_global",
         location_id=location_id,
         retrieved_at_utc="2026-01-01T00:00:00+00:00",

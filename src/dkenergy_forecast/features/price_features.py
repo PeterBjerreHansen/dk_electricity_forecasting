@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import pandas as pd
@@ -10,6 +10,7 @@ from dkenergy_forecast.backtesting.horizons import (
     make_daily_origins,
     make_danish_delivery_day_horizon,
 )
+from dkenergy_forecast.statistics import weighted_median
 from dkenergy_forecast.types import (
     add_horizon_column,
     normalize_utc_column,
@@ -19,6 +20,7 @@ from dkenergy_forecast.types import (
 
 
 HorizonBuilder = Callable[[pd.DataFrame, pd.Timestamp], pd.DataFrame]
+WEIGHTED_MEDIAN_BASELINE_COLUMN = "baseline_wdwe_weighted_median_y_pred"
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,15 @@ class PriceFeatureConfig:
     rolling_windows_hours: tuple[int, ...] = (24, 168, 24 * 28)
     seasonal_lookback_days: int = 56
     spread_lag_hours: tuple[int, ...] = (24, 168)
+    include_weighted_median_baseline: bool = True
+    weighted_median_baseline_column: str = WEIGHTED_MEDIAN_BASELINE_COLUMN
+    weekday_weighted_median_lookback_days: int = 42
+    weekday_weighted_median_half_life_days: float = 4.0
+    weekday_weighted_median_floor: float | None = 0.10
+    weekend_weighted_median_lookback_days: int = 56
+    weekend_weighted_median_half_life_days: float = 28.0
+    weekend_weighted_median_floor: float | None = 0.20
+    weighted_median_min_periods: int = 4
     base_features: tuple[str, ...] = (
         "area",
         "local_hour",
@@ -46,6 +57,26 @@ class PriceFeatureConfig:
         _require_positive("spread_lag_hours", self.spread_lag_hours)
         if self.seasonal_lookback_days <= 0:
             raise ValueError("seasonal_lookback_days must be positive")
+        for name, value in [
+            ("weekday_weighted_median_lookback_days", self.weekday_weighted_median_lookback_days),
+            ("weekend_weighted_median_lookback_days", self.weekend_weighted_median_lookback_days),
+        ]:
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
+        for name, value in [
+            ("weekday_weighted_median_half_life_days", self.weekday_weighted_median_half_life_days),
+            ("weekend_weighted_median_half_life_days", self.weekend_weighted_median_half_life_days),
+        ]:
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
+        for name, value in [
+            ("weekday_weighted_median_floor", self.weekday_weighted_median_floor),
+            ("weekend_weighted_median_floor", self.weekend_weighted_median_floor),
+        ]:
+            if value is not None and not 0 <= value <= 1:
+                raise ValueError(f"{name} must be between 0 and 1")
+        if self.weighted_median_min_periods <= 0:
+            raise ValueError("weighted_median_min_periods must be positive")
 
     @property
     def lag_feature_columns(self) -> list[str]:
@@ -73,12 +104,19 @@ class PriceFeatureConfig:
         ]
 
     @property
+    def baseline_feature_columns(self) -> list[str]:
+        if not self.include_weighted_median_baseline:
+            return []
+        return [self.weighted_median_baseline_column]
+
+    @property
     def feature_columns(self) -> list[str]:
         return (
             list(self.base_features)
             + self.lag_feature_columns
             + self.rolling_feature_columns
             + self.seasonal_feature_columns
+            + self.baseline_feature_columns
             + self.spread_feature_columns
         )
 
@@ -131,12 +169,31 @@ def build_price_feature_frame(
     future_utc = _prepare_future(future, config)
     origin = _resolve_single_origin(future_utc, forecast_origin_utc)
 
-    history = panel_utc[panel_utc["ds_utc"] < origin].copy()
+    return _build_price_feature_frame_prepared(
+        panel_utc,
+        future_utc,
+        forecast_origin_utc=origin,
+        include_target=include_target,
+        config=config,
+    )
+
+
+def _build_price_feature_frame_prepared(
+    panel_utc: pd.DataFrame,
+    future_utc: pd.DataFrame,
+    *,
+    forecast_origin_utc: pd.Timestamp,
+    include_target: bool,
+    config: PriceFeatureConfig,
+) -> pd.DataFrame:
+    origin = to_utc_timestamp(forecast_origin_utc)
+    history = panel_utc.loc[panel_utc["ds_utc"] < origin]
     features = _base_feature_frame(future_utc, config)
 
     features = _add_lag_features(features, history, origin, config)
     features = _add_rolling_features(features, history, origin, config)
     features = _add_seasonal_features(features, history, origin, config)
+    features = _add_weighted_median_baseline_feature(features, history, origin, config)
     features = _add_spread_features(features, history, origin, config)
 
     for column in ["is_weekend", "is_dst"]:
@@ -150,6 +207,73 @@ def build_price_feature_frame(
         features = features.merge(actuals, on=["unique_id", "ds_utc"], how="left")
 
     return features.reset_index(drop=True)
+
+
+def build_price_experiment_frame(
+    panel: pd.DataFrame,
+    origins: pd.DataFrame,
+    *,
+    config: PriceFeatureConfig | None = None,
+    horizon_builder: HorizonBuilder = make_danish_delivery_day_horizon,
+) -> pd.DataFrame:
+    """Build price feature rows for several rolling origins with targets joined."""
+
+    require_columns(origins, ["forecast_origin_utc"], "origins")
+    config = config or PriceFeatureConfig()
+    panel_utc = _prepare_panel(panel, config)
+    origins_utc = normalize_utc_column(origins, "forecast_origin_utc")
+    origin_config = (
+        replace(config, include_weighted_median_baseline=False)
+        if config.include_weighted_median_baseline
+        else config
+    )
+    frames: list[pd.DataFrame] = []
+
+    for origin in origins_utc["forecast_origin_utc"].sort_values().drop_duplicates():
+        origin = to_utc_timestamp(origin)
+        future = horizon_builder(panel_utc, origin)
+        if future.empty:
+            continue
+        future_utc = _prepare_future(future, origin_config)
+        frame = _build_price_feature_frame_prepared(
+            panel_utc,
+            future_utc,
+            forecast_origin_utc=origin,
+            include_target=True,
+            config=origin_config,
+        )
+        frames.append(frame)
+
+    if not frames:
+        return pd.DataFrame()
+    output = pd.concat(frames, ignore_index=True).reset_index(drop=True)
+    if config.include_weighted_median_baseline:
+        output = add_weighted_median_baseline_feature(output, panel_utc, config=config)
+    return output
+
+
+def add_weighted_median_baseline_feature(
+    frame: pd.DataFrame,
+    panel: pd.DataFrame,
+    *,
+    config: PriceFeatureConfig | None = None,
+) -> pd.DataFrame:
+    """Add the robust weekday/weekend weighted-median baseline as a feature column."""
+
+    config = config or PriceFeatureConfig()
+    if not config.include_weighted_median_baseline:
+        return frame.copy()
+
+    require_columns(frame, ["unique_id", "ds_utc", "forecast_origin_utc", "local_hour", "is_weekend"], "frame")
+    panel_utc = _prepare_panel(panel, config)
+    output = normalize_utc_column(frame, "ds_utc")
+    output = normalize_utc_column(output, "forecast_origin_utc")
+    output[config.weighted_median_baseline_column] = _weighted_median_baseline_predictions(
+        output,
+        panel_utc,
+        config,
+    )
+    return output
 
 
 def build_training_matrix(
@@ -170,6 +294,11 @@ def build_training_matrix(
     config = config or PriceFeatureConfig()
     panel_utc = _prepare_panel(panel, config)
     origin = to_utc_timestamp(forecast_origin_utc)
+    origin_config = (
+        replace(config, include_weighted_median_baseline=False)
+        if config.include_weighted_median_baseline
+        else config
+    )
     train_origin_end = origin.normalize()
     train_origin_start = train_origin_end - pd.Timedelta(days=training_origin_days)
     train_origins = make_daily_origins(
@@ -194,7 +323,7 @@ def build_training_matrix(
             horizon,
             forecast_origin_utc=train_origin,
             include_target=True,
-            config=config,
+            config=origin_config,
         )
         frames.append(frame)
 
@@ -202,17 +331,15 @@ def build_training_matrix(
         raise ValueError(f"No training feature rows available before {origin.isoformat()}")
 
     training = pd.concat(frames, ignore_index=True)
+    if config.include_weighted_median_baseline:
+        training = add_weighted_median_baseline_feature(training, panel_utc, config=config)
     return training.dropna(subset=["y"]).reset_index(drop=True)
 
 
 def _prepare_panel(panel: pd.DataFrame, config: PriceFeatureConfig) -> pd.DataFrame:
     require_columns(panel, ["unique_id", "area", "ds_utc", "y"], "panel")
     prepared = normalize_utc_column(panel, "ds_utc")
-    required_calendar = [
-        column
-        for column in ["local_hour", "local_day_of_week", "local_month", "is_weekend", "is_dst", "utc_offset_hours"]
-        if column in config.base_features
-    ]
+    required_calendar = _required_calendar_columns(config)
     require_columns(prepared, required_calendar, "panel")
     return prepared.sort_values(["area", "ds_utc"]).reset_index(drop=True)
 
@@ -223,8 +350,23 @@ def _prepare_future(future: pd.DataFrame, config: PriceFeatureConfig) -> pd.Data
     prepared = normalize_utc_column(prepared, "forecast_origin_utc")
     if "horizon" not in prepared.columns:
         prepared = add_horizon_column(prepared)
-    require_columns(prepared, config.base_features, "future")
+    require_columns(prepared, list(config.base_features) + _baseline_calendar_columns(config), "future")
     return prepared.sort_values(["forecast_origin_utc", "unique_id", "ds_utc"]).reset_index(drop=True)
+
+
+def _required_calendar_columns(config: PriceFeatureConfig) -> list[str]:
+    columns = [
+        column
+        for column in ["local_hour", "local_day_of_week", "local_month", "is_weekend", "is_dst", "utc_offset_hours"]
+        if column in config.base_features
+    ]
+    return _ordered_existing(columns + _baseline_calendar_columns(config), columns + _baseline_calendar_columns(config))
+
+
+def _baseline_calendar_columns(config: PriceFeatureConfig) -> list[str]:
+    if not config.include_weighted_median_baseline:
+        return []
+    return ["local_hour", "is_weekend"]
 
 
 def _resolve_single_origin(
@@ -336,6 +478,90 @@ def _add_seasonal_features(
     )
 
 
+def _add_weighted_median_baseline_feature(
+    features: pd.DataFrame,
+    history: pd.DataFrame,
+    origin: pd.Timestamp,
+    config: PriceFeatureConfig,
+) -> pd.DataFrame:
+    if not config.include_weighted_median_baseline:
+        return features
+
+    require_columns(features, ["unique_id", "local_hour", "is_weekend"], "features")
+    require_columns(history, ["unique_id", "local_hour", "is_weekend"], "history")
+    output = features.copy()
+    output[config.weighted_median_baseline_column] = _weighted_median_baseline_predictions(
+        output,
+        history,
+        config,
+    )
+    return output
+
+
+def _weighted_median_baseline_predictions(
+    future: pd.DataFrame,
+    history: pd.DataFrame,
+    config: PriceFeatureConfig,
+) -> list[float | None]:
+    groups = _weighted_median_history_groups(history)
+
+    predictions: list[float | None] = []
+    for row in future.itertuples(index=False):
+        is_weekend = bool(getattr(row, "is_weekend"))
+        group = groups.get((getattr(row, "unique_id"), int(getattr(row, "local_hour")), is_weekend))
+        if group is None:
+            predictions.append(None)
+            continue
+
+        lookback_days, half_life_days, floor = _weighted_median_parameters(config, is_weekend)
+        origin = to_utc_timestamp(getattr(row, "forecast_origin_utc"))
+        window = group[
+            (group["ds_utc"] < origin)
+            & (group["ds_utc"] >= origin - pd.Timedelta(days=lookback_days))
+        ].dropna(subset=["y"])
+        if len(window) < config.weighted_median_min_periods:
+            predictions.append(None)
+            continue
+
+        age_days = (origin - window["ds_utc"]) / pd.Timedelta(days=1)
+        weights = 0.5 ** (age_days / float(half_life_days))
+        if floor is not None:
+            floor_value = float(floor)
+            weights = floor_value + (1 - floor_value) * weights
+        predictions.append(weighted_median(window["y"], weights))
+
+    return predictions
+
+
+def _weighted_median_history_groups(
+    history: pd.DataFrame,
+) -> dict[tuple[object, int, bool], pd.DataFrame]:
+    groups: dict[tuple[object, int, bool], pd.DataFrame] = {}
+    for key, frame in history.groupby(["unique_id", "local_hour", "is_weekend"], dropna=False, sort=False):
+        unique_id, local_hour, is_weekend = key
+        groups[(unique_id, int(local_hour), bool(is_weekend))] = (
+            frame[["ds_utc", "y"]].sort_values("ds_utc").reset_index(drop=True)
+        )
+    return groups
+
+
+def _weighted_median_parameters(
+    config: PriceFeatureConfig,
+    is_weekend: bool,
+) -> tuple[int, float, float | None]:
+    if is_weekend:
+        return (
+            config.weekend_weighted_median_lookback_days,
+            config.weekend_weighted_median_half_life_days,
+            config.weekend_weighted_median_floor,
+        )
+    return (
+        config.weekday_weighted_median_lookback_days,
+        config.weekday_weighted_median_half_life_days,
+        config.weekday_weighted_median_floor,
+    )
+
+
 def _add_spread_features(
     features: pd.DataFrame,
     history: pd.DataFrame,
@@ -344,32 +570,27 @@ def _add_spread_features(
 ) -> pd.DataFrame:
     output = features.copy()
     for lag in config.spread_lag_hours:
-        spread = _spread_lookup(history, lag)
-        output = output.merge(
-            spread,
-            left_on="ds_utc",
-            right_on="target_ds_utc",
-            how="left",
-        ).drop(columns=["target_ds_utc"])
+        column = f"dk1_minus_dk2_lag_{lag}h"
         feature_time = output["ds_utc"] - pd.Timedelta(hours=lag)
-        output[f"dk1_minus_dk2_lag_{lag}h"] = output[
-            f"dk1_minus_dk2_lag_{lag}h"
-        ].where(feature_time < origin)
+        needed_times = pd.DataFrame({"feature_time": feature_time.drop_duplicates()})
+        source = history.loc[
+            history["ds_utc"].isin(needed_times["feature_time"]),
+            ["ds_utc", "area", "y"],
+        ]
+        if source.empty:
+            output[column] = pd.NA
+            continue
+        wide = source.pivot_table(index="ds_utc", columns="area", values="y", aggfunc="last")
+        if {"DK1", "DK2"}.issubset(wide.columns):
+            spread = (wide["DK1"] - wide["DK2"]).rename(column).reset_index()
+            spread = spread.rename(columns={"ds_utc": "feature_time"})
+            lagged = needed_times.merge(spread, on="feature_time", how="left")
+        else:
+            lagged = needed_times.copy()
+            lagged[column] = pd.NA
+        lagged = lagged.set_index("feature_time")
+        output[column] = feature_time.map(lagged[column]).where(feature_time < origin)
     return output
-
-
-def _spread_lookup(history: pd.DataFrame, lag_hours: int) -> pd.DataFrame:
-    column = f"dk1_minus_dk2_lag_{lag_hours}h"
-    if history.empty:
-        return pd.DataFrame({"target_ds_utc": pd.Series(dtype="datetime64[ns, UTC]"), column: []})
-
-    wide = history.pivot_table(index="ds_utc", columns="area", values="y", aggfunc="last")
-    if {"DK1", "DK2"}.issubset(wide.columns):
-        spread = (wide["DK1"] - wide["DK2"]).rename(column).reset_index()
-    else:
-        spread = pd.DataFrame({"ds_utc": pd.Series(dtype="datetime64[ns, UTC]"), column: []})
-    spread["target_ds_utc"] = spread["ds_utc"] + pd.Timedelta(hours=lag_hours)
-    return spread[["target_ds_utc", column]]
 
 
 def _ordered_existing(columns: list[str], available: Any) -> list[str]:

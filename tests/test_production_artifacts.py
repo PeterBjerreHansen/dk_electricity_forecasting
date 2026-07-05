@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -23,6 +26,9 @@ from dkenergy_forecast.publishing import (
     write_forecast_run_artifacts,
 )
 from dkenergy_forecast.types import add_copenhagen_calendar
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_choose_recent_complete_daily_origins_is_shared_and_bounded() -> None:
@@ -111,6 +117,29 @@ def test_published_prediction_validation_rejects_duplicate_keys() -> None:
         validate_prediction_artifact_schema(duplicated)
 
 
+def test_mixed_family_predictions_with_optional_quantiles_validate() -> None:
+    frame = _predictions().copy()
+    mixed = pd.concat(
+        [
+            frame.assign(model_label="same_hour_last_week", q10=float("nan"), q50=float("nan"), q90=float("nan")),
+            frame.assign(model_label="catboost_price_manual_v1", q10=float("nan"), q50=float("nan"), q90=float("nan")),
+            frame.assign(model_label="chronos_zero_shot_v1"),
+        ],
+        ignore_index=True,
+    )
+
+    published = normalize_published_predictions(mixed)
+    scores = model_score_table(published)
+
+    validate_prediction_artifact_schema(published)
+    validate_model_scores_schema(scores)
+    assert set(published["model_label"]) == {
+        "same_hour_last_week",
+        "catboost_price_manual_v1",
+        "chronos_zero_shot_v1",
+    }
+
+
 def test_future_publish_predictions_preserve_horizon_metadata_without_actuals() -> None:
     panel = _panel(periods=24 * 14)
     origin = panel["ds_utc"].max().normalize() + pd.Timedelta(days=1, hours=10)
@@ -139,23 +168,58 @@ def test_future_publish_predictions_preserve_horizon_metadata_without_actuals() 
     assert published["actual_price"].isna().all()
 
 
-def test_production_registry_defaults_to_baselines_and_registers_weather_catboost() -> None:
+def test_production_registry_defaults_include_manual_catboost_and_optional_chronos(monkeypatch) -> None:
     specs = production_model_specs()
 
     assert default_production_model_labels() == [
         "same_hour_last_week",
-        "rolling_median_local_hour_28d",
         "rolling_median_hour_weekend_56d",
+        "median_weekday_exp_hl4_floor10_42d__median_weekend_exp_hl28_floor20_56d",
+        "catboost_price_manual_v1",
     ]
-    assert "catboost_quantile" in specs
-    assert not specs["catboost_quantile"].default_enabled
-    assert "weather_catboost_all_weather" in specs
-    assert specs["weather_catboost_all_weather"].family == "weather_catboost"
-    assert not specs["weather_catboost_all_weather"].default_enabled
-    assert not specs["weather_catboost_all_weather"].supports_latest_publish
+    assert not specs["rolling_median_local_hour_28d"].default_enabled
+    assert specs["catboost_price_manual_v1"].family == "catboost"
+    assert specs["catboost_price_manual_v1"].required_extra == "catboost"
+    assert specs["catboost_price_manual_v1"].default_enabled
+    assert not specs["catboost_price_manual_v1"].emits_quantiles
+    assert specs["chronos_zero_shot_v1"].family == "chronos"
+    assert specs["chronos_zero_shot_v1"].required_extra == "chronos"
+    assert not specs["chronos_zero_shot_v1"].default_enabled
+    assert specs["chronos_zero_shot_v1"].emits_quantiles
+    assert not any(spec.family == "weather_catboost" for spec in specs.values())
+    monkeypatch.setattr("dkenergy_forecast.models.registry.ensure_catboost_available", lambda: None)
     assert set(latest_publish_model_factories()) == set(default_production_model_labels())
-    with pytest.raises(ValueError, match="not yet wired"):
+    with pytest.raises(ValueError, match="Unknown production model"):
         latest_publish_model_factories(["weather_catboost_all_weather"])
+    monkeypatch.setattr(
+        "dkenergy_forecast.models.registry.ensure_chronos_available",
+        lambda: (_ for _ in ()).throw(ImportError("Install it with chronos")),
+    )
+    with pytest.raises(ImportError, match="chronos"):
+        latest_publish_model_factories(["chronos_zero_shot_v1"])
+
+
+def test_default_publish_models_fail_fast_without_catboost(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "dkenergy_forecast.models.registry.ensure_catboost_available",
+        lambda: (_ for _ in ()).throw(ImportError("Install CatBoost with catboost extra")),
+    )
+
+    with pytest.raises(ImportError, match="CatBoost"):
+        latest_publish_model_factories()
+
+
+def test_publish_model_listing_includes_required_extra_and_quantile_metadata() -> None:
+    result = subprocess.run(
+        [sys.executable, "scripts/run_publish_forecast.py", "--list-models"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "catboost_price_manual_v1: catboost, default, latest-publish, extra=catboost, point" in result.stdout
+    assert "chronos_zero_shot_v1: chronos, optional, latest-publish, extra=chronos, quantiles" in result.stdout
 
 
 def _panel(*, periods: int) -> pd.DataFrame:
@@ -178,7 +242,7 @@ def _predictions() -> pd.DataFrame:
             "forecast_origin_utc": [pd.Timestamp("2024-01-02T10:00:00Z")] * 2,
             "ds_utc": pd.date_range("2024-01-03T00:00:00Z", periods=2, freq="h"),
             "area": ["DK1", "DK1"],
-            "model_label": ["catboost_quantile", "catboost_quantile"],
+            "model_label": ["example_quantile_model", "example_quantile_model"],
             "y": [10.0, 20.0],
             "y_pred": [11.0, 18.0],
             "q10": [8.0, 17.0],

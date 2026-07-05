@@ -3,8 +3,20 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from dkenergy_forecast.models.baselines import LagNaive, SeasonalRollingMedian
-from dkenergy_forecast.models.catboost_quantile import CatBoostQuantileModel
+from dkenergy_forecast.models.baselines import (
+    LagNaive,
+    SeasonalRollingMedian,
+    WeekdayWeekendWeightedMedian,
+)
+from dkenergy_forecast.models.catboost_production import (
+    PRODUCTION_CATBOOST_CONFIG,
+    ProductionCatBoostDayAhead,
+    ensure_catboost_available,
+)
+from dkenergy_forecast.models.chronos_production import (
+    ChronosZeroShotDayAhead,
+    ensure_chronos_available,
+)
 from dkenergy_forecast.types import ForecastModel
 
 
@@ -16,9 +28,20 @@ class ProductionModelSpec:
     supports_latest_publish: bool
     factory: Callable[[], ForecastModel] | None
     description: str
+    required_extra: str | None = None
+    emits_quantiles: bool = False
+    dependency_check: Callable[[], None] | None = None
 
 
 def production_model_specs() -> dict[str, ProductionModelSpec]:
+    return {
+        **baseline_production_model_specs(),
+        **catboost_production_model_specs(),
+        **chronos_production_model_specs(),
+    }
+
+
+def baseline_production_model_specs() -> dict[str, ProductionModelSpec]:
     return {
         "same_hour_last_week": ProductionModelSpec(
             label="same_hour_last_week",
@@ -31,7 +54,7 @@ def production_model_specs() -> dict[str, ProductionModelSpec]:
         "rolling_median_local_hour_28d": ProductionModelSpec(
             label="rolling_median_local_hour_28d",
             family="baseline",
-            default_enabled=True,
+            default_enabled=False,
             supports_latest_publish=True,
             factory=lambda: SeasonalRollingMedian(
                 lookback_days=28,
@@ -52,42 +75,73 @@ def production_model_specs() -> dict[str, ProductionModelSpec]:
             ),
             description="Local-hour/weekend seasonal rolling median over the previous 56 days.",
         ),
-        "catboost_quantile": ProductionModelSpec(
-            label="catboost_quantile",
-            family="catboost_price",
-            default_enabled=False,
+        "median_weekday_exp_hl4_floor10_42d__median_weekend_exp_hl28_floor20_56d": ProductionModelSpec(
+            label="median_weekday_exp_hl4_floor10_42d__median_weekend_exp_hl28_floor20_56d",
+            family="baseline",
+            default_enabled=True,
             supports_latest_publish=True,
-            factory=lambda: CatBoostQuantileModel(),
-            description="Optional EDS-only CatBoost q10/q50/q90 model.",
-        ),
-        "weather_catboost_gfs_global": _weather_catboost_spec(
-            "weather_catboost_gfs_global",
-            "GFS Global weather CatBoost feature-set model.",
-        ),
-        "weather_catboost_icon_eu": _weather_catboost_spec(
-            "weather_catboost_icon_eu",
-            "ICON-EU weather CatBoost feature-set model.",
-        ),
-        "weather_catboost_metno_nordic": _weather_catboost_spec(
-            "weather_catboost_metno_nordic",
-            "MET Norway Nordic weather CatBoost feature-set model.",
-        ),
-        "weather_catboost_all_weather": _weather_catboost_spec(
-            "weather_catboost_all_weather",
-            "All raw Open-Meteo weather feature CatBoost model.",
-        ),
-        "weather_catboost_ensemble": _weather_catboost_spec(
-            "weather_catboost_ensemble",
-            "Cross-provider weather ensemble summary CatBoost model.",
+            factory=lambda: WeekdayWeekendWeightedMedian(
+                weekday_lookback_days=42,
+                weekday_half_life_days=4,
+                weekday_floor=0.10,
+                weekend_lookback_days=56,
+                weekend_half_life_days=28,
+                weekend_floor=0.20,
+                seasonal_keys=("local_hour", "is_weekend"),
+                min_periods=4,
+            ),
+            description=(
+                "Weekday/weekend weighted median baseline: weekday "
+                "42d half-life 4d floor 10%, weekend 56d half-life 28d floor 20%."
+            ),
         ),
     }
 
 
-def baseline_model_factories() -> dict[str, Callable[[], ForecastModel]]:
+def catboost_production_model_specs() -> dict[str, ProductionModelSpec]:
+    return {
+        "catboost_price_manual_v1": ProductionModelSpec(
+            label="catboost_price_manual_v1",
+            family="catboost",
+            default_enabled=True,
+            supports_latest_publish=True,
+            factory=lambda: ProductionCatBoostDayAhead(PRODUCTION_CATBOOST_CONFIG),
+            description=(
+                "Manually selected fixed-parameter CatBoost day-ahead price model "
+                f"({PRODUCTION_CATBOOST_CONFIG.feature_set}, "
+                f"{PRODUCTION_CATBOOST_CONFIG.target_mode}, "
+                f"{PRODUCTION_CATBOOST_CONFIG.training_origin_days}d training window)."
+            ),
+            required_extra="catboost",
+            emits_quantiles=False,
+            dependency_check=ensure_catboost_available,
+        ),
+    }
+
+
+def chronos_production_model_specs() -> dict[str, ProductionModelSpec]:
+    return {
+        "chronos_zero_shot_v1": ProductionModelSpec(
+            label="chronos_zero_shot_v1",
+            family="chronos",
+            default_enabled=False,
+            supports_latest_publish=True,
+            factory=lambda: ChronosZeroShotDayAhead(),
+            description="Chronos zero-shot day-ahead probabilistic forecast.",
+            required_extra="chronos",
+            emits_quantiles=True,
+            dependency_check=ensure_chronos_available,
+        ),
+    }
+
+
+def baseline_model_factories(*, include_optional: bool = False) -> dict[str, Callable[[], ForecastModel]]:
     return {
         label: spec.factory
         for label, spec in production_model_specs().items()
-        if spec.family == "baseline" and spec.factory is not None
+        if spec.family == "baseline"
+        and spec.factory is not None
+        and (include_optional or spec.default_enabled)
     }
 
 
@@ -123,15 +177,9 @@ def latest_publish_model_factories(
             f"{unsupported}. Run their backtest scripts or add a publish adapter first."
         )
 
+    for label in selected:
+        dependency_check = specs[label].dependency_check
+        if dependency_check is not None:
+            dependency_check()
+
     return {label: specs[label].factory for label in selected if specs[label].factory is not None}
-
-
-def _weather_catboost_spec(label: str, description: str) -> ProductionModelSpec:
-    return ProductionModelSpec(
-        label=label,
-        family="weather_catboost",
-        default_enabled=False,
-        supports_latest_publish=False,
-        factory=None,
-        description=description,
-    )

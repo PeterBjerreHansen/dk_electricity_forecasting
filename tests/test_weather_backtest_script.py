@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-
 import pandas as pd
+import pytest
+
+from dkenergy_forecast.features import tabular_feature_columns_for_set
+from dkenergy_forecast.tuning.catboost_validation import target_values
 
 
-def test_weather_feature_backtest_skips_missing_weather_groups() -> None:
-    module = _load_script_module()
+def test_weather_feature_sets_skip_missing_weather_groups() -> None:
     frame = pd.DataFrame(
         {
             "area": ["DK1"],
@@ -17,21 +17,29 @@ def test_weather_feature_backtest_skips_missing_weather_groups() -> None:
         }
     )
 
-    assert module.feature_columns_for_set(frame, "price_only") == ["area", "local_hour"]
-    assert module.feature_columns_for_set(frame, "gfs_global") == [
+    assert tabular_feature_columns_for_set(frame, "price_full_engineered") == ["area", "local_hour"]
+    assert tabular_feature_columns_for_set(frame, "all_weather") == [
         "area",
         "local_hour",
         "weather_gfs_global_lead1d_temperature_2m",
     ]
-    assert module.feature_columns_for_set(frame, "icon_eu") == []
-    assert module.feature_columns_for_set(frame, "ensemble") == []
+    assert tabular_feature_columns_for_set(frame, "ensemble") == []
+    with pytest.raises(ValueError, match="Unknown CatBoost feature set"):
+        tabular_feature_columns_for_set(frame, "gfs_global")
 
 
-def _load_script_module():
-    path = Path(__file__).resolve().parents[1] / "scripts" / "run_weather_feature_backtest.py"
-    spec = importlib.util.spec_from_file_location("run_weather_feature_backtest", path)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def test_weather_catboost_residual_target_values() -> None:
+    frame = pd.DataFrame(
+        {
+            "y": [10.0, 20.0],
+            "baseline_wdwe_weighted_median_y_pred": [7.0, 15.0],
+        }
+    )
+
+    target = target_values(
+        frame,
+        target_mode="residual_baseline",
+        residual_baseline_column="baseline_wdwe_weighted_median_y_pred",
+    )
+
+    assert target.tolist() == [3.0, 5.0]

@@ -120,8 +120,19 @@ def load_raw_batches(raw_root: Path, dataset: str) -> list[RawBatch]:
 def normalize_batches(
     batches: Iterable[RawBatch],
     allowed_areas: Iterable[str] = ALLOWED_AREAS,
+    start_local: date | None = None,
+    end_local: date | None = None,
 ) -> pd.DataFrame:
-    frames = [normalize_records(batch, allowed_areas=allowed_areas) for batch in batches]
+    frames = [
+        normalize_records(
+            batch,
+            allowed_areas=allowed_areas,
+            start_local=start_local,
+            end_local=end_local,
+        )
+        for batch in batches
+    ]
+    frames = [frame for frame in frames if not frame.empty]
     if not frames:
         return _empty_normalized_frame()
 
@@ -132,6 +143,8 @@ def normalize_batches(
 def normalize_records(
     batch: RawBatch,
     allowed_areas: Iterable[str] = ALLOWED_AREAS,
+    start_local: date | None = None,
+    end_local: date | None = None,
 ) -> pd.DataFrame:
     if batch.source_dataset not in SOURCE_SPECS:
         raise ValueError(f"Unsupported EDS source dataset: {batch.source_dataset}")
@@ -141,6 +154,13 @@ def normalize_records(
     rows: list[dict[str, Any]] = []
 
     for index, record in enumerate(batch.records):
+        if not _record_in_local_range(
+            record,
+            spec,
+            start_local=start_local,
+            end_local=end_local,
+        ):
+            continue
         _validate_record(record, spec, batch.source_dataset, index)
         area = str(record[spec.area_column])
         if area not in allowed_area_set:
@@ -286,9 +306,24 @@ def build_price_panel_from_raw(
             "DayAheadPrices": day_ahead_batches,
         }
     )
-
-    elspot_normalized = normalize_batches(elspot_batches)
-    day_ahead_normalized = normalize_batches(day_ahead_batches)
+    elspot_normalized = normalize_batches(
+        elspot_batches,
+        start_local=start_local,
+        end_local=end_local,
+    )
+    day_ahead_normalized = normalize_batches(
+        day_ahead_batches,
+        start_local=start_local,
+        end_local=end_local,
+    )
+    if required_areas is not None:
+        selected_area_set = set(required_areas)
+        elspot_normalized = elspot_normalized[
+            elspot_normalized["area"].isin(selected_area_set)
+        ].reset_index(drop=True)
+        day_ahead_normalized = day_ahead_normalized[
+            day_ahead_normalized["area"].isin(selected_area_set)
+        ].reset_index(drop=True)
 
     normalized_dir.mkdir(parents=True, exist_ok=True)
     normalized_paths = {
@@ -823,6 +858,35 @@ def _verify_manifest_hashes(raw_path: Path, entry: dict[str, Any]) -> None:
             "Raw EDS file hash does not match manifest for "
             f"{raw_path}: expected {expected}, got {actual}"
         )
+
+
+def _record_in_local_range(
+    record: dict[str, Any],
+    spec: SourceSpec,
+    *,
+    start_local: date | None,
+    end_local: date | None,
+) -> bool:
+    if start_local is None and end_local is None:
+        return True
+
+    local_value = record.get(spec.local_time_column)
+    if local_value is None:
+        return True
+
+    try:
+        local_date = pd.Timestamp(local_value).date()
+    except ValueError as exc:
+        raise ValueError(
+            f"Could not parse source local timestamp {local_value!r} "
+            f"for {spec.dataset}"
+        ) from exc
+
+    if start_local is not None and local_date < start_local:
+        return False
+    if end_local is not None and local_date >= end_local:
+        return False
+    return True
 
 
 def _validate_record(record: dict[str, Any], spec: SourceSpec, dataset: str, index: int) -> None:

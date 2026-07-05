@@ -87,6 +87,8 @@ data/raw/open_meteo/manifest.jsonl
 
 Each manifest row includes request parameters, retrieval time, HTTP status,
 response hash, saved-file hash, row count, model id, location id, and raw path.
+Repeated raw batches for the same logical forecast row are deduplicated during
+normalization when values match; conflicting repeats fail the build.
 
 ## Coordinate Basket
 
@@ -224,16 +226,25 @@ Build normalized and area-hourly weather features:
 python scripts/build_open_meteo_weather_features.py
 ```
 
-Build an availability-masked price plus weather experiment frame:
+Build availability-masked price plus weather modeling frames only when you are
+doing weather model development or backtests:
 
 ```bash
-python scripts/build_weather_experiment_frame.py
+python scripts/build_weather_backtest_frame.py --frame-kind recent
+python scripts/build_weather_backtest_frame.py --frame-kind backtest
 ```
 
-Run the optional CatBoost weather ablation after installing CatBoost:
+The recent frame is a short diagnostic artifact. The backtest frame uses the
+default offline comparison window. For a 730-day frame, use `--frame-kind custom
+--days 730 --output-path ...`; that larger build is intentionally explicit.
+Neither frame is a live forecast publishing artifact.
+
+Explore weather-enhanced CatBoost models from the modeling notebook after
+installing the optional tuning dependencies:
 
 ```bash
-python scripts/run_weather_feature_backtest.py
+pip install -e ".[tuning,notebooks]"
+jupyter notebook notebooks/05_catboost_model_development.ipynb
 ```
 
 ## QA Expectations

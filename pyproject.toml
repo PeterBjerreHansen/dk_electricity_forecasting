@@ -10,13 +10,34 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+app = [
+  "streamlit>=1.35",
+]
 notebooks = [
   "jupyter>=1.0",
   "matplotlib>=3.7",
   "seaborn>=0.12",
 ]
+dev = [
+  "pytest>=8.0",
+]
 catboost = [
   "catboost>=1.2",
+]
+tuning = [
+  "catboost>=1.2",
+  "optuna>=4.0",
+]
+chronos = [
+  "chronos-forecasting>=1.5",
+]
+lightgbm = [
+  "lightgbm>=4.0",
+]
+boosting = [
+  "catboost>=1.2",
+  "lightgbm>=4.0",
+  "optuna>=4.0",
 ]
 
 [tool.pytest.ini_options]

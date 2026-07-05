@@ -73,14 +73,20 @@ NORMALIZED_COLUMNS = [
     "source_provider",
     "source_product",
     "weather_model",
+    "model",
     "lead_time_days",
+    "lead_time_hours",
     "location_id",
     "area",
+    "price_area",
     "latitude",
     "longitude",
     "valid_time_utc",
+    "valid_time",
     "forecast_available_at_utc",
+    "forecast_reference_time",
     "parameter_id",
+    "variable",
     "value",
     "unit",
     "raw_batch_id",
@@ -89,10 +95,15 @@ NORMALIZED_COLUMNS = [
 
 AREA_FEATURE_LONG_COLUMNS = [
     "area",
+    "price_area",
     "ds_utc",
+    "valid_time",
     "weather_model",
+    "model",
     "lead_time_days",
+    "lead_time_hours",
     "parameter_id",
+    "variable",
     "feature_name",
     "value",
     "unit",
@@ -103,6 +114,7 @@ AREA_FEATURE_LONG_COLUMNS = [
     "feature_window_coverage_ratio",
     "feature_group_pass",
     "forecast_available_at_utc",
+    "forecast_reference_time",
     "dataset_version",
 ]
 
@@ -141,7 +153,8 @@ def normalize_batches(
     ]
     if not frames:
         return _empty_normalized_frame()
-    return pd.concat(frames, ignore_index=True)[NORMALIZED_COLUMNS]
+    normalized = pd.concat(frames, ignore_index=True)[NORMALIZED_COLUMNS]
+    return deduplicate_normalized(normalized)
 
 
 def normalize_batch(
@@ -181,14 +194,20 @@ def normalize_batch(
                     "source_provider": SOURCE_PROVIDER,
                     "source_product": SOURCE_PRODUCT,
                     "weather_model": batch.weather_model,
+                    "model": batch.weather_model,
                     "lead_time_days": int(lead_day),
+                    "lead_time_hours": int(lead_day) * 24,
                     "location_id": batch.location_id,
                     "area": location.area,
+                    "price_area": location.area,
                     "latitude": location.latitude,
                     "longitude": location.longitude,
                     "valid_time_utc": valid_time,
+                    "valid_time": valid_time,
                     "forecast_available_at_utc": valid_time - pd.Timedelta(days=int(lead_day)),
+                    "forecast_reference_time": valid_time - pd.Timedelta(days=int(lead_day)),
                     "parameter_id": variable,
+                    "variable": variable,
                     "value": pd.to_numeric(pd.Series(values, dtype="object"), errors="coerce"),
                     "unit": units.get(raw_key),
                     "raw_batch_id": batch.batch_id,
@@ -200,6 +219,55 @@ def normalize_batch(
     if not rows:
         return _empty_normalized_frame()
     return pd.concat(rows, ignore_index=True)[NORMALIZED_COLUMNS]
+
+
+def deduplicate_normalized(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return _empty_normalized_frame()
+
+    key_cols = [
+        "source_provider",
+        "source_product",
+        "weather_model",
+        "location_id",
+        "valid_time_utc",
+        "lead_time_days",
+        "parameter_id",
+    ]
+    value_cols = [
+        column
+        for column in NORMALIZED_COLUMNS
+        if column not in {*key_cols, "raw_batch_id", "retrieved_at_utc"}
+    ]
+    conflicts: list[str] = []
+
+    for key, group in frame.groupby(key_cols, dropna=False):
+        if len(group) <= 1:
+            continue
+        for column in value_cols:
+            if group[column].nunique(dropna=False) > 1:
+                conflicts.append(f"{key} differs on {column}")
+
+    if conflicts:
+        sample = "; ".join(conflicts[:5])
+        raise ValueError(f"Conflicting duplicate normalized Open-Meteo rows: {sample}")
+
+    deduped = (
+        frame.sort_values(
+            [
+                "weather_model",
+                "location_id",
+                "valid_time_utc",
+                "lead_time_days",
+                "parameter_id",
+                "retrieved_at_utc",
+                "raw_batch_id",
+            ]
+        )
+        .drop_duplicates(key_cols, keep="last")
+        .reset_index(drop=True)
+    )
+    return deduped[NORMALIZED_COLUMNS]
 
 
 def build_area_feature_long(
@@ -280,6 +348,12 @@ def build_area_feature_long(
         ),
         axis=1,
     )
+    grouped["price_area"] = grouped["area"]
+    grouped["valid_time"] = grouped["ds_utc"]
+    grouped["model"] = grouped["weather_model"]
+    grouped["lead_time_hours"] = grouped["lead_time_days"].astype("int16") * 24
+    grouped["variable"] = grouped["parameter_id"]
+    grouped["forecast_reference_time"] = grouped["forecast_available_at_utc"]
     grouped["dataset_version"] = dataset_version
     return grouped[AREA_FEATURE_LONG_COLUMNS].sort_values(
         ["area", "ds_utc", "weather_model", "lead_time_days", "parameter_id"]
@@ -528,14 +602,18 @@ def _verify_manifest_hashes(raw_path: Path, entry: dict[str, Any]) -> None:
 def _empty_normalized_frame() -> pd.DataFrame:
     frame = pd.DataFrame(columns=NORMALIZED_COLUMNS)
     frame["valid_time_utc"] = pd.to_datetime(frame["valid_time_utc"], utc=True)
+    frame["valid_time"] = pd.to_datetime(frame["valid_time"], utc=True)
     frame["forecast_available_at_utc"] = pd.to_datetime(frame["forecast_available_at_utc"], utc=True)
+    frame["forecast_reference_time"] = pd.to_datetime(frame["forecast_reference_time"], utc=True)
     return frame
 
 
 def _empty_area_feature_long_frame() -> pd.DataFrame:
     frame = pd.DataFrame(columns=AREA_FEATURE_LONG_COLUMNS)
     frame["ds_utc"] = pd.to_datetime(frame["ds_utc"], utc=True)
+    frame["valid_time"] = pd.to_datetime(frame["valid_time"], utc=True)
     frame["forecast_available_at_utc"] = pd.to_datetime(frame["forecast_available_at_utc"], utc=True)
+    frame["forecast_reference_time"] = pd.to_datetime(frame["forecast_reference_time"], utc=True)
     return frame
 
 

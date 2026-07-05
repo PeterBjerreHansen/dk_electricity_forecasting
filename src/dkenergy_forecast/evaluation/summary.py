@@ -11,7 +11,6 @@ from dkenergy_forecast.evaluation.probabilistic_metrics import (
     interval_coverage,
     pinball_loss,
 )
-from dkenergy_forecast.evaluation.value_metrics import cheapest_k_hit_rate
 from dkenergy_forecast.types import require_columns
 
 
@@ -123,16 +122,6 @@ def probabilistic_metric_table(
             ]
         )
     return pd.DataFrame(rows)
-
-
-def cheapest_k_table(predictions: pd.DataFrame, *, k: int) -> pd.DataFrame:
-    frames = []
-    require_columns(predictions, ["model_label"], "predictions")
-    for model_label, frame in predictions.groupby("model_label", dropna=False):
-        values = cheapest_k_hit_rate(frame, k=k)
-        values["model_label"] = model_label
-        frames.append(values)
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
 def _coverage_or_nan(frame: pd.DataFrame) -> float:
