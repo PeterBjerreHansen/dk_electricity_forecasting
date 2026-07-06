@@ -11,7 +11,7 @@ Streamlit dashboard.
 ## Setup
 
 ```bash
-python -m pip install -e ".[dev,app,catboost,chronos]"
+python -m pip install -e ".[dev,app,chronos]"
 cp .env.example .env
 python -m pytest
 ```
@@ -22,6 +22,7 @@ Optional modeling extras:
 ```bash
 python -m pip install -e ".[tuning]"
 python -m pip install -e ".[notebooks]"
+python -m pip install -e ".[catboost]"
 ```
 
 The default workflow is file based and writes ignored runtime artifacts under
@@ -100,8 +101,7 @@ python scripts/run_publish_forecast.py --allow-incomplete-panel
 The default latest-forecast set is:
 `same_hour_last_week`, `rolling_median_hour_weekend_56d`, and
 `median_weekday_exp_hl4_floor10_42d__median_weekend_exp_hl28_floor20_56d`,
-plus the manually selected `catboost_price_manual_v1` adapter and
-`chronos2_lora_calendar_weather_ctx1024_v1`.
+plus `chronos2_lora_calendar_weather_ctx1024_v1`.
 
 The Chronos production model loads a manually exported LoRA artifact from
 `artifacts/models/chronos2_lora_calendar_weather_ctx1024_v1/`, consumes the
@@ -147,11 +147,9 @@ model instead consumes the long Open-Meteo feature parquet directly. Larger
 windows are explicit, for
 example `--frame-kind custom --days 730 --output-path data/features/weather_experiment_frame_backtest_730d.parquet`.
 
-CatBoost development remains notebook-first, but production has one fixed
-adapter: `catboost_price_manual_v1`. It has source-code parameters, no Optuna,
-and builds leakage-safe price features internally. Notebook 05 can motivate a
-new policy, but promotion is manual: edit the registry/config, run a smoke
-publish, and commit the change.
+CatBoost development remains notebook-first. A fixed adapter,
+`catboost_price_manual_v1`, remains registered for explicit smoke publishes,
+but it is not part of the default latest-forecast set.
 
 ## Evaluation
 
@@ -244,8 +242,8 @@ docker compose --profile jobs run --rm pipeline
 
 The Compose services mount local `data/`, `results/`, `artifacts/`, and
 `app_data/` directories so runs survive container restarts. The image installs
-the dashboard plus production CatBoost and Chronos extras because both model
-families are part of the default publish registry.
+the dashboard plus the production Chronos extra used by the default publish
+registry.
 
 ## CI
 

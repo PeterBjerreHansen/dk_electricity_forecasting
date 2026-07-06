@@ -108,7 +108,7 @@ def catboost_production_model_specs() -> dict[str, ProductionModelSpec]:
         "catboost_price_manual_v1": ProductionModelSpec(
             label="catboost_price_manual_v1",
             family="catboost",
-            default_enabled=True,
+            default_enabled=False,
             supports_latest_publish=True,
             factory=lambda: ProductionCatBoostDayAhead(PRODUCTION_CATBOOST_CONFIG),
             description=(

@@ -195,6 +195,47 @@ def test_conflicting_duplicate_normalized_rows_fail() -> None:
         normalize_batches(batches)
 
 
+def test_overlapping_raw_batches_keep_latest_retrieved_price_revision() -> None:
+    batches = [
+        RawBatch(
+            source_dataset="DayAheadPrices",
+            batch_id="old",
+            retrieved_at_utc="2026-07-03T11:33:27+00:00",
+            raw_path=None,  # type: ignore[arg-type]
+            records=[
+                {
+                    "TimeUTC": "2026-07-02T22:00:00",
+                    "TimeDK": "2026-07-03T00:00:00",
+                    "PriceArea": "DK1",
+                    "DayAheadPriceDKK": 448.407268,
+                    "DayAheadPriceEUR": 59.990002,
+                },
+            ],
+        ),
+        RawBatch(
+            source_dataset="DayAheadPrices",
+            batch_id="new",
+            retrieved_at_utc="2026-07-06T16:55:06+00:00",
+            raw_path=None,  # type: ignore[arg-type]
+            records=[
+                {
+                    "TimeUTC": "2026-07-02T22:00:00",
+                    "TimeDK": "2026-07-03T00:00:00",
+                    "PriceArea": "DK1",
+                    "DayAheadPriceDKK": 448.401269,
+                    "DayAheadPriceEUR": 59.990002,
+                },
+            ],
+        ),
+    ]
+
+    normalized = normalize_batches(batches)
+
+    assert len(normalized) == 1
+    assert normalized.loc[0, "price_dkk_per_mwh"] == pytest.approx(448.401269)
+    assert normalized.loc[0, "raw_batch_id"] == "new"
+
+
 def test_build_price_panel_from_raw_writes_parquet_and_qa(tmp_path) -> None:
     raw_root = tmp_path / "raw" / "energi_data_service"
     raw_path = (
