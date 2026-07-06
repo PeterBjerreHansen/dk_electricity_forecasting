@@ -148,13 +148,18 @@ actuals are joined only after predictions are produced. Tests cover UTC/local
 alignment, DST day lengths, weather forecast availability masking, and leakage
 prevention.
 
-Backtest outputs include:
+Backtest outputs use compact ignored run folders. Notebook runs default to
+summary or diagnostic artifacts; use the audit level only when you need a full
+debug trail.
 
 ```text
-results/<run>/predictions.parquet
-results/<run>/model_scores.parquet
-results/<run>/metrics.parquet
 results/<run>/run_manifest.json
+results/<run>/model_scores.parquet
+results/<run>/policy_scores.parquet              # CatBoost policy notebooks
+results/<run>/final_policy_selections.parquet    # CatBoost policy notebooks
+results/<run>/predictions.parquet                # diagnostic notebook output
+results/<run>/tuning_trials.jsonl                # CatBoost Optuna trials
+results/<run>/experiment_runs.jsonl              # Chronos experiment log
 ```
 
 Metrics include MAE, RMSE, bias, and optional quantile interval coverage/width.

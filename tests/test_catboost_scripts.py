@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 
 from dkenergy_forecast.tuning.catboost_validation import (
     CatBoostCandidateSpec,
     CatBoostValidationConfig,
+    CatBoostValidationResult,
     drop_unusable_target_rows,
     make_retune_month_blocks,
     per_origin_delta_table,
@@ -13,6 +16,7 @@ from dkenergy_forecast.tuning.catboost_validation import (
     scheduled_retrain_origins,
     target_values,
     training_rows_for_origin,
+    write_catboost_validation_artifacts,
 )
 
 
@@ -37,6 +41,96 @@ def test_prepare_nested_frame_adds_outer_month_labels() -> None:
 
     assert prepared["outer_month"].tolist() == ["2024-03", "2024-04"]
     assert str(prepared["forecast_origin_utc"].dtype) == "datetime64[ns, UTC]"
+
+
+def test_catboost_artifact_writer_uses_compact_levels_and_jsonl_trials(tmp_path) -> None:
+    origin = pd.Timestamp("2026-06-01T10:00:00Z")
+    trials = pd.DataFrame(
+        [
+            {
+                "number": 0,
+                "state": "COMPLETE",
+                "value": 12.5,
+                "param_depth": 3,
+                "param_learning_rate": 0.05,
+                "user_train_rows": 1000,
+            }
+        ]
+    )
+    candidate_scores = pd.DataFrame(
+        [
+            {
+                "family": "price",
+                "policy_label": "smoke_policy",
+                "validation_block": "2026-06",
+                "retune_at_utc": origin,
+                "candidate_label": "price_baseline_calendar__residual_baseline",
+                "feature_set": "price_baseline_calendar",
+                "target_mode": "residual_baseline",
+                "search_profile": "conservative",
+                "recency_label": "exp_hl180",
+                "sample_weight_half_life_days": 180.0,
+                "sample_weight_floor": None,
+                "feature_count": 8,
+                "status": "ok",
+                "tuning_mae": 12.5,
+                "trials": trials,
+            }
+        ]
+    )
+    predictions = pd.DataFrame(
+        [
+            {
+                "forecast_origin_utc": origin,
+                "ds_utc": pd.Timestamp("2026-06-02T00:00:00Z"),
+                "area": "DK1",
+                "y": 20.0,
+                "y_pred": 21.0,
+                "model_label": "catboost__candidate",
+                "selected_by_tuning": True,
+            }
+        ]
+    )
+    scores = pd.DataFrame({"model_label": ["catboost__candidate"], "area": ["ALL"], "mae": [1.0]})
+    result = CatBoostValidationResult(
+        candidate_tuning_scores=candidate_scores,
+        selected_validation_configs=candidate_scores.copy(),
+        catboost_predictions=predictions,
+        catboost_replay_metadata=pd.DataFrame({"forecast_origin_utc": [origin]}),
+        feature_importance=pd.DataFrame({"feature": ["x"], "importance": [1.0]}),
+        combined_model_scores=scores,
+        outer_month_model_scores=scores.assign(outer_month="2026-06"),
+        per_origin_model_scores=scores.assign(forecast_origin_utc=origin),
+        per_origin_deltas=pd.DataFrame({"forecast_origin_utc": [origin], "catboost_minus_best_baseline_mae": [0.0]}),
+    )
+
+    summary_dir = tmp_path / "summary"
+    write_catboost_validation_artifacts(summary_dir, result, artifact_level="summary")
+
+    assert (summary_dir / "candidate_tuning_scores.parquet").exists()
+    assert (summary_dir / "selected_configs.parquet").exists()
+    assert (summary_dir / "model_scores.parquet").exists()
+    assert not (summary_dir / "selected_predictions.parquet").exists()
+    assert not (summary_dir / "tuning_trials.jsonl").exists()
+
+    diagnostic_dir = tmp_path / "diagnostic"
+    write_catboost_validation_artifacts(diagnostic_dir, result, artifact_level="diagnostic")
+
+    assert (diagnostic_dir / "selected_predictions.parquet").exists()
+    assert (diagnostic_dir / "tuning_trials.jsonl").exists()
+    assert not (diagnostic_dir / "tuning").exists()
+    assert not (diagnostic_dir / "all_predictions.parquet").exists()
+    assert not (diagnostic_dir / "replay_metadata.parquet").exists()
+    trial_record = json.loads((diagnostic_dir / "tuning_trials.jsonl").read_text(encoding="utf-8").strip())
+    assert trial_record["policy_label"] == "smoke_policy"
+    assert trial_record["params"] == {"depth": 3, "learning_rate": 0.05}
+    assert trial_record["user_attrs"] == {"train_rows": 1000}
+
+    audit_dir = tmp_path / "audit"
+    write_catboost_validation_artifacts(audit_dir, result, artifact_level="audit")
+
+    assert (audit_dir / "all_predictions.parquet").exists()
+    assert (audit_dir / "replay_metadata.parquet").exists()
 
 
 def test_catboost_validation_retune_blocks_default_to_six_month_steps() -> None:

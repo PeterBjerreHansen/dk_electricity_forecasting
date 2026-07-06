@@ -4,7 +4,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 import pandas as pd
 
@@ -96,6 +96,8 @@ class CatBoostValidationResult:
     per_origin_deltas: pd.DataFrame
 
 ProgressFn = Callable[[str], None]
+CatBoostArtifactLevel = Literal["summary", "diagnostic", "audit"]
+CATBOOST_ARTIFACT_LEVELS: tuple[CatBoostArtifactLevel, ...] = ("summary", "diagnostic", "audit")
 
 
 def build_candidate_grid(
@@ -795,43 +797,132 @@ def write_catboost_validation_artifacts(
     result: CatBoostValidationResult,
     *,
     manifest: dict[str, Any] | None = None,
+    artifact_level: CatBoostArtifactLevel = "diagnostic",
 ) -> None:
+    if artifact_level not in CATBOOST_ARTIFACT_LEVELS:
+        raise ValueError(f"artifact_level must be one of {CATBOOST_ARTIFACT_LEVELS}; got {artifact_level!r}")
+
     output_dir.mkdir(parents=True, exist_ok=True)
     parquet_safe_frame(result.candidate_tuning_scores).to_parquet(
         output_dir / "candidate_tuning_scores.parquet",
         index=False,
     )
     parquet_safe_frame(result.selected_validation_configs).to_parquet(
-        output_dir / "selected_validation_configs.parquet",
+        output_dir / "selected_configs.parquet",
         index=False,
     )
-    parquet_safe_frame(result.catboost_replay_metadata).to_parquet(
-        output_dir / "catboost_replay_metadata.parquet",
-        index=False,
-    )
-    result.catboost_predictions.to_parquet(output_dir / "catboost_predictions.parquet", index=False)
-    result.feature_importance.to_parquet(output_dir / "feature_importance.parquet", index=False)
-    result.combined_model_scores.to_parquet(output_dir / "combined_model_scores.parquet", index=False)
-    result.outer_month_model_scores.to_parquet(output_dir / "outer_month_model_scores.parquet", index=False)
-    result.per_origin_model_scores.to_parquet(output_dir / "per_origin_model_scores.parquet", index=False)
-    result.per_origin_deltas.to_parquet(output_dir / "per_origin_deltas.parquet", index=False)
-    for row in result.candidate_tuning_scores.to_dict(orient="records"):
-        trials = row.get("trials")
-        if not isinstance(trials, pd.DataFrame):
-            continue
-        artifact_dir = (
-            output_dir
-            / "tuning"
-            / str(row["validation_block"])
-            / safe_label(str(row["candidate_label"]))
+    result.combined_model_scores.to_parquet(output_dir / "model_scores.parquet", index=False)
+    result.outer_month_model_scores.to_parquet(output_dir / "outer_month_scores.parquet", index=False)
+
+    if artifact_level in {"diagnostic", "audit"}:
+        selected_predictions = result.catboost_predictions[
+            result.catboost_predictions.get("selected_by_tuning", pd.Series(False, index=result.catboost_predictions.index))
+            .fillna(False)
+            .astype(bool)
+        ].copy()
+        selected_predictions.to_parquet(output_dir / "selected_predictions.parquet", index=False)
+        result.feature_importance.to_parquet(output_dir / "feature_importance.parquet", index=False)
+        result.per_origin_model_scores.to_parquet(output_dir / "per_origin_scores.parquet", index=False)
+        result.per_origin_deltas.to_parquet(output_dir / "per_origin_deltas.parquet", index=False)
+        write_tuning_trials_jsonl(
+            output_dir / "tuning_trials.jsonl",
+            result.candidate_tuning_scores,
         )
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        trials.to_parquet(artifact_dir / "trials.parquet", index=False)
+
+    if artifact_level == "audit":
+        parquet_safe_frame(result.catboost_replay_metadata).to_parquet(
+            output_dir / "replay_metadata.parquet",
+            index=False,
+        )
+        result.catboost_predictions.to_parquet(output_dir / "all_predictions.parquet", index=False)
+
     if manifest is not None:
         (output_dir / "run_manifest.json").write_text(
             json_safe_json(manifest),
             encoding="utf-8",
         )
+
+
+def write_tuning_trials_jsonl(path: Path, candidate_tuning_scores: pd.DataFrame) -> None:
+    """Write nested Optuna trial frames as one line-delimited JSON log."""
+
+    records = list(tuning_trial_records(candidate_tuning_scores))
+    if not records:
+        path.write_text("", encoding="utf-8")
+        return
+    lines = [
+        json.dumps(json_safe(record), sort_keys=True, allow_nan=False)
+        for record in records
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def tuning_trial_records(candidate_tuning_scores: pd.DataFrame) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    metadata_columns = [
+        "family",
+        "policy_label",
+        "validation_block",
+        "validation_months",
+        "retune_at_utc",
+        "candidate_label",
+        "feature_set",
+        "target_mode",
+        "search_profile",
+        "recency_label",
+        "sample_weight_half_life_days",
+        "sample_weight_floor",
+        "feature_count",
+        "status",
+    ]
+    for candidate_row in candidate_tuning_scores.to_dict(orient="records"):
+        trials = candidate_row.get("trials")
+        if not isinstance(trials, pd.DataFrame) or trials.empty:
+            continue
+        base = {
+            column: jsonl_value(candidate_row.get(column))
+            for column in metadata_columns
+            if column in candidate_row
+        }
+        for trial_row in trials.to_dict(orient="records"):
+            params = {
+                key.removeprefix("param_"): jsonl_value(value)
+                for key, value in trial_row.items()
+                if key.startswith("param_") and jsonl_value(value) is not None
+            }
+            user_attrs = {
+                key.removeprefix("user_"): jsonl_value(value)
+                for key, value in trial_row.items()
+                if key.startswith("user_") and jsonl_value(value) is not None
+            }
+            records.append(
+                {
+                    **base,
+                    "trial_number": jsonl_value(trial_row.get("number")),
+                    "state": jsonl_value(trial_row.get("state")),
+                    "value": jsonl_value(trial_row.get("value")),
+                    "params": params,
+                    "user_attrs": user_attrs,
+                }
+            )
+    return records
+
+
+def jsonl_value(value: Any) -> Any:
+    if value is None or value is pd.NA:
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    try:
+        missing = pd.isna(value)
+    except (TypeError, ValueError):
+        missing = False
+    try:
+        if bool(missing):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
 
 
 def parquet_safe_frame(frame: pd.DataFrame) -> pd.DataFrame:
