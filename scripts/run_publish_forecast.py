@@ -93,6 +93,7 @@ def main() -> None:
     run_dir = Path(args.artifact_root) / run_id
     artifact_paths = {
         "predictions": str(run_dir / "predictions.parquet"),
+        "score_predictions": str(run_dir / "score_predictions.parquet"),
         "model_scores": str(run_dir / "model_scores.parquet"),
         "manifest": str(run_dir / "manifest.json"),
         "dashboard": str(run_dir / "forecast_dashboard.json"),
@@ -113,6 +114,7 @@ def main() -> None:
             "score_origin_min_utc": score_origins["forecast_origin_utc"].min(),
             "score_origin_max_utc": score_origins["forecast_origin_utc"].max(),
             "score_origin_count": int(len(score_origins)),
+            "score_prediction_row_count": int(len(score_predictions)),
             "score_days": int(args.score_days),
             "score_max_origins": int(args.score_max_origins),
             "score_holdout_days": int(args.score_holdout_days),
@@ -126,6 +128,7 @@ def main() -> None:
         predictions=predictions,
         scores=scores,
         manifest=manifest,
+        score_predictions=score_predictions,
     )
 
     written = write_forecast_run_artifacts(
@@ -133,6 +136,7 @@ def main() -> None:
         predictions=predictions,
         scores=scores,
         manifest=manifest,
+        score_predictions=score_predictions,
         dashboard=dashboard,
     )
     latest = update_latest_exports(
@@ -143,6 +147,7 @@ def main() -> None:
         scores=scores,
         manifest=manifest,
         dashboard=dashboard,
+        score_predictions=score_predictions,
     )
 
     print(f"Published forecast run: {run_id}")

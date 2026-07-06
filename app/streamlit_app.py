@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PANEL_PATH = ROOT / "data" / "model_ready" / "price_panel_hourly_v1.parquet"
 DEFAULT_DASHBOARD_JSON = ROOT / "app_data" / "forecast_dashboard.json"
 DEFAULT_LATEST_PREDICTIONS = ROOT / "results" / "latest_forecast" / "predictions.parquet"
+DEFAULT_RECENT_PREDICTIONS = ROOT / "results" / "recent_scores" / "predictions.parquet"
 DEFAULT_RECENT_SCORES = ROOT / "results" / "recent_scores" / "model_scores.parquet"
 DEFAULT_BACKTEST_DIRS = [
     ROOT / "results" / "baseline_v1",
@@ -28,6 +29,10 @@ def main() -> None:
         "DKENERGY_LATEST_PREDICTIONS_PATH",
         DEFAULT_LATEST_PREDICTIONS,
     )
+    recent_predictions_path = _path_from_env(
+        "DKENERGY_RECENT_PREDICTIONS_PATH",
+        DEFAULT_RECENT_PREDICTIONS,
+    )
     recent_scores_path = _path_from_env("DKENERGY_RECENT_SCORES_PATH", DEFAULT_RECENT_SCORES)
     backtest_dirs = _paths_from_env("DKENERGY_BACKTEST_DIRS", DEFAULT_BACKTEST_DIRS)
 
@@ -35,14 +40,14 @@ def main() -> None:
     panel = _load_parquet(panel_path)
     predictions = _load_predictions(payload, latest_predictions_path)
     scores = _load_scores(payload, recent_scores_path)
-    backtest_predictions = _load_backtest_predictions(backtest_dirs)
+    backtest_predictions = _load_recent_predictions(payload, recent_predictions_path, backtest_dirs)
     run = payload.get("run", {}) if payload else {}
 
     st.title("Danish Electricity Forecasts")
     _render_run_summary(run, predictions, scores)
 
     backtests_tab, forecast_tab, prices_tab, run_tab = st.tabs(
-        ["Backtests", "Next Forecast", "Prices", "Run"]
+        ["Predicted vs Actual", "Next Forecast", "Prices", "Run"]
     )
 
     with backtests_tab:
@@ -60,6 +65,7 @@ def main() -> None:
             panel_path,
             dashboard_json,
             latest_predictions_path,
+            recent_predictions_path,
             recent_scores_path,
             backtest_dirs,
         )
@@ -184,7 +190,7 @@ def _render_backtests(predictions: pd.DataFrame, scores: pd.DataFrame) -> None:
 
 def _render_predicted_vs_actual(predictions: pd.DataFrame) -> None:
     if predictions.empty:
-        st.warning("No backtest prediction artifacts found.")
+        st.warning("No evaluated prediction artifacts found.")
         return
 
     frame = predictions.copy()
@@ -270,6 +276,7 @@ def _render_run_details(
     panel_path: Path,
     dashboard_json: Path,
     latest_predictions_path: Path,
+    recent_predictions_path: Path,
     recent_scores_path: Path,
     backtest_dirs: list[Path],
 ) -> None:
@@ -281,6 +288,11 @@ def _render_run_details(
                 "artifact": "latest_predictions",
                 "path": str(latest_predictions_path),
                 "exists": latest_predictions_path.exists(),
+            },
+            {
+                "artifact": "recent_predictions",
+                "path": str(recent_predictions_path),
+                "exists": recent_predictions_path.exists(),
             },
             {"artifact": "recent_scores", "path": str(recent_scores_path), "exists": recent_scores_path.exists()},
             *[
@@ -317,6 +329,20 @@ def _load_scores(payload: dict[str, Any], fallback_path: Path) -> pd.DataFrame:
     return _load_parquet(fallback_path)
 
 
+def _load_recent_predictions(
+    payload: dict[str, Any],
+    fallback_path: Path,
+    legacy_backtest_dirs: list[Path],
+) -> pd.DataFrame:
+    if payload.get("recent_predictions"):
+        frame = pd.DataFrame(payload["recent_predictions"])
+    else:
+        frame = _load_parquet(fallback_path)
+    if _is_evaluated_prediction_frame(frame):
+        return _parse_time_columns(frame, ["forecast_origin_utc", "ds_utc", "ds_local"])
+    return _load_backtest_predictions(legacy_backtest_dirs)
+
+
 def _load_backtest_predictions(backtest_dirs: list[Path]) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     for run_dir in backtest_dirs:
@@ -335,6 +361,17 @@ def _load_backtest_predictions(backtest_dirs: list[Path]) -> pd.DataFrame:
         return pd.DataFrame()
     output = pd.concat(frames, ignore_index=True)
     return _parse_time_columns(output, ["forecast_origin_utc", "ds_utc", "ds_local"])
+
+
+def _is_evaluated_prediction_frame(frame: pd.DataFrame) -> bool:
+    return not frame.empty and {
+        "ds_utc",
+        "forecast_origin_utc",
+        "area",
+        "model_label",
+        "y",
+        "y_pred",
+    }.issubset(frame.columns)
 
 
 def _load_parquet(path: Path) -> pd.DataFrame:

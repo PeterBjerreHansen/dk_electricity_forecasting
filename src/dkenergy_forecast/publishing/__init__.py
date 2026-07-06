@@ -1,4 +1,5 @@
 from dkenergy_forecast.publishing.artifacts import (
+    EVALUATED_PREDICTION_REQUIRED_COLUMNS,
     MODEL_SCORE_REQUIRED_COLUMNS,
     PUBLISHED_PREDICTION_REQUIRED_COLUMNS,
     build_dashboard_payload,
@@ -8,6 +9,7 @@ from dkenergy_forecast.publishing.artifacts import (
     normalize_published_predictions,
     unique_run_id,
     update_latest_exports,
+    validate_evaluated_prediction_artifact_schema,
     validate_model_scores_schema,
     validate_prediction_artifact_schema,
     write_forecast_run_artifacts,
@@ -17,6 +19,7 @@ from dkenergy_forecast.publishing.artifacts import (
 __all__ = [
     "MODEL_SCORE_REQUIRED_COLUMNS",
     "PUBLISHED_PREDICTION_REQUIRED_COLUMNS",
+    "EVALUATED_PREDICTION_REQUIRED_COLUMNS",
     "build_dashboard_payload",
     "git_commit",
     "json_safe",
@@ -24,6 +27,7 @@ __all__ = [
     "normalize_published_predictions",
     "unique_run_id",
     "update_latest_exports",
+    "validate_evaluated_prediction_artifact_schema",
     "validate_model_scores_schema",
     "validate_prediction_artifact_schema",
     "write_forecast_run_artifacts",

@@ -21,6 +21,11 @@ PUBLISHED_PREDICTION_REQUIRED_COLUMNS = [
     "y_pred",
 ]
 
+EVALUATED_PREDICTION_REQUIRED_COLUMNS = [
+    *PUBLISHED_PREDICTION_REQUIRED_COLUMNS,
+    "y",
+]
+
 MODEL_SCORE_REQUIRED_COLUMNS = [
     "model_label",
     "area",
@@ -69,6 +74,16 @@ def validate_prediction_artifact_schema(predictions: pd.DataFrame) -> None:
         raise ValueError("Published predictions contain missing model_label values")
     if frame["area"].isna().any():
         raise ValueError("Published predictions contain missing area values")
+
+
+def validate_evaluated_prediction_artifact_schema(predictions: pd.DataFrame) -> None:
+    frame = normalize_published_predictions(predictions)
+    require_columns(frame, EVALUATED_PREDICTION_REQUIRED_COLUMNS, "evaluated predictions")
+    validate_prediction_artifact_schema(frame)
+    if frame["y"].isna().any():
+        raise ValueError("Evaluated predictions contain missing actual target values")
+    if frame["y_pred"].isna().any():
+        raise ValueError("Evaluated predictions contain missing point forecast values")
 
 
 def validate_model_scores_schema(scores: pd.DataFrame) -> None:
@@ -123,6 +138,7 @@ def write_forecast_run_artifacts(
     predictions: pd.DataFrame,
     scores: pd.DataFrame,
     manifest: dict[str, Any],
+    score_predictions: pd.DataFrame | None = None,
     dashboard: dict[str, Any] | None = None,
 ) -> dict[str, Path]:
     run_path = Path(run_dir)
@@ -138,6 +154,11 @@ def write_forecast_run_artifacts(
     }
     predictions_out.to_parquet(paths["predictions"], index=False)
     scores.to_parquet(paths["model_scores"], index=False)
+    if score_predictions is not None:
+        score_predictions_out = normalize_published_predictions(score_predictions)
+        validate_evaluated_prediction_artifact_schema(score_predictions_out)
+        paths["score_predictions"] = run_path / "score_predictions.parquet"
+        score_predictions_out.to_parquet(paths["score_predictions"], index=False)
     write_json(paths["manifest"], manifest)
     if dashboard is not None:
         paths["dashboard"] = run_path / "forecast_dashboard.json"
@@ -154,6 +175,7 @@ def update_latest_exports(
     scores: pd.DataFrame,
     manifest: dict[str, Any],
     dashboard: dict[str, Any],
+    score_predictions: pd.DataFrame | None = None,
 ) -> dict[str, Path]:
     latest_dir = Path(latest_forecast_dir)
     scores_dir = Path(recent_scores_dir)
@@ -170,6 +192,11 @@ def update_latest_exports(
     }
     normalize_published_predictions(predictions).to_parquet(paths["latest_predictions"], index=False)
     scores.to_parquet(paths["recent_scores"], index=False)
+    if score_predictions is not None:
+        score_predictions_out = normalize_published_predictions(score_predictions)
+        validate_evaluated_prediction_artifact_schema(score_predictions_out)
+        paths["recent_predictions"] = scores_dir / "predictions.parquet"
+        score_predictions_out.to_parquet(paths["recent_predictions"], index=False)
     write_json(paths["latest_manifest"], manifest)
     write_json(paths["dashboard"], dashboard)
     return paths
@@ -180,15 +207,21 @@ def build_dashboard_payload(
     predictions: pd.DataFrame,
     scores: pd.DataFrame,
     manifest: dict[str, Any],
+    score_predictions: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     prediction_rows = normalize_published_predictions(predictions).to_dict(orient="records")
     score_rows = scores.to_dict(orient="records")
-    return {
+    payload = {
         "generated_at_utc": datetime.now(timezone.utc),
         "run": manifest,
         "predictions": prediction_rows,
         "model_scores": score_rows,
     }
+    if score_predictions is not None:
+        payload["recent_predictions"] = normalize_published_predictions(score_predictions).to_dict(
+            orient="records"
+        )
+    return payload
 
 
 def unique_run_id(prefix: str, *, created_at_utc: object | None = None) -> str:

@@ -21,6 +21,7 @@ from dkenergy_forecast.publishing import (
     build_dashboard_payload,
     make_forecast_run_manifest,
     normalize_published_predictions,
+    validate_evaluated_prediction_artifact_schema,
     validate_model_scores_schema,
     validate_prediction_artifact_schema,
     write_forecast_run_artifacts,
@@ -72,6 +73,7 @@ def test_published_artifacts_validate_and_write(tmp_path) -> None:
     scores = model_score_table(predictions)
     artifact_paths = {
         "predictions": str(tmp_path / "run" / "predictions.parquet"),
+        "score_predictions": str(tmp_path / "run" / "score_predictions.parquet"),
         "model_scores": str(tmp_path / "run" / "model_scores.parquet"),
         "manifest": str(tmp_path / "run" / "manifest.json"),
     }
@@ -88,25 +90,31 @@ def test_published_artifacts_validate_and_write(tmp_path) -> None:
         predictions=predictions,
         scores=scores,
         manifest=manifest,
+        score_predictions=predictions,
     )
 
     validate_prediction_artifact_schema(predictions)
+    validate_evaluated_prediction_artifact_schema(predictions)
     validate_model_scores_schema(scores)
     written = write_forecast_run_artifacts(
         tmp_path / "run",
         predictions=predictions,
         scores=scores,
         manifest=manifest,
+        score_predictions=predictions,
         dashboard=dashboard,
     )
 
     assert written["predictions"].exists()
+    assert written["score_predictions"].exists()
     assert written["model_scores"].exists()
     assert written["manifest"].exists()
     assert written["dashboard"].exists()
     saved_manifest = json.loads(written["manifest"].read_text(encoding="utf-8"))
     assert saved_manifest["run_id"] == "test_run"
     assert saved_manifest["status"] == "success"
+    saved_dashboard = json.loads(written["dashboard"].read_text(encoding="utf-8"))
+    assert len(saved_dashboard["recent_predictions"]) == len(predictions)
 
 
 def test_published_prediction_validation_rejects_duplicate_keys() -> None:
@@ -115,6 +123,13 @@ def test_published_prediction_validation_rejects_duplicate_keys() -> None:
 
     with pytest.raises(ValueError, match="duplicate key rows"):
         validate_prediction_artifact_schema(duplicated)
+
+
+def test_evaluated_prediction_validation_requires_actuals() -> None:
+    predictions = normalize_published_predictions(_predictions()).drop(columns=["y"])
+
+    with pytest.raises(ValueError, match="evaluated predictions"):
+        validate_evaluated_prediction_artifact_schema(predictions)
 
 
 def test_mixed_family_predictions_with_optional_quantiles_validate() -> None:
