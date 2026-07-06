@@ -24,6 +24,19 @@ def test_daily_pipeline_refreshes_weather_for_default_chronos_model() -> None:
     assert "--weather-features-long-path" in result.stdout
 
 
+def test_daily_pipeline_accepts_allow_incomplete_panel_alias() -> None:
+    result = subprocess.run(
+        [sys.executable, "scripts/run_daily_pipeline.py", "--allow-incomplete-panel", "--dry-run"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "run_publish_forecast.py" in result.stdout
+    assert "--allow-incomplete-panel" in result.stdout
+
+
 def test_daily_pipeline_allows_explicit_weather_refresh_skip() -> None:
     result = subprocess.run(
         [sys.executable, "scripts/run_daily_pipeline.py", "--dry-run", "--skip-weather"],

@@ -79,6 +79,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Require final_historical QA status instead of allowing incomplete live refreshes.",
     )
+    parser.add_argument(
+        "--allow-incomplete-panel",
+        action="store_false",
+        dest="strict_panel",
+        help="Allow incomplete live refreshes. This is the default unless --strict-panel is supplied.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
