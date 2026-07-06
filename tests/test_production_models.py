@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import json
+import types
 
 import numpy as np
 import pandas as pd
@@ -23,6 +24,7 @@ from dkenergy_forecast.models.chronos_production import (
     Chronos2LoRAWeatherDayAhead,
     ChronosProductionConfig,
     ChronosZeroShotDayAhead,
+    load_chronos_lora_pipeline,
 )
 from dkenergy_forecast.types import add_copenhagen_calendar
 
@@ -132,6 +134,42 @@ def test_chronos_lora_weather_adapter_emits_delivery_quantiles_and_uses_bridge_c
     assert pipeline.context_df["timestamp"].max() == pd.Timestamp("2024-01-09T09:00:00")
     assert pipeline.future_df["timestamp"].min() == pd.Timestamp("2024-01-09T10:00:00")
     assert pipeline.future_df["timestamp"].max() == future["ds_utc"].max().tz_localize(None)
+
+
+def test_chronos_lora_loader_uses_chronos2_pipeline_for_adapter_artifact(tmp_path, monkeypatch) -> None:
+    artifact_path = _chronos_artifact(tmp_path, covariates=[*CALENDAR_COVARIATES])
+    calls = []
+
+    class FakeBaseChronosPipeline:
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):  # pragma: no cover - failure branch
+            raise AssertionError("LoRA loader should not use BaseChronosPipeline")
+
+    class FakeChronos2Pipeline:
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            calls.append((args, kwargs))
+            return "loaded-lora"
+
+    monkeypatch.setitem(
+        sys.modules,
+        "chronos",
+        types.SimpleNamespace(
+            BaseChronosPipeline=FakeBaseChronosPipeline,
+            Chronos2Pipeline=FakeChronos2Pipeline,
+        ),
+    )
+
+    pipeline = load_chronos_lora_pipeline(
+        Chronos2LoRAWeatherConfig(
+            model_artifact_path=artifact_path,
+            device_map="cpu",
+            torch_dtype="auto",
+        )
+    )
+
+    assert pipeline == "loaded-lora"
+    assert calls == [((str(artifact_path),), {"device_map": "cpu", "torch_dtype": "auto"})]
 
 
 @pytest.mark.parametrize(

@@ -649,14 +649,14 @@ def load_chronos_lora_pipeline(config: Chronos2LoRAWeatherConfig) -> Any:
     artifact_path = Path(config.model_artifact_path)
     if not artifact_path.exists():
         raise FileNotFoundError(f"Missing Chronos LoRA model artifact directory: {artifact_path}")
-    pipeline_cls = _chronos_pipeline_class()
+    pipeline_cls = _chronos2_pipeline_class()
     kwargs: dict[str, Any] = {"device_map": config.device_map}
     if config.torch_dtype:
         kwargs["torch_dtype"] = config.torch_dtype
     return pipeline_cls.from_pretrained(str(artifact_path), **kwargs)
 
 
-def _chronos_pipeline_class() -> Any:
+def _import_chronos() -> Any:
     try:
         import chronos
     except ImportError as exc:
@@ -665,7 +665,11 @@ def _chronos_pipeline_class() -> Any:
             'Install it with `pip install -e ".[chronos]"` or '
             "`pip install 'chronos-forecasting[extras]>=2.2'`."
         ) from exc
+    return chronos
 
+
+def _chronos_pipeline_class() -> Any:
+    chronos = _import_chronos()
     pipeline_cls = (
         getattr(chronos, "BaseChronosPipeline", None)
         or getattr(chronos, "ChronosPipeline", None)
@@ -674,5 +678,16 @@ def _chronos_pipeline_class() -> Any:
         raise ImportError(
             "The installed chronos package does not expose BaseChronosPipeline "
             "or ChronosPipeline."
+    )
+    return pipeline_cls
+
+
+def _chronos2_pipeline_class() -> Any:
+    chronos = _import_chronos()
+    pipeline_cls = getattr(chronos, "Chronos2Pipeline", None)
+    if pipeline_cls is None:
+        raise ImportError(
+            "Chronos-2 LoRA production models require a chronos package exposing "
+            "Chronos2Pipeline. Install `chronos-forecasting[extras]>=2.2`."
         )
     return pipeline_cls

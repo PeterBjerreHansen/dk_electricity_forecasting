@@ -187,7 +187,48 @@ def test_normalize_batches_deduplicates_repeated_raw_fetches() -> None:
     assert normalized.loc[0, "raw_batch_id"] == "batch-b"
 
 
-def test_normalize_batches_rejects_conflicting_repeated_raw_fetches() -> None:
+def test_normalize_batches_keeps_latest_overlapping_weather_revision() -> None:
+    first = {
+        "hourly": {
+            "time": ["2025-01-02T00:00"],
+            "temperature_2m_previous_day1": [3.0],
+        },
+        "hourly_units": {"temperature_2m_previous_day1": "degC"},
+    }
+    second = {
+        "hourly": {
+            "time": ["2025-01-02T00:00"],
+            "temperature_2m_previous_day1": [4.0],
+        },
+        "hourly_units": {"temperature_2m_previous_day1": "degC"},
+    }
+
+    normalized = normalize_batches(
+        [
+            _raw_batch(
+                "dk1_a",
+                batch_id="batch-a",
+                retrieved_at_utc="2026-01-01T00:00:00+00:00",
+                payload=first,
+            ),
+            _raw_batch(
+                "dk1_a",
+                batch_id="batch-b",
+                retrieved_at_utc="2026-01-02T00:00:00+00:00",
+                payload=second,
+            ),
+        ],
+        locations=[WeatherLocation("dk1_a", "DK1", 56.0, 10.0)],
+        base_variables=["temperature_2m"],
+        lead_time_days=[1],
+    )
+
+    assert len(normalized) == 1
+    assert normalized.loc[0, "value"] == pytest.approx(4.0)
+    assert normalized.loc[0, "raw_batch_id"] == "batch-b"
+
+
+def test_normalize_batches_rejects_conflicting_duplicates_within_raw_batch() -> None:
     first = {
         "hourly": {
             "time": ["2025-01-02T00:00"],
@@ -207,7 +248,7 @@ def test_normalize_batches_rejects_conflicting_repeated_raw_fetches() -> None:
         normalize_batches(
             [
                 _raw_batch("dk1_a", batch_id="batch-a", payload=first),
-                _raw_batch("dk1_a", batch_id="batch-b", payload=second),
+                _raw_batch("dk1_a", batch_id="batch-a", payload=second),
             ],
             locations=[WeatherLocation("dk1_a", "DK1", 56.0, 10.0)],
             base_variables=["temperature_2m"],
@@ -220,12 +261,13 @@ def _raw_batch(
     *,
     payload: dict,
     batch_id: str | None = None,
+    retrieved_at_utc: str = "2026-01-01T00:00:00+00:00",
 ) -> OpenMeteoRawBatch:
     return OpenMeteoRawBatch(
         batch_id=batch_id or f"batch-{location_id}",
         weather_model="gfs_global",
         location_id=location_id,
-        retrieved_at_utc="2026-01-01T00:00:00+00:00",
+        retrieved_at_utc=retrieved_at_utc,
         raw_path=Path(f"/tmp/{location_id}.json"),
         payload=payload,
     )

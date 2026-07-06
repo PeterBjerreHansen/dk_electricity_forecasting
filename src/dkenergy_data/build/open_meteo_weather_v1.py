@@ -234,6 +234,7 @@ def deduplicate_normalized(frame: pd.DataFrame) -> pd.DataFrame:
         "lead_time_days",
         "parameter_id",
     ]
+    batch_key_cols = [*key_cols, "raw_batch_id"]
     value_cols = [
         column
         for column in NORMALIZED_COLUMNS
@@ -241,7 +242,7 @@ def deduplicate_normalized(frame: pd.DataFrame) -> pd.DataFrame:
     ]
     conflicts: list[str] = []
 
-    for key, group in frame.groupby(key_cols, dropna=False):
+    for key, group in frame.groupby(batch_key_cols, dropna=False):
         if len(group) <= 1:
             continue
         for column in value_cols:
