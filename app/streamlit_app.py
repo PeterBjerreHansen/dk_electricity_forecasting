@@ -19,6 +19,16 @@ DEFAULT_BACKTEST_DIRS = [
     ROOT / "results" / "baseline_v1",
 ]
 
+MODEL_DISPLAY_NAMES = {
+    "chronos2_lora_calendar_weather_ctx1024_v1": "Chronos 2 LoRA Weather",
+    "median_weekday_exp_hl4_floor10_42d__median_weekend_exp_hl28_floor20_56d": "Weighted Rolling Median",
+    "rolling_median_hour_weekend_56d": "Rolling Median",
+    "rolling_median_local_hour_28d": "Rolling Median",
+    "same_hour_last_week": "Last Week Baseline",
+    "catboost_ensemble": "Weather Boosting Ensemble",
+    "catboost_gfs_global": "Weather Boosting GFS",
+}
+
 
 def main() -> None:
     st.set_page_config(page_title="Danish Electricity Forecasts", layout="wide")
@@ -47,7 +57,7 @@ def main() -> None:
     _render_run_summary(run, predictions, scores)
 
     backtests_tab, forecast_tab, prices_tab, run_tab = st.tabs(
-        ["Predicted vs Actual", "Next Forecast", "Prices", "Run"]
+        ["Backtests", "Next Forecast", "Prices", "Run"]
     )
 
     with backtests_tab:
@@ -134,10 +144,11 @@ def _render_forecasts(predictions: pd.DataFrame) -> None:
     frame = predictions.copy()
     frame["ds_utc"] = pd.to_datetime(frame["ds_utc"], utc=True)
     frame["forecast_origin_utc"] = pd.to_datetime(frame["forecast_origin_utc"], utc=True)
-    labels = sorted(frame["model_label"].dropna().astype(str).unique().tolist())
+    frame = _with_model_display_names(frame)
+    labels = sorted(frame["model"].dropna().astype(str).unique().tolist())
     selected = st.multiselect("Models", labels, default=labels)
     if selected:
-        frame = frame[frame["model_label"].isin(selected)]
+        frame = frame[frame["model"].isin(selected)]
 
     area_columns = st.columns(2)
     for index, area in enumerate(["DK1", "DK2"]):
@@ -149,21 +160,21 @@ def _render_forecasts(predictions: pd.DataFrame) -> None:
                 continue
             chart = area_frame.pivot_table(
                 index="ds_utc",
-                columns="model_label",
+                columns="model",
                 values="y_pred",
                 aggfunc="last",
             ).sort_index()
             st.line_chart(chart, height=300)
 
     st.subheader("Forecast Table")
-    table = frame.sort_values(["area", "model_label", "ds_utc"])[
+    table = frame.sort_values(["area", "model", "ds_utc"])[
         [
             column
             for column in [
                 "area",
                 "forecast_origin_utc",
                 "ds_utc",
-                "model_label",
+                "model",
                 "y_pred",
                 "q10",
                 "q50",
@@ -181,7 +192,7 @@ def _render_forecasts(predictions: pd.DataFrame) -> None:
 
 
 def _render_backtests(predictions: pd.DataFrame, scores: pd.DataFrame) -> None:
-    st.subheader("Predicted vs Actual")
+    st.subheader("Actual vs Forecast")
     _render_predicted_vs_actual(predictions)
     st.divider()
     st.subheader("Metrics")
@@ -198,6 +209,7 @@ def _render_predicted_vs_actual(predictions: pd.DataFrame) -> None:
     frame["forecast_origin_utc"] = pd.to_datetime(frame["forecast_origin_utc"], utc=True)
     frame["error"] = frame["y_pred"] - frame["y"]
     frame["abs_error"] = frame["error"].abs()
+    frame = _with_model_display_names(frame)
 
     runs = sorted(frame["run_id"].dropna().astype(str).unique().tolist())
     default_run = runs[-1] if runs else None
@@ -208,9 +220,9 @@ def _render_predicted_vs_actual(predictions: pd.DataFrame) -> None:
     area = st.selectbox("Price area", areas, index=0)
     area_frame = run_frame[run_frame["area"] == area].copy()
 
-    models = sorted(area_frame["model_label"].dropna().astype(str).unique().tolist())
+    models = sorted(area_frame["model"].dropna().astype(str).unique().tolist())
     model = st.selectbox("Model", models, index=0)
-    selected = area_frame[area_frame["model_label"] == model].sort_values("ds_utc").copy()
+    selected = area_frame[area_frame["model"] == model].sort_values("ds_utc").copy()
 
     cols = st.columns(4)
     cols[0].metric("Rows", len(selected))
@@ -227,48 +239,19 @@ def _render_predicted_vs_actual(predictions: pd.DataFrame) -> None:
     )
     st.line_chart(line_frame, height=360)
 
-    scatter_frame = recent.rename(columns={"y": "actual", "y_pred": "predicted"})
-    if not scatter_frame.empty:
-        st.scatter_chart(scatter_frame, x="actual", y="predicted", height=320)
-
-    table_columns = [
-        column
-        for column in [
-            "run_id",
-            "area",
-            "forecast_origin_utc",
-            "ds_utc",
-            "model_label",
-            "y",
-            "y_pred",
-            "error",
-            "abs_error",
-            "q10",
-            "q50",
-            "q90",
-        ]
-        if column in recent.columns
-    ]
-    st.dataframe(recent[table_columns], width="stretch", hide_index=True)
-
 
 def _render_scores(scores: pd.DataFrame) -> None:
     if scores.empty:
         st.warning("No recent model score artifact found.")
         return
 
-    frame = scores.copy()
+    frame = _with_model_display_names(scores.copy())
     preferred = [
         column
-        for column in ["model_label", "area", "mae", "rmse", "bias", "coverage", "interval_width"]
+        for column in ["model", "area", "mae", "rmse", "bias", "coverage", "interval_width"]
         if column in frame.columns
     ]
     st.dataframe(frame[preferred].sort_values(["area", "mae"]), width="stretch", hide_index=True)
-
-    all_area = frame[frame["area"] == "ALL"] if "area" in frame.columns else frame
-    if {"model_label", "mae"}.issubset(all_area.columns):
-        chart = all_area.set_index("model_label")[["mae"]].sort_values("mae")
-        st.bar_chart(chart, height=320)
 
 
 def _render_run_details(
@@ -404,6 +387,27 @@ def _complete_quantile_row_count(frame: pd.DataFrame) -> int:
     if not all(column in frame.columns for column in quantile_columns):
         return 0
     return int(frame[quantile_columns].notna().all(axis=1).sum())
+
+
+def _with_model_display_names(frame: pd.DataFrame) -> pd.DataFrame:
+    output = frame.copy()
+    if "model_label" in output.columns:
+        output["model"] = output["model_label"].map(_model_display_name)
+    return output
+
+
+def _model_display_name(label: object) -> str:
+    if pd.isna(label):
+        return ""
+    key = str(label)
+    if key in MODEL_DISPLAY_NAMES:
+        return MODEL_DISPLAY_NAMES[key]
+    if key.startswith("weather_catboost_"):
+        suffix = key.removeprefix("weather_catboost_").replace("_", " ").title()
+        return f"Weather Boosting {suffix}"
+    if key.startswith("catboost_"):
+        return key.removeprefix("catboost_").replace("_", " ").title()
+    return key.replace("_", " ").title()
 
 
 def _format_optional_timestamp(value: Any) -> str:

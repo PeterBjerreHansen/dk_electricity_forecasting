@@ -31,12 +31,8 @@ tuning = [
 chronos = [
   "chronos-forecasting[extras]>=2.2",
 ]
-lightgbm = [
-  "lightgbm>=4.0",
-]
 boosting = [
   "catboost>=1.2",
-  "lightgbm>=4.0",
   "optuna>=4.0",
 ]
 
