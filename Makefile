@@ -25,7 +25,7 @@ install-app:
 	$(PYTHON) -m pip install -e ".[dev,app]"
 
 install-production:
-	$(PYTHON) -m pip install -e ".[dev,app,catboost]"
+	$(PYTHON) -m pip install -e ".[dev,app,catboost,chronos]"
 
 test:
 	$(PYTHON) -m pytest

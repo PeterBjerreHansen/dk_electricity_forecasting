@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from dataclasses import replace
+from pathlib import Path
 
 from dkenergy_forecast.models.baselines import (
     LagNaive,
@@ -14,6 +16,8 @@ from dkenergy_forecast.models.catboost_production import (
     ensure_catboost_available,
 )
 from dkenergy_forecast.models.chronos_production import (
+    PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG,
+    Chronos2LoRAWeatherDayAhead,
     ChronosZeroShotDayAhead,
     ensure_chronos_available,
 )
@@ -30,6 +34,7 @@ class ProductionModelSpec:
     description: str
     required_extra: str | None = None
     emits_quantiles: bool = False
+    requires_weather: bool = False
     dependency_check: Callable[[], None] | None = None
 
 
@@ -121,6 +126,21 @@ def catboost_production_model_specs() -> dict[str, ProductionModelSpec]:
 
 def chronos_production_model_specs() -> dict[str, ProductionModelSpec]:
     return {
+        "chronos2_lora_calendar_weather_ctx1024_v1": ProductionModelSpec(
+            label="chronos2_lora_calendar_weather_ctx1024_v1",
+            family="chronos",
+            default_enabled=True,
+            supports_latest_publish=True,
+            factory=lambda: Chronos2LoRAWeatherDayAhead(PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG),
+            description=(
+                "Chronos-2 LoRA day-ahead probabilistic model with calendar and "
+                "Open-Meteo weather covariates."
+            ),
+            required_extra="chronos",
+            emits_quantiles=True,
+            requires_weather=True,
+            dependency_check=ensure_chronos_available,
+        ),
         "chronos_zero_shot_v1": ProductionModelSpec(
             label="chronos_zero_shot_v1",
             family="chronos",
@@ -155,6 +175,8 @@ def default_production_model_labels() -> list[str]:
 
 def latest_publish_model_factories(
     labels: list[str] | None = None,
+    *,
+    weather_features_long_path: str | Path | None = None,
 ) -> dict[str, Callable[[], ForecastModel]]:
     specs = production_model_specs()
     selected = labels or default_production_model_labels()
@@ -182,4 +204,16 @@ def latest_publish_model_factories(
         if dependency_check is not None:
             dependency_check()
 
-    return {label: specs[label].factory for label in selected if specs[label].factory is not None}
+    factories: dict[str, Callable[[], ForecastModel]] = {}
+    for label in selected:
+        spec = specs[label]
+        if spec.factory is None:
+            continue
+        if label == "chronos2_lora_calendar_weather_ctx1024_v1":
+            config = PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG
+            if weather_features_long_path is not None:
+                config = replace(config, weather_features_long_path=weather_features_long_path)
+            factories[label] = lambda config=config: Chronos2LoRAWeatherDayAhead(config)
+        else:
+            factories[label] = spec.factory
+    return factories

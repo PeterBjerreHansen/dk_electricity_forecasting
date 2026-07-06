@@ -24,6 +24,11 @@ from dkenergy_forecast.models.registry import (  # noqa: E402
     latest_publish_model_factories,
     production_model_specs,
 )
+from dkenergy_forecast.models.chronos_production import (  # noqa: E402
+    PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG,
+    load_lora_artifact_manifest,
+    weather_artifact_summary,
+)
 from dkenergy_forecast.publishing import (  # noqa: E402
     build_dashboard_payload,
     git_commit,
@@ -42,7 +47,10 @@ def main() -> None:
         return
 
     try:
-        factories = latest_publish_model_factories(args.models)
+        factories = latest_publish_model_factories(
+            args.models,
+            weather_features_long_path=args.weather_features_long_path,
+        )
     except (ValueError, ImportError) as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -110,6 +118,8 @@ def main() -> None:
             "score_holdout_days": int(args.score_holdout_days),
             "model_registry_labels": model_labels,
             "model_registry": selected_model_registry_metadata(model_labels),
+            **selected_chronos_metadata(model_labels),
+            **selected_weather_metadata(model_labels, args.weather_features_long_path),
         },
     )
     dashboard = build_dashboard_payload(
@@ -183,6 +193,11 @@ def parse_args() -> argparse.Namespace:
             f"{default_production_model_labels()}."
         ),
     )
+    parser.add_argument(
+        "--weather-features-long-path",
+        default=str(PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG.weather_features_long_path),
+        help="Open-Meteo long weather feature parquet used by weather-aware production models.",
+    )
     parser.add_argument("--list-models", action="store_true", help="Print registered production models and exit.")
     parser.add_argument("--run-id", help="Optional explicit immutable forecast run id.")
     parser.add_argument(
@@ -244,9 +259,10 @@ def print_model_registry() -> None:
         publish_marker = "latest-publish" if spec.supports_latest_publish else "backtest-only"
         extra_marker = f"extra={spec.required_extra}" if spec.required_extra else "extra=base"
         quantile_marker = "quantiles" if spec.emits_quantiles else "point"
+        weather_marker = ", weather" if spec.requires_weather else ""
         print(
             f"- {label}: {spec.family}, {default_marker}, {publish_marker}, "
-            f"{extra_marker}, {quantile_marker}"
+            f"{extra_marker}, {quantile_marker}{weather_marker}"
         )
         print(f"  {spec.description}")
 
@@ -260,8 +276,38 @@ def selected_model_registry_metadata(labels: list[str]) -> dict[str, dict[str, o
             "supports_latest_publish": specs[label].supports_latest_publish,
             "required_extra": specs[label].required_extra,
             "emits_quantiles": specs[label].emits_quantiles,
+            "requires_weather": specs[label].requires_weather,
         }
         for label in labels
+    }
+
+
+def selected_weather_metadata(labels: list[str], weather_features_long_path: str) -> dict[str, object]:
+    specs = production_model_specs()
+    if not any(specs[label].requires_weather for label in labels):
+        return {}
+    return {
+        "weather": weather_artifact_summary(weather_features_long_path),
+    }
+
+
+def selected_chronos_metadata(labels: list[str]) -> dict[str, object]:
+    if "chronos2_lora_calendar_weather_ctx1024_v1" not in labels:
+        return {}
+    config = PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG
+    manifest = load_lora_artifact_manifest(config.model_artifact_path)
+    covariates = manifest.get("covariates", [])
+    return {
+        "chronos": {
+            "chronos2_lora_calendar_weather_ctx1024_v1": {
+                "model_artifact_path": str(config.model_artifact_path),
+                "base_model_id": config.base_model_id,
+                "context_length": int(config.context_length),
+                "prediction_length": int(config.prediction_length),
+                "artifact_schema_version": manifest.get("artifact_schema_version"),
+                "covariate_count": len(covariates) if isinstance(covariates, list) else None,
+            }
+        }
     }
 
 

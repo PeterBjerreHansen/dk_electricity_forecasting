@@ -6,12 +6,22 @@ import os
 import shlex
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from dkenergy_forecast.models.registry import default_production_model_labels, production_model_specs  # noqa: E402
+
+DEFAULT_WEATHER_FEATURES_LONG_PATH = (
+    ROOT
+    / "data"
+    / "features"
+    / "weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet"
+)
 
 
 def main() -> None:
@@ -28,10 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eds-start", default=_env("EDS_START", "2024-07-01"))
     parser.add_argument("--eds-end", default=_env("EDS_END"))
     parser.add_argument("--open-meteo-start", default=_env("OPEN_METEO_START", "2024-07-01"))
-    parser.add_argument(
-        "--open-meteo-end",
-        default=_env("OPEN_METEO_END", _today_copenhagen()),
-    )
+    parser.add_argument("--open-meteo-end", default=_env("OPEN_METEO_END", _tomorrow_copenhagen()))
     parser.add_argument("--at-hour-utc", type=int, default=int(_env("FORECAST_AT_HOUR_UTC", "10")))
     parser.add_argument("--min-train-days", type=int, default=int(_env("MIN_TRAIN_DAYS", "60")))
     parser.add_argument("--score-days", type=int, default=int(_env("SCORE_DAYS", "14")))
@@ -57,6 +64,11 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         default=_env_list("PUBLISH_MODELS"),
         help="Optional run_publish_forecast.py model labels. Defaults to the registry defaults.",
+    )
+    parser.add_argument(
+        "--weather-features-long-path",
+        default=_env("WEATHER_FEATURES_LONG_PATH", str(DEFAULT_WEATHER_FEATURES_LONG_PATH)),
+        help="Open-Meteo long weather feature parquet passed to weather-aware publish models.",
     )
     parser.add_argument("--skip-price-ingest", action="store_true")
     parser.add_argument("--skip-weather", action="store_true", help="Disable weather even when WITH_WEATHER is set.")
@@ -91,7 +103,11 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
         build_prices.append("--allow-incomplete-recent")
     commands.append(build_prices)
 
-    if args.with_weather and not args.skip_weather:
+    selected_models = args.models or default_production_model_labels()
+    needs_weather = selected_models_require_weather(selected_models)
+    refresh_weather = (args.with_weather or needs_weather) and not args.skip_weather
+
+    if refresh_weather:
         commands.append(
             [
                 python,
@@ -145,6 +161,7 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
         ]
         if args.models:
             publish.extend(["--models", *args.models])
+        publish.extend(["--weather-features-long-path", args.weather_features_long_path])
         if not args.strict_panel:
             publish.append("--allow-incomplete-panel")
         commands.append(publish)
@@ -179,6 +196,18 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 def _today_copenhagen() -> str:
     return datetime.now(ZoneInfo("Europe/Copenhagen")).date().isoformat()
+
+
+def _tomorrow_copenhagen() -> str:
+    return (datetime.now(ZoneInfo("Europe/Copenhagen")).date() + timedelta(days=1)).isoformat()
+
+
+def selected_models_require_weather(labels: list[str]) -> bool:
+    specs = production_model_specs()
+    missing = sorted(set(labels) - set(specs))
+    if missing:
+        raise SystemExit(f"Unknown production model label(s): {missing}; available={sorted(specs)}")
+    return any(specs[label].requires_weather for label in labels)
 
 
 if __name__ == "__main__":

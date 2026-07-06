@@ -9,6 +9,8 @@ from dkenergy_forecast.models.catboost_production import (
     ProductionCatBoostDayAhead,
 )
 from dkenergy_forecast.models.chronos_production import (
+    Chronos2LoRAWeatherConfig,
+    Chronos2LoRAWeatherDayAhead,
     ChronosProductionConfig,
     ChronosZeroShotDayAhead,
 )
@@ -24,6 +26,8 @@ __all__ = [
     "LagNaive",
     "ProductionModelSpec",
     "CatBoostProductionConfig",
+    "Chronos2LoRAWeatherConfig",
+    "Chronos2LoRAWeatherDayAhead",
     "ChronosProductionConfig",
     "ChronosZeroShotDayAhead",
     "ProductionCatBoostDayAhead",

@@ -168,7 +168,7 @@ def test_future_publish_predictions_preserve_horizon_metadata_without_actuals() 
     assert published["actual_price"].isna().all()
 
 
-def test_production_registry_defaults_include_manual_catboost_and_optional_chronos(monkeypatch) -> None:
+def test_production_registry_defaults_include_manual_catboost_and_lora_chronos(monkeypatch) -> None:
     specs = production_model_specs()
 
     assert default_production_model_labels() == [
@@ -176,18 +176,25 @@ def test_production_registry_defaults_include_manual_catboost_and_optional_chron
         "rolling_median_hour_weekend_56d",
         "median_weekday_exp_hl4_floor10_42d__median_weekend_exp_hl28_floor20_56d",
         "catboost_price_manual_v1",
+        "chronos2_lora_calendar_weather_ctx1024_v1",
     ]
     assert not specs["rolling_median_local_hour_28d"].default_enabled
     assert specs["catboost_price_manual_v1"].family == "catboost"
     assert specs["catboost_price_manual_v1"].required_extra == "catboost"
     assert specs["catboost_price_manual_v1"].default_enabled
     assert not specs["catboost_price_manual_v1"].emits_quantiles
+    assert specs["chronos2_lora_calendar_weather_ctx1024_v1"].family == "chronos"
+    assert specs["chronos2_lora_calendar_weather_ctx1024_v1"].required_extra == "chronos"
+    assert specs["chronos2_lora_calendar_weather_ctx1024_v1"].default_enabled
+    assert specs["chronos2_lora_calendar_weather_ctx1024_v1"].emits_quantiles
+    assert specs["chronos2_lora_calendar_weather_ctx1024_v1"].requires_weather
     assert specs["chronos_zero_shot_v1"].family == "chronos"
     assert specs["chronos_zero_shot_v1"].required_extra == "chronos"
     assert not specs["chronos_zero_shot_v1"].default_enabled
     assert specs["chronos_zero_shot_v1"].emits_quantiles
     assert not any(spec.family == "weather_catboost" for spec in specs.values())
     monkeypatch.setattr("dkenergy_forecast.models.registry.ensure_catboost_available", lambda: None)
+    monkeypatch.setattr("dkenergy_forecast.models.registry.ensure_chronos_available", lambda: None)
     assert set(latest_publish_model_factories()) == set(default_production_model_labels())
     with pytest.raises(ValueError, match="Unknown production model"):
         latest_publish_model_factories(["weather_catboost_all_weather"])
@@ -219,6 +226,10 @@ def test_publish_model_listing_includes_required_extra_and_quantile_metadata() -
     )
 
     assert "catboost_price_manual_v1: catboost, default, latest-publish, extra=catboost, point" in result.stdout
+    assert (
+        "chronos2_lora_calendar_weather_ctx1024_v1: chronos, default, latest-publish, "
+        "extra=chronos, quantiles, weather"
+    ) in result.stdout
     assert "chronos_zero_shot_v1: chronos, optional, latest-publish, extra=chronos, quantiles" in result.stdout
 
 

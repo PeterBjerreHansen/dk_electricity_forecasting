@@ -12,7 +12,7 @@ COPY scripts ./scripts
 COPY app ./app
 
 RUN python -m pip install --upgrade pip \
-    && python -m pip install -e ".[app,catboost]"
+    && python -m pip install -e ".[app,catboost,chronos]"
 
 EXPOSE 8501
 

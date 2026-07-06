@@ -4,13 +4,14 @@ Production-oriented reference skeleton for Danish day-ahead electricity price
 forecasting. The project keeps the core simple: public API ingestion, immutable
 raw responses, normalized parquet tables, leakage-safe rolling-origin
 backtests, baseline forecasts, optional weather-feature boosting experiments,
-one manually selected CatBoost production model, optional Chronos experiments,
-and a minimal artifact-only Streamlit dashboard.
+one manually selected CatBoost production model, one default Chronos-2 LoRA
+weather model, optional Chronos experiments, and a minimal artifact-only
+Streamlit dashboard.
 
 ## Setup
 
 ```bash
-python -m pip install -e ".[dev,app,catboost]"
+python -m pip install -e ".[dev,app,catboost,chronos]"
 cp .env.example .env
 python -m pytest
 ```
@@ -20,8 +21,7 @@ Optional modeling extras:
 
 ```bash
 python -m pip install -e ".[tuning]"
-python -m pip install -e ".[chronos]"
-python -m pip install -e ".[lightgbm]"
+python -m pip install -e ".[notebooks]"
 ```
 
 The default workflow is file based and writes ignored runtime artifacts under
@@ -61,7 +61,7 @@ src/dkenergy_data/
 src/dkenergy_forecast/
   backtesting/  origin and horizon builders plus rolling-origin execution
   features/     price and availability-safe weather feature joins
-  models/       baselines, fixed CatBoost adapter, optional Chronos adapter,
+  models/       baselines, fixed CatBoost adapter, Chronos adapters,
                 and the production model registry
   evaluation/   point and probabilistic forecast-accuracy metrics
   publishing/   immutable run artifacts and latest dashboard exports
@@ -100,7 +100,19 @@ python scripts/run_publish_forecast.py --allow-incomplete-panel
 The default latest-forecast set is:
 `same_hour_last_week`, `rolling_median_hour_weekend_56d`, and
 `median_weekday_exp_hl4_floor10_42d__median_weekend_exp_hl28_floor20_56d`,
-plus the manually selected `catboost_price_manual_v1` adapter.
+plus the manually selected `catboost_price_manual_v1` adapter and
+`chronos2_lora_calendar_weather_ctx1024_v1`.
+
+The Chronos production model loads a manually exported LoRA artifact from
+`artifacts/models/chronos2_lora_calendar_weather_ctx1024_v1/`, consumes the
+Open-Meteo long weather feature parquet, and publishes `q10`, `q50`, `q90`,
+with `y_pred=q50`. It fails rather than falling back if the required weather
+artifact or covariate schema is missing. Daily publishing does not retrain it;
+export a new artifact explicitly when needed:
+
+```bash
+python scripts/train_chronos_lora.py
+```
 
 `chronos_zero_shot_v1` is registered but disabled by default. Selecting it
 requires the optional Chronos extra and an explicit model list.
@@ -130,8 +142,9 @@ For a short diagnostic weather frame, use:
 python scripts/build_weather_backtest_frame.py --frame-kind recent --allow-incomplete-panel
 ```
 
-These frames are historical modeling/backtest artifacts. They are not used by
-the latest-forecast publisher. Larger windows are explicit, for
+These frames are historical modeling/backtest artifacts. The production Chronos
+model instead consumes the long Open-Meteo feature parquet directly. Larger
+windows are explicit, for
 example `--frame-kind custom --days 730 --output-path data/features/weather_experiment_frame_backtest_730d.parquet`.
 
 CatBoost development remains notebook-first, but production has one fixed
@@ -166,9 +179,10 @@ Metrics include MAE, RMSE, bias, and optional quantile interval coverage/width.
 
 ## Daily Job
 
-Run the file-based daily pipeline. By default this refreshes prices, runs the
-baseline backtest, and publishes the registry-default forecast artifacts used
-by Streamlit:
+Run the file-based daily pipeline. By default this refreshes prices, refreshes
+Open-Meteo weather when a selected/default model requires it, runs the baseline
+backtest, and publishes the registry-default forecast artifacts used by
+Streamlit:
 
 ```bash
 python scripts/run_daily_pipeline.py
@@ -184,13 +198,16 @@ Useful switches:
 
 ```bash
 python scripts/run_daily_pipeline.py --with-weather
+python scripts/run_daily_pipeline.py --skip-weather
 python scripts/run_daily_pipeline.py --skip-backtest
 python scripts/run_daily_pipeline.py --strict-panel
 ```
 
-`--with-weather` also refreshes Open-Meteo experiment artifacts. Current latest
-forecast publishing uses price-only production models, so weather is not part
-of the default daily update path.
+Weather-aware default models trigger Open-Meteo Previous Runs refreshes through
+the required delivery date. `--with-weather` can force that refresh for a
+price-only model set; `--skip-weather` intentionally skips the refresh, but
+publishing `chronos2_lora_calendar_weather_ctx1024_v1` will still fail if its
+weather feature artifact is missing or stale.
 
 In production, schedule that command from cron, GitHub Actions, Airflow, or a
 container scheduler with persistent volumes mounted for `data/`, `results/`,
@@ -227,8 +244,8 @@ docker compose --profile jobs run --rm pipeline
 
 The Compose services mount local `data/`, `results/`, `artifacts/`, and
 `app_data/` directories so runs survive container restarts. The image installs
-the dashboard and production CatBoost extras because CatBoost is part of the
-default publish registry.
+the dashboard plus production CatBoost and Chronos extras because both model
+families are part of the default publish registry.
 
 ## CI
 

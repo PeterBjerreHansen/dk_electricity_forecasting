@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import json
 
 import numpy as np
 import pandas as pd
@@ -16,6 +17,10 @@ from dkenergy_forecast.models.catboost_production import (
     ProductionCatBoostDayAhead,
 )
 from dkenergy_forecast.models.chronos_production import (
+    CALENDAR_COVARIATES,
+    CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION,
+    Chronos2LoRAWeatherConfig,
+    Chronos2LoRAWeatherDayAhead,
     ChronosProductionConfig,
     ChronosZeroShotDayAhead,
 )
@@ -92,6 +97,170 @@ def test_chronos_zero_shot_adapter_emits_quantiles_and_uses_q50_as_point_forecas
     assert predictions["q90"].tolist() == pytest.approx([11.0, 12.0, 13.0, 14.0])
 
 
+def test_chronos_lora_weather_adapter_emits_delivery_quantiles_and_uses_bridge_context(tmp_path) -> None:
+    panel = _panel(periods=24 * 14)
+    origin = pd.Timestamp("2024-01-09T10:00:00Z")
+    history = panel[panel["ds_utc"] < origin].copy()
+    future = make_danish_delivery_day_horizon(panel, origin)
+    artifact_path = _chronos_artifact(
+        tmp_path,
+        covariates=[*CALENDAR_COVARIATES, "weather_gfs_global_lead1d_temperature_2m"],
+    )
+    weather_path = _weather_path(
+        tmp_path,
+        panel=panel,
+        origin=origin,
+        max_ds_utc=future["ds_utc"].max(),
+        feature_names=["weather_gfs_global_lead1d_temperature_2m"],
+    )
+    pipeline = FakeChronosPredictDfPipeline()
+
+    predictions = Chronos2LoRAWeatherDayAhead(
+        config=Chronos2LoRAWeatherConfig(
+            model_artifact_path=artifact_path,
+            weather_features_long_path=weather_path,
+            context_length=48,
+        ),
+        pipeline=pipeline,
+    ).fit(history).predict(future)
+
+    assert {"q10", "q50", "q90", "y_pred"}.issubset(predictions.columns)
+    assert predictions["y_pred"].tolist() == predictions["q50"].tolist()
+    assert predictions[["unique_id", "forecast_origin_utc", "ds_utc"]].duplicated().sum() == 0
+    assert predictions["ds_utc"].tolist() == future["ds_utc"].tolist()
+    assert pipeline.prediction_length == 37
+    assert pipeline.context_df["timestamp"].max() == pd.Timestamp("2024-01-09T09:00:00")
+    assert pipeline.future_df["timestamp"].min() == pd.Timestamp("2024-01-09T10:00:00")
+    assert pipeline.future_df["timestamp"].max() == future["ds_utc"].max().tz_localize(None)
+
+
+@pytest.mark.parametrize(
+    ("origin", "expected_prediction_length", "expected_delivery_rows"),
+    [
+        ("2026-03-28T10:00:00Z", 36, 23),
+        ("2026-10-24T10:00:00Z", 37, 25),
+    ],
+)
+def test_chronos_lora_weather_adapter_handles_dst_bridge_lengths(
+    tmp_path,
+    origin,
+    expected_prediction_length,
+    expected_delivery_rows,
+) -> None:
+    panel = _panel(start="2026-02-01T00:00:00Z", periods=24 * 310)
+    origin_ts = pd.Timestamp(origin)
+    history = panel[panel["ds_utc"] < origin_ts].copy()
+    future = make_danish_delivery_day_horizon(panel, origin_ts)
+    artifact_path = _chronos_artifact(
+        tmp_path,
+        covariates=[*CALENDAR_COVARIATES, "weather_gfs_global_lead1d_temperature_2m"],
+    )
+    weather_path = _weather_path(
+        tmp_path,
+        panel=panel,
+        origin=origin_ts,
+        max_ds_utc=future["ds_utc"].max(),
+        feature_names=["weather_gfs_global_lead1d_temperature_2m"],
+    )
+    pipeline = FakeChronosPredictDfPipeline()
+
+    predictions = Chronos2LoRAWeatherDayAhead(
+        config=Chronos2LoRAWeatherConfig(
+            model_artifact_path=artifact_path,
+            weather_features_long_path=weather_path,
+            context_length=48,
+        ),
+        pipeline=pipeline,
+    ).fit(history).predict(future)
+
+    assert len(predictions) == expected_delivery_rows
+    assert pipeline.prediction_length == expected_prediction_length
+
+
+def test_chronos_lora_weather_adapter_allows_partial_weather_nans_when_other_signal_exists(tmp_path) -> None:
+    panel = _panel(periods=24 * 14)
+    origin = pd.Timestamp("2024-01-09T10:00:00Z")
+    history = panel[panel["ds_utc"] < origin].copy()
+    future = make_danish_delivery_day_horizon(panel, origin)
+    covariates = [
+        *CALENDAR_COVARIATES,
+        "weather_gfs_global_lead1d_temperature_2m",
+        "weather_gfs_global_lead2d_temperature_2m",
+    ]
+    artifact_path = _chronos_artifact(tmp_path, covariates=covariates)
+    weather_path = _weather_path(
+        tmp_path,
+        panel=panel,
+        origin=origin,
+        max_ds_utc=future["ds_utc"].max(),
+        feature_names=[
+            "weather_gfs_global_lead1d_temperature_2m",
+            "weather_gfs_global_lead2d_temperature_2m",
+        ],
+        unavailable_feature_names={"weather_gfs_global_lead1d_temperature_2m"},
+    )
+
+    predictions = Chronos2LoRAWeatherDayAhead(
+        config=Chronos2LoRAWeatherConfig(
+            model_artifact_path=artifact_path,
+            weather_features_long_path=weather_path,
+            context_length=48,
+        ),
+        pipeline=FakeChronosPredictDfPipeline(),
+    ).fit(history).predict(future)
+
+    assert len(predictions) == len(future)
+
+
+def test_chronos_lora_weather_adapter_fails_for_missing_weather_file(tmp_path) -> None:
+    panel = _panel(periods=24 * 14)
+    origin = pd.Timestamp("2024-01-09T10:00:00Z")
+    history = panel[panel["ds_utc"] < origin].copy()
+    future = make_danish_delivery_day_horizon(panel, origin)
+    artifact_path = _chronos_artifact(
+        tmp_path,
+        covariates=[*CALENDAR_COVARIATES, "weather_gfs_global_lead1d_temperature_2m"],
+    )
+
+    with pytest.raises(FileNotFoundError, match="weather feature file"):
+        Chronos2LoRAWeatherDayAhead(
+            config=Chronos2LoRAWeatherConfig(
+                model_artifact_path=artifact_path,
+                weather_features_long_path=tmp_path / "missing.parquet",
+                context_length=48,
+            ),
+            pipeline=FakeChronosPredictDfPipeline(),
+        ).fit(history).predict(future)
+
+
+def test_chronos_lora_weather_adapter_enforces_artifact_covariate_schema(tmp_path) -> None:
+    panel = _panel(periods=24 * 14)
+    origin = pd.Timestamp("2024-01-09T10:00:00Z")
+    history = panel[panel["ds_utc"] < origin].copy()
+    future = make_danish_delivery_day_horizon(panel, origin)
+    artifact_path = _chronos_artifact(
+        tmp_path,
+        covariates=[*CALENDAR_COVARIATES, "weather_missing_model_lead1d_temperature_2m"],
+    )
+    weather_path = _weather_path(
+        tmp_path,
+        panel=panel,
+        origin=origin,
+        max_ds_utc=future["ds_utc"].max(),
+        feature_names=["weather_gfs_global_lead1d_temperature_2m"],
+    )
+
+    with pytest.raises(ValueError, match="artifact covariates"):
+        Chronos2LoRAWeatherDayAhead(
+            config=Chronos2LoRAWeatherConfig(
+                model_artifact_path=artifact_path,
+                weather_features_long_path=weather_path,
+                context_length=48,
+            ),
+            pipeline=FakeChronosPredictDfPipeline(),
+        ).fit(history).predict(future)
+
+
 class FakePool:
     def __init__(self, data, label=None, weight=None, cat_features=None):
         self.data = data
@@ -120,14 +289,94 @@ class FakeChronosPipeline:
         return np.repeat(quantiles[None, :, :], series_count, axis=0)
 
 
-def _panel(*, periods: int) -> pd.DataFrame:
+class FakeChronosPredictDfPipeline:
+    def __init__(self):
+        self.context_df = None
+        self.future_df = None
+        self.prediction_length = None
+
+    def predict_df(self, context_df, future_df, prediction_length, **kwargs):
+        self.context_df = context_df.copy()
+        self.future_df = future_df.copy()
+        self.prediction_length = prediction_length
+        frames = []
+        for item_id, frame in future_df.groupby("item_id", sort=False):
+            values = np.arange(len(frame), dtype=float) + 10.0
+            frames.append(
+                pd.DataFrame(
+                    {
+                        "item_id": item_id,
+                        "timestamp": frame["timestamp"].to_numpy(),
+                        "0.1": values - 1.0,
+                        "0.5": values,
+                        "0.9": values + 1.0,
+                    }
+                )
+            )
+        return pd.concat(frames, ignore_index=True)
+
+
+def _panel(*, periods: int, start: str = "2024-01-01T00:00:00Z") -> pd.DataFrame:
     frame = pd.DataFrame(
         {
             "unique_id": ["day_ahead_price_DK1"] * periods,
-            "ds_utc": pd.date_range("2024-01-01T00:00:00Z", periods=periods, freq="h"),
+            "ds_utc": pd.date_range(start, periods=periods, freq="h"),
             "area": ["DK1"] * periods,
             "y": [float(value) for value in range(periods)],
             "dataset_version": ["v1"] * periods,
         }
     )
     return add_copenhagen_calendar(frame)
+
+
+def _chronos_artifact(tmp_path, *, covariates: list[str]) -> Path:
+    artifact_path = tmp_path / "chronos_artifact"
+    artifact_path.mkdir()
+    (artifact_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "artifact_schema_version": CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION,
+                "covariates": covariates,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return artifact_path
+
+
+def _weather_path(
+    tmp_path,
+    *,
+    panel: pd.DataFrame,
+    origin: pd.Timestamp,
+    max_ds_utc: pd.Timestamp,
+    feature_names: list[str],
+    unavailable_feature_names: set[str] | None = None,
+) -> Path:
+    unavailable = unavailable_feature_names or set()
+    timestamps = pd.date_range(
+        panel["ds_utc"].min(),
+        max_ds_utc,
+        freq="h",
+        tz="UTC",
+    )
+    rows = []
+    for timestamp in timestamps:
+        for feature_name in feature_names:
+            rows.append(
+                {
+                    "area": "DK1",
+                    "ds_utc": timestamp,
+                    "feature_name": feature_name,
+                    "value": 1.0,
+                    "location_coverage_ratio": 1.0,
+                    "location_coverage_pass": True,
+                    "feature_group_pass": True,
+                    "forecast_available_at_utc": origin + pd.Timedelta(hours=1)
+                    if feature_name in unavailable
+                    else origin - pd.Timedelta(hours=1),
+                }
+            )
+    path = tmp_path / "weather.parquet"
+    pd.DataFrame(rows).to_parquet(path, index=False)
+    return path
