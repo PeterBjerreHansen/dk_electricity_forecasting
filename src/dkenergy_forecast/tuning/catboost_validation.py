@@ -710,8 +710,12 @@ def run_baseline_comparator(
     origins: pd.DataFrame,
     min_train_days: int,
 ) -> pd.DataFrame:
+    """Run notebook comparison baselines, including optional feature-frame baselines."""
+
     frames = []
-    for model_label, factory in baseline_model_factories().items():
+    factories = baseline_model_factories(include_optional=True)
+    for model_label in FEATURE_FRAME_BASELINE_COLUMNS:
+        factory = factories[model_label]
         predictions = rolling_origin_backtest(
             model_factory=factory,
             panel=panel,

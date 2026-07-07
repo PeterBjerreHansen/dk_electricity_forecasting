@@ -13,7 +13,7 @@ import pandas as pd
 
 SOURCE_PROVIDER = "open_meteo"
 SOURCE_PRODUCT = "previous_runs"
-DATASET_VERSION = "v1"
+DATASET_VERSION = "open_meteo_previous_runs_v1"
 OPEN_METEO_MODELS = ("gfs_global", "icon_eu", "metno_nordic")
 DMI_HARMONIE_MODEL = "dmi_harmonie_arome_europe"
 BASE_VARIABLES = (

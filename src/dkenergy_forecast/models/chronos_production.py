@@ -32,7 +32,7 @@ DEFAULT_WEATHER_FEATURES_LONG_PATH = (
     PROJECT_ROOT
     / "data"
     / "features"
-    / "weather_open_meteo_area_hourly_long_v1.parquet"
+    / "weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet"
 )
 CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION = 1
 
@@ -158,6 +158,8 @@ class ChronosZeroShotDayAhead:
 
 @dataclass
 class Chronos2LoRAWeatherDayAhead:
+    """Production adapter that loads a trained LoRA artifact and never updates its weights."""
+
     config: Chronos2LoRAWeatherConfig = PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG
     pipeline: Any | None = None
     model_name: str = "chronos2_lora_calendar_weather_day_ahead"

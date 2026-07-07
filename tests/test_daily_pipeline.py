@@ -22,6 +22,7 @@ def test_daily_pipeline_does_not_refresh_weather_implicitly() -> None:
     assert "build_weather_backtest_frame.py" not in result.stdout
     assert "run_publish_forecast.py" in result.stdout
     assert "--weather-features-long-path" in result.stdout
+    assert "weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet" in result.stdout
 
 
 def test_daily_pipeline_accepts_allow_incomplete_panel_alias() -> None:
@@ -49,6 +50,7 @@ def test_daily_pipeline_allows_explicit_weather_refresh_skip() -> None:
     assert "fetch_open_meteo_previous_runs.py" not in result.stdout
     assert "build_open_meteo_weather_features.py" not in result.stdout
     assert "--weather-features-long-path" in result.stdout
+    assert "weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet" in result.stdout
 
 
 def test_daily_pipeline_refreshes_weather_sources_when_requested() -> None:

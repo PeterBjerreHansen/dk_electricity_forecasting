@@ -183,16 +183,64 @@ def test_future_publish_predictions_preserve_horizon_metadata_without_actuals() 
     assert published["actual_price"].isna().all()
 
 
+def test_future_dashboard_payload_serializes_missing_actuals_as_null(tmp_path) -> None:
+    panel = _panel(periods=24 * 14)
+    origin = panel["ds_utc"].max().normalize() + pd.Timedelta(days=1, hours=10)
+    origins = pd.DataFrame({"forecast_origin_utc": [origin]})
+    factories = latest_publish_model_factories(["same_hour_last_week"])
+
+    predictions = rolling_origin_backtest(
+        model_factory=factories["same_hour_last_week"],
+        panel=panel,
+        origins=origins,
+        horizon_builder=lambda panel_arg, origin_arg: make_danish_delivery_day_horizon(
+            panel_arg,
+            origin_arg,
+            days_ahead=1,
+        ),
+        min_train_rows=24,
+    )
+    predictions["model_label"] = "same_hour_last_week"
+    scores = model_score_table(_predictions())
+    manifest = make_forecast_run_manifest(
+        run_id="future_run",
+        forecast_origin_utc=origin,
+        predictions=predictions,
+        scores=scores,
+        artifact_paths={},
+        dataset_version="v1",
+        git_commit_value="abc123",
+    )
+    dashboard = build_dashboard_payload(
+        predictions=predictions,
+        scores=scores,
+        manifest=manifest,
+    )
+
+    written = write_forecast_run_artifacts(
+        tmp_path / "run",
+        predictions=predictions,
+        scores=scores,
+        manifest=manifest,
+        dashboard=dashboard,
+    )
+
+    saved_dashboard = json.loads(written["dashboard"].read_text(encoding="utf-8"))
+    first_prediction = saved_dashboard["predictions"][0]
+    assert first_prediction["price_available_at_utc"] is None
+    assert first_prediction["actual_price"] is None
+
+
 def test_production_registry_defaults_include_lora_chronos_and_optional_catboost(monkeypatch) -> None:
     specs = production_model_specs()
 
     assert default_production_model_labels() == [
         "same_hour_last_week",
-        "rolling_median_hour_weekend_56d",
         "median_weekday_exp_hl4_floor10_42d__median_weekend_exp_hl28_floor20_56d",
         "chronos2_lora_calendar_weather_ctx1024_v1",
     ]
     assert not specs["rolling_median_local_hour_28d"].default_enabled
+    assert not specs["rolling_median_hour_weekend_56d"].default_enabled
     assert specs["catboost_price_manual_v1"].family == "catboost"
     assert specs["catboost_price_manual_v1"].required_extra == "catboost"
     assert not specs["catboost_price_manual_v1"].default_enabled

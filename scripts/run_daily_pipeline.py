@@ -18,7 +18,7 @@ DEFAULT_WEATHER_FEATURES_LONG_PATH = (
     ROOT
     / "data"
     / "features"
-    / "weather_open_meteo_area_hourly_long_v1.parquet"
+    / "weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet"
 )
 
 

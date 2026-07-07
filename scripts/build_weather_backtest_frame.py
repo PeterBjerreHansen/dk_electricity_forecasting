@@ -111,7 +111,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             ROOT
             / "data"
             / "features"
-            / "weather_open_meteo_area_hourly_long_v1.parquet"
+            / "weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet"
         ),
     )
     parser.add_argument(

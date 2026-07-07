@@ -3,10 +3,9 @@
 Production-oriented reference skeleton for Danish day-ahead electricity price
 forecasting. The project keeps the core simple: public API ingestion, immutable
 raw responses, normalized parquet tables, leakage-safe rolling-origin
-backtests, baseline forecasts, optional weather-feature boosting experiments,
-one manually selected CatBoost production model, one default Chronos-2 LoRA
-weather model, optional Chronos experiments, and a minimal artifact-only
-Streamlit dashboard.
+backtests, a small production forecast set, notebook-first comparison
+experiments, one default Chronos-2 LoRA weather model, and a minimal
+artifact-only Streamlit dashboard.
 
 ## Setup
 
@@ -98,24 +97,27 @@ python scripts/run_baseline_backtest.py --allow-incomplete-panel
 python scripts/run_publish_forecast.py --allow-incomplete-panel
 ```
 
-The default latest-forecast set is:
-`same_hour_last_week`, `rolling_median_hour_weekend_56d`, and
+The default latest-forecast set is deliberately small:
+`same_hour_last_week`,
 `median_weekday_exp_hl4_floor10_42d__median_weekend_exp_hl28_floor20_56d`,
-plus `chronos2_lora_calendar_weather_ctx1024_v1`.
+and `chronos2_lora_calendar_weather_ctx1024_v1`.
 
 The Chronos production model loads a manually exported LoRA artifact from
 `artifacts/models/chronos2_lora_calendar_weather_ctx1024_v1/`, consumes the
 Open-Meteo long weather feature parquet, and publishes `q10`, `q50`, `q90`,
 with `y_pred=q50`. It fails rather than falling back if the required weather
-artifact or covariate schema is missing. Daily publishing does not retrain it;
-export a new artifact explicitly when needed:
+artifact or covariate schema is missing. Daily publishing loads the trained
+LoRA artifact and does not update its weights; export a new artifact explicitly
+when you want to retrain:
 
 ```bash
 python scripts/train_chronos_lora.py
 ```
 
-`chronos_zero_shot_v1` is registered but disabled by default. Selecting it
-requires the optional Chronos extra and an explicit model list.
+`rolling_median_hour_weekend_56d`, `rolling_median_local_hour_28d`,
+`catboost_price_manual_v1`, and `chronos_zero_shot_v1` are registered
+comparison models, but disabled by default. Use them from notebooks or pass an
+explicit `--models` list when you want a production smoke comparison.
 
 Weighted median recency experiments are baseline modes. The default command
 stays compact; heavier grids are explicit. The weekday/weekend diagnostic tunes

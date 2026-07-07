@@ -252,9 +252,9 @@ jupyter notebook notebooks/05_catboost_model_development.ipynb
 The default builder writes:
 
 ```text
-data/normalized/open_meteo_previous_runs_v1.parquet
-data/features/weather_open_meteo_area_hourly_long_v1.parquet
-data/features/weather_open_meteo_area_hourly_v1.qa.json
+data/normalized/open_meteo_previous_runs_open_meteo_previous_runs_v1.parquet
+data/features/weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet
+data/features/weather_open_meteo_area_hourly_open_meteo_previous_runs_v1.qa.json
 ```
 
 The long table is the canonical weather feature artifact. A derived wide table

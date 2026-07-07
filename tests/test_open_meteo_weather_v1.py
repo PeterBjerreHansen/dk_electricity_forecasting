@@ -290,11 +290,11 @@ def test_build_open_meteo_weather_writes_long_canonical_artifacts_by_default(tmp
         features_dir=features_dir,
     )
 
-    assert result.normalized_path == normalized_dir / "open_meteo_previous_runs_v1.parquet"
-    assert result.area_features_long_path == features_dir / "weather_open_meteo_area_hourly_long_v1.parquet"
-    assert result.qa_path == features_dir / "weather_open_meteo_area_hourly_v1.qa.json"
+    assert result.normalized_path == normalized_dir / "open_meteo_previous_runs_open_meteo_previous_runs_v1.parquet"
+    assert result.area_features_long_path == features_dir / "weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet"
+    assert result.qa_path == features_dir / "weather_open_meteo_area_hourly_open_meteo_previous_runs_v1.qa.json"
     assert result.area_features_wide_path is None
-    assert not (features_dir / "weather_open_meteo_area_hourly_wide_v1.parquet").exists()
+    assert not (features_dir / "weather_open_meteo_area_hourly_wide_open_meteo_previous_runs_v1.parquet").exists()
     assert result.normalized_path.exists()
     assert result.area_features_long_path.exists()
     assert result.qa_path.exists()
@@ -331,7 +331,7 @@ def test_build_open_meteo_weather_writes_wide_artifact_only_when_requested(tmp_p
         write_wide=True,
     )
 
-    assert result.area_features_wide_path == tmp_path / "features" / "weather_open_meteo_area_hourly_wide_v1.parquet"
+    assert result.area_features_wide_path == tmp_path / "features" / "weather_open_meteo_area_hourly_wide_open_meteo_previous_runs_v1.parquet"
     assert result.area_features_wide_path.exists()
 
 

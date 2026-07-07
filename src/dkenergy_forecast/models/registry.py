@@ -71,7 +71,7 @@ def baseline_production_model_specs() -> dict[str, ProductionModelSpec]:
         "rolling_median_hour_weekend_56d": ProductionModelSpec(
             label="rolling_median_hour_weekend_56d",
             family="baseline",
-            default_enabled=True,
+            default_enabled=False,
             supports_latest_publish=True,
             factory=lambda: SeasonalRollingMedian(
                 lookback_days=56,

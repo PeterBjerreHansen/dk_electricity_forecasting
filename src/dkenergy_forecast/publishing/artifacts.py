@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -246,7 +247,7 @@ def write_json(path: str | Path, payload: Any) -> None:
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(
-        json.dumps(json_safe(payload), indent=2, sort_keys=True) + "\n",
+        json.dumps(json_safe(payload), allow_nan=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
 
@@ -258,12 +259,21 @@ def json_safe(value: Any) -> Any:
         return [json_safe(item) for item in value]
     if isinstance(value, tuple):
         return [json_safe(item) for item in value]
+    if value is None or value is pd.NaT:
+        return None
     if isinstance(value, pd.Timestamp):
         return value.isoformat()
     if isinstance(value, datetime):
         return value.astimezone(timezone.utc).isoformat()
     if hasattr(value, "item"):
-        return value.item()
+        return json_safe(value.item())
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    try:
+        if bool(pd.isna(value)):
+            return None
+    except (TypeError, ValueError):
+        pass
     return value
 
 
