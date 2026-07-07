@@ -2,10 +2,10 @@ PYTHON ?= python
 
 -include .env
 
-TODAY_COPENHAGEN := $(shell TZ=Europe/Copenhagen date +%F)
+TOMORROW_COPENHAGEN := $(shell $(PYTHON) -c 'from datetime import datetime, timedelta; from zoneinfo import ZoneInfo; print((datetime.now(ZoneInfo("Europe/Copenhagen")).date() + timedelta(days=1)).isoformat())')
 EDS_START ?= 2024-07-01
 OPEN_METEO_START ?= 2024-07-01
-OPEN_METEO_END ?= $(TODAY_COPENHAGEN)
+OPEN_METEO_END ?= $(TOMORROW_COPENHAGEN)
 FORECAST_AT_HOUR_UTC ?= 10
 MIN_TRAIN_DAYS ?= 60
 SCORE_DAYS ?= 14
@@ -16,7 +16,7 @@ STREAMLIT_PORT ?= 8501
 EDS_END_ARG := $(if $(EDS_END),--end $(EDS_END),)
 PUBLISH_MODELS_ARG := $(if $(PUBLISH_MODELS),--models $(PUBLISH_MODELS),)
 
-.PHONY: install install-app install-production test ingest-prices build-prices ingest-weather build-weather weather-frame weather-frame-recent weather-frame-backtest backtest-baseline publish daily daily-weather dashboard docker-build docker-dashboard docker-pipeline dry-run dry-run-weather clean
+.PHONY: install install-app install-production test data-prices data-weather backtest-baseline publish daily daily-weather dashboard docker-build docker-dashboard docker-pipeline dry-run dry-run-weather clean
 
 install:
 	$(PYTHON) -m pip install -e ".[dev]"
@@ -30,26 +30,13 @@ install-production:
 test:
 	$(PYTHON) -m pytest
 
-ingest-prices:
+data-prices:
 	$(PYTHON) scripts/fetch_eds_prices.py --start $(EDS_START) $(EDS_END_ARG)
-
-build-prices:
 	$(PYTHON) scripts/build_price_panel.py --allow-incomplete-recent
 
-ingest-weather:
+data-weather:
 	$(PYTHON) scripts/fetch_open_meteo_previous_runs.py --start $(OPEN_METEO_START) --end $(OPEN_METEO_END)
-
-build-weather:
 	$(PYTHON) scripts/build_open_meteo_weather_features.py
-
-weather-frame:
-	$(PYTHON) scripts/build_weather_backtest_frame.py --frame-kind recent --allow-incomplete-panel
-
-weather-frame-recent:
-	$(PYTHON) scripts/build_weather_backtest_frame.py --frame-kind recent --allow-incomplete-panel
-
-weather-frame-backtest:
-	$(PYTHON) scripts/build_weather_backtest_frame.py --frame-kind backtest --allow-incomplete-panel
 
 backtest-baseline:
 	$(PYTHON) scripts/run_baseline_backtest.py --allow-incomplete-panel --at-hour-utc $(FORECAST_AT_HOUR_UTC) --min-train-days $(MIN_TRAIN_DAYS)

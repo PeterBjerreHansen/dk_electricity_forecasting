@@ -28,7 +28,15 @@ from dkenergy_forecast.models.chronos_production import (  # noqa: E402
 )
 from dkenergy_forecast.features.weather_features import add_weather_ensemble_features  # noqa: E402
 from dkenergy_forecast.publishing import git_commit, json_safe  # noqa: E402
-from dkenergy_forecast.types import normalize_utc_column, to_utc_timestamp  # noqa: E402
+from dkenergy_forecast.types import (  # noqa: E402
+    DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
+    PRICE_AVAILABILITY_COLUMN,
+    COPENHAGEN_TZ,
+    ensure_price_availability,
+    filter_price_history_available_before,
+    normalize_utc_column,
+    to_utc_timestamp,
+)
 
 
 def main() -> None:
@@ -138,14 +146,17 @@ def make_lora_training_frame(
     prediction_length: int,
     weather_covariate_mode: str,
 ) -> tuple[pd.DataFrame, list[str], dict[str, Any]]:
-    panel_utc = normalize_utc_column(panel, "ds_utc").sort_values(["unique_id", "ds_utc"])
+    panel_utc = ensure_price_availability(
+        normalize_utc_column(panel, "ds_utc")
+    ).sort_values(["unique_id", "ds_utc"])
     weather_covariates = weather_valid_time_covariate_frame(weather)
     weather_columns = selected_weather_columns(weather_covariates, mode=weather_covariate_mode)
     if not weather_columns:
         raise ValueError("No weather covariates are available for Chronos LoRA training.")
 
     start = max(panel_utc["ds_utc"].min(), weather_covariates["ds_utc"].min())
-    train = panel_utc[(panel_utc["ds_utc"] >= start) & (panel_utc["ds_utc"] < first_eval_origin)].copy()
+    available = filter_price_history_available_before(panel_utc, first_eval_origin)
+    train = available[available["ds_utc"] >= start].copy()
     if train.empty:
         raise ValueError(f"No Chronos LoRA training rows before {first_eval_origin.isoformat()}")
     assert_regular_hourly_training_series(train)
@@ -181,6 +192,12 @@ def make_lora_training_frame(
         "available_random_windows_lower_bound": int((lengths - min_required + 1).clip(lower=0).sum()),
         "covariate_count": int(len(covariates)),
         "weather_covariate_count": int(sum(column.startswith("weather_") for column in covariates)),
+        "price_availability_policy": {
+            "column": PRICE_AVAILABILITY_COLUMN,
+            "publication_local_time": DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
+            "timezone": COPENHAGEN_TZ,
+            "eligibility_operator": "< forecast_origin_utc",
+        },
     }
     return train_df.sort_values(["item_id", "timestamp"]).reset_index(drop=True), covariates, diagnostics
 
@@ -279,6 +296,16 @@ def make_manifest(
         "covariates": list(covariates),
         "calendar_covariates": [column for column in covariates if column in CALENDAR_COVARIATES],
         "weather_covariates": [column for column in covariates if column.startswith("weather_")],
+        "price_availability_policy": {
+            "column": PRICE_AVAILABILITY_COLUMN,
+            "publication_local_time": DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
+            "timezone": COPENHAGEN_TZ,
+            "eligibility_operator": "< forecast_origin_utc",
+        },
+        "forecast_origin_policy": {
+            "timezone": COPENHAGEN_TZ,
+            "local_time": DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
+        },
         "diagnostics": diagnostics,
         "validation_scores": scores,
         "panel_path": args.panel_path,

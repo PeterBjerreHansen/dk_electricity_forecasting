@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pandas as pd
 
-from dkenergy_forecast.types import PANEL_REQUIRED_COLUMNS, normalize_utc_column, require_columns
+from dkenergy_forecast.types import (
+    PANEL_REQUIRED_COLUMNS,
+    PRICE_AVAILABILITY_COLUMN,
+    ensure_price_availability,
+    normalize_utc_column,
+    require_columns,
+)
 
 
 def load_price_panel(
@@ -17,8 +23,12 @@ def load_price_panel(
     """Load and validate a model-ready hourly price panel."""
 
     panel = pd.read_parquet(path)
-    require_columns(panel, PANEL_REQUIRED_COLUMNS, "price panel")
+    required_without_availability = [
+        column for column in PANEL_REQUIRED_COLUMNS if column != PRICE_AVAILABILITY_COLUMN
+    ]
+    require_columns(panel, required_without_availability, "price panel")
     panel = normalize_utc_column(panel, "ds_utc")
+    panel = ensure_price_availability(panel)
 
     duplicate_count = int(panel.duplicated(["unique_id", "ds_utc"]).sum())
     if duplicate_count:

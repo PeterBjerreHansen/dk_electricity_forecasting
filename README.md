@@ -39,8 +39,8 @@ python scripts/build_price_panel.py --allow-incomplete-recent
 ```
 
 Open-Meteo Previous Runs provides representative DK1/DK2 weather forecast
-features. Raw API payloads are stored before normalized long and wide parquet
-feature tables are built:
+features. Raw API payloads are stored before normalized forecasts and the
+canonical long area-hour weather feature table are built:
 
 ```bash
 python scripts/fetch_open_meteo_previous_runs.py --start 2024-07-01 --end YYYY-MM-DD
@@ -153,11 +153,13 @@ but it is not part of the default latest-forecast set.
 
 ## Evaluation
 
-Rolling-origin evaluation uses forecast origins that occur before the target
-delivery window. Horizon builders strip target columns before model prediction;
-actuals are joined only after predictions are produced. Tests cover UTC/local
-alignment, DST day lengths, weather forecast availability masking, and leakage
-prevention.
+Rolling-origin evaluation uses local market-noon forecast origins and explicit
+price availability metadata. Price history is eligible when
+`price_available_at_utc < forecast_origin_utc`; weather remains masked by
+`forecast_available_at_utc <= forecast_origin_utc`. Horizon builders strip
+target columns before model prediction; actuals are joined only after
+predictions are produced. Tests cover UTC/local alignment, DST day lengths,
+price and weather availability masking, and leakage prevention.
 
 Backtest outputs use compact ignored run folders. Notebook runs default to
 summary or diagnostic artifacts; use the audit level only when you need a full
@@ -177,10 +179,10 @@ Metrics include MAE, RMSE, bias, and optional quantile interval coverage/width.
 
 ## Daily Job
 
-Run the file-based daily pipeline. By default this refreshes prices, refreshes
-Open-Meteo weather when a selected/default model requires it, runs the baseline
-backtest, and publishes the registry-default forecast artifacts used by
-Streamlit:
+Run the file-based daily pipeline. By default this refreshes prices, runs the
+baseline backtest, and publishes the registry-default forecast artifacts used by
+Streamlit. Weather refresh is explicit so data ingestion remains independent of
+model-registry choices:
 
 ```bash
 python scripts/run_daily_pipeline.py
@@ -201,11 +203,10 @@ python scripts/run_daily_pipeline.py --skip-backtest
 python scripts/run_daily_pipeline.py --strict-panel
 ```
 
-Weather-aware default models trigger Open-Meteo Previous Runs refreshes through
-the required delivery date. `--with-weather` can force that refresh for a
-price-only model set; `--skip-weather` intentionally skips the refresh, but
-publishing `chronos2_lora_calendar_weather_ctx1024_v1` will still fail if its
-weather feature artifact is missing or stale.
+Use `--with-weather` when the Open-Meteo source artifacts should be refreshed
+before publishing. Weather-aware models consume the existing long weather feature
+artifact and fail rather than silently fetching or falling back if that artifact
+or its covariate schema is missing.
 
 In production, schedule that command from cron, GitHub Actions, Airflow, or a
 container scheduler with persistent volumes mounted for `data/`, `results/`,

@@ -24,11 +24,13 @@ def main() -> None:
         features_dir=Path(args.features_dir),
         dataset_version=args.dataset_version,
         coverage_threshold=args.coverage_threshold,
+        write_wide=args.write_wide,
     )
 
     print(f"Wrote normalized Open-Meteo forecasts: {result.normalized_path}")
     print(f"Wrote long area weather features: {result.area_features_long_path}")
-    print(f"Wrote wide area weather features: {result.area_features_wide_path}")
+    if result.area_features_wide_path is not None:
+        print(f"Wrote wide area weather features: {result.area_features_wide_path}")
     print(f"Wrote QA report: {result.qa_path}")
     print(
         "Rows: normalized={normalized_row_count}; area_features={area_feature_row_count}; "
@@ -52,6 +54,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--dataset-version", default=DATASET_VERSION)
     parser.add_argument("--coverage-threshold", type=float, default=COVERAGE_THRESHOLD)
+    parser.add_argument(
+        "--write-wide",
+        action="store_true",
+        help="Also write the derived wide table for ad hoc inspection. The long table is canonical.",
+    )
     return parser.parse_args()
 
 

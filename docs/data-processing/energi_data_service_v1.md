@@ -258,6 +258,7 @@ price_eur_per_mwh
 source_dataset
 source_resolution_minutes
 dataset_version
+price_available_at_utc
 ```
 
 Column decisions:
@@ -272,6 +273,9 @@ Column decisions:
    experiments.
 5. Calendar features are derived from local Danish time, not UTC, because
    demand and market behavior follow local hour, weekday, weekends, and DST.
+6. `price_available_at_utc` is a deterministic v1 market-availability timestamp:
+   every local delivery day is treated as published at 12:00
+   `Europe/Copenhagen` on the previous local calendar day.
 
 Primary key:
 
@@ -342,16 +346,18 @@ EDS directly.
 
 For backtesting:
 
-1. Train only on rows with `ds_utc` before the forecast origin.
+1. Train only on target rows with `price_available_at_utc` before the forecast
+   origin.
 2. Build lag and rolling features only from rows that would have been known at
    that forecast origin.
-3. Do not use source rows for future delivery hours as features just because the
-   EDS API may already expose them.
+3. Day-ahead rows for delivery hours after the origin clock time may be used
+   when their `price_available_at_utc` is before the origin.
 4. Store `dataset_version` with every result artifact.
 
-The source does not provide historical publication timestamps in this v1 plan.
-The first baseline therefore treats the EDS series as final historical truth,
-not as a point-in-time market data archive.
+The source does not provide row-level historical publication timestamps in this
+v1 plan. The project therefore uses the deterministic Nord Pool day-ahead
+publication policy above rather than treating delivery time as availability
+time.
 
 ## Validation Report
 

@@ -14,6 +14,7 @@ TABULAR_METADATA_COLUMNS = {
     "forecast_origin_utc",
     "horizon",
     "y",
+    "price_available_at_utc",
     "dataset_version",
     "price_dkk_per_mwh",
     "price_eur_per_mwh",

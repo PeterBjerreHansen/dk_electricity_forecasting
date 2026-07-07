@@ -12,6 +12,7 @@ data/raw/
 data/normalized/
 data/features/
 data/model_ready/
+data/samples/
 results/
 artifacts/
 app_data/

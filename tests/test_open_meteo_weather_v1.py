@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -10,6 +11,7 @@ from dkenergy_data.build.open_meteo_weather_v1 import (
     WeatherLocation,
     build_area_feature_long,
     build_area_feature_wide,
+    build_open_meteo_weather_from_raw,
     normalize_batch,
     normalize_batches,
 )
@@ -254,6 +256,83 @@ def test_normalize_batches_rejects_conflicting_duplicates_within_raw_batch() -> 
             base_variables=["temperature_2m"],
             lead_time_days=[1],
         )
+
+
+def test_build_open_meteo_weather_writes_long_canonical_artifacts_by_default(tmp_path) -> None:
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "previous_runs"
+        / "gfs_global"
+        / "dk1_aarhus"
+        / "fetched_at=20260101T000000Z"
+        / "start=2025-01-01_end=2025-01-01.json"
+    )
+    raw_path.parent.mkdir(parents=True)
+    raw_path.write_text(
+        json.dumps(
+            {
+                "hourly": {
+                    "time": ["2025-01-01T00:00"],
+                    "temperature_2m_previous_day1": [3.0],
+                },
+                "hourly_units": {"temperature_2m_previous_day1": "degC"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    normalized_dir = tmp_path / "normalized"
+    features_dir = tmp_path / "features"
+
+    result = build_open_meteo_weather_from_raw(
+        raw_root=tmp_path / "raw",
+        normalized_dir=normalized_dir,
+        features_dir=features_dir,
+    )
+
+    assert result.normalized_path == normalized_dir / "open_meteo_previous_runs_v1.parquet"
+    assert result.area_features_long_path == features_dir / "weather_open_meteo_area_hourly_long_v1.parquet"
+    assert result.qa_path == features_dir / "weather_open_meteo_area_hourly_v1.qa.json"
+    assert result.area_features_wide_path is None
+    assert not (features_dir / "weather_open_meteo_area_hourly_wide_v1.parquet").exists()
+    assert result.normalized_path.exists()
+    assert result.area_features_long_path.exists()
+    assert result.qa_path.exists()
+
+
+def test_build_open_meteo_weather_writes_wide_artifact_only_when_requested(tmp_path) -> None:
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "previous_runs"
+        / "gfs_global"
+        / "dk1_aarhus"
+        / "fetched_at=20260101T000000Z"
+        / "start=2025-01-01_end=2025-01-01.json"
+    )
+    raw_path.parent.mkdir(parents=True)
+    raw_path.write_text(
+        json.dumps(
+            {
+                "hourly": {
+                    "time": ["2025-01-01T00:00"],
+                    "temperature_2m_previous_day1": [3.0],
+                },
+                "hourly_units": {"temperature_2m_previous_day1": "degC"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_open_meteo_weather_from_raw(
+        raw_root=tmp_path / "raw",
+        normalized_dir=tmp_path / "normalized",
+        features_dir=tmp_path / "features",
+        write_wide=True,
+    )
+
+    assert result.area_features_wide_path == tmp_path / "features" / "weather_open_meteo_area_hourly_wide_v1.parquet"
+    assert result.area_features_wide_path.exists()
 
 
 def _raw_batch(

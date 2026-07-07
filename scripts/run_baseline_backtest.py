@@ -27,6 +27,14 @@ from dkenergy_forecast.evaluation.summary import (  # noqa: E402
 from dkenergy_forecast.io import load_price_panel  # noqa: E402
 from dkenergy_forecast.models.registry import baseline_model_factories  # noqa: E402
 from dkenergy_forecast.publishing import git_commit, json_safe  # noqa: E402
+from dkenergy_forecast.types import (  # noqa: E402
+    COPENHAGEN_TZ,
+    DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
+    PRICE_AVAILABILITY_COLUMN,
+    ensure_price_availability,
+    parse_local_time,
+    price_available_before_mask,
+)
 
 
 BASELINE_FACTORIES = baseline_model_factories()
@@ -34,7 +42,7 @@ NS_PER_DAY = 86_400_000_000_000
 
 DayType = Literal["weekday", "weekend"]
 WeightFamily = Literal["equal", "exponential"]
-HistoryGroup = dict[tuple[str, int, bool], tuple[list[int], list[float]]]
+HistoryGroup = dict[tuple[str, int, bool], tuple[list[int], list[int], list[float]]]
 ScheduleSpec = tuple[str, WeightFamily, float | None, float | None]
 
 
@@ -148,7 +156,12 @@ def parse_args() -> argparse.Namespace:
         help="Output directory. Defaults depend on the selected baseline mode.",
     )
     parser.add_argument("--days", type=int, default=45)
-    parser.add_argument("--at-hour-utc", type=int, default=10)
+    parser.add_argument(
+        "--at-hour-utc",
+        type=int,
+        help="Legacy fixed UTC forecast hour. Omit to use --forecast-local-time.",
+    )
+    parser.add_argument("--forecast-local-time", default="12:00")
     parser.add_argument("--min-train-days", type=int, default=60)
     parser.add_argument(
         "--weighted-median-grid",
@@ -223,6 +236,7 @@ def run_official_baseline_backtest(
         panel,
         days=args.days,
         at_hour_utc=args.at_hour_utc,
+        forecast_local_time=args.forecast_local_time,
         min_history_days=args.min_train_days,
     )
 
@@ -276,6 +290,7 @@ def run_common_weighted_median_backtest(
         panel,
         source_dataset="Elspotprices",
         at_hour_utc=args.at_hour_utc,
+        forecast_local_time=args.forecast_local_time,
         min_history_days=args.weighted_min_history_days,
         stride_days=weighted_elspot_stride_days(args),
         max_origins=args.max_elspot_origins,
@@ -284,6 +299,7 @@ def run_common_weighted_median_backtest(
         panel,
         source_dataset="DayAheadPrices",
         at_hour_utc=args.at_hour_utc,
+        forecast_local_time=args.forecast_local_time,
         min_history_days=args.weighted_min_history_days,
         stride_days=1,
         max_origins=args.max_dayahead_origins,
@@ -361,6 +377,7 @@ def run_weekday_weekend_weighted_median_backtest(
         panel,
         source_dataset="Elspotprices",
         at_hour_utc=args.at_hour_utc,
+        forecast_local_time=args.forecast_local_time,
         min_history_days=args.weighted_min_history_days,
         stride_days=weighted_elspot_stride_days(args),
         max_origins=args.max_elspot_origins,
@@ -369,6 +386,7 @@ def run_weekday_weekend_weighted_median_backtest(
         panel,
         source_dataset="DayAheadPrices",
         at_hour_utc=args.at_hour_utc,
+        forecast_local_time=args.forecast_local_time,
         min_history_days=args.weighted_min_history_days,
         stride_days=1,
         max_origins=args.max_dayahead_origins,
@@ -581,7 +599,8 @@ def select_source_horizon_origins(
     panel: pd.DataFrame,
     *,
     source_dataset: str,
-    at_hour_utc: int,
+    at_hour_utc: int | None,
+    forecast_local_time: str,
     min_history_days: int,
     stride_days: int,
     max_origins: int,
@@ -608,8 +627,20 @@ def select_source_horizon_origins(
         "local_date",
     ].sort_values()
 
-    origins = pd.to_datetime(delivery_dates) - pd.Timedelta(days=1)
-    origins = pd.DatetimeIndex(origins).tz_localize("UTC") + pd.Timedelta(hours=at_hour_utc)
+    origin_dates = pd.to_datetime(delivery_dates) - pd.Timedelta(days=1)
+    if at_hour_utc is None:
+        local_time = parse_local_time(forecast_local_time)
+        origins = (
+            origin_dates
+            + pd.Timedelta(
+                hours=local_time.hour,
+                minutes=local_time.minute,
+                seconds=local_time.second,
+            )
+        ).dt.tz_localize(COPENHAGEN_TZ).dt.tz_convert("UTC")
+        origins = pd.DatetimeIndex(origins)
+    else:
+        origins = pd.DatetimeIndex(origin_dates).tz_localize("UTC") + pd.Timedelta(hours=at_hour_utc)
     origins = origins[origins >= min_origin]
     selected = list(origins[::stride_days])
     if max_origins:
@@ -640,11 +671,12 @@ def make_prediction_base(
         "utc_offset_hours",
         "dataset_version",
         "source_dataset",
+        PRICE_AVAILABILITY_COLUMN,
     ]
     frames = []
-    panel_utc = panel.sort_values(["unique_id", "ds_utc"]).reset_index(drop=True)
+    panel_utc = ensure_price_availability(panel).sort_values(["unique_id", "ds_utc"]).reset_index(drop=True)
     for origin in origins["forecast_origin_utc"].sort_values().drop_duplicates():
-        train_rows = int((panel_utc["ds_utc"] < origin).sum())
+        train_rows = int(price_available_before_mask(panel_utc, origin).sum())
         if train_rows < min_train_rows:
             raise ValueError(
                 "Not enough training rows before forecast origin "
@@ -673,11 +705,13 @@ def make_prediction_base(
 
 def make_history_groups(panel: pd.DataFrame) -> HistoryGroup:
     groups: HistoryGroup = {}
+    panel = ensure_price_availability(panel)
     for key, frame in panel.groupby(["unique_id", "local_hour", "is_weekend"], sort=False):
         group_key = (str(key[0]), int(key[1]), bool(key[2]))
         sorted_frame = frame.sort_values("ds_utc")
         groups[group_key] = (
             sorted_frame["ds_utc"].astype("int64").tolist(),
+            sorted_frame[PRICE_AVAILABILITY_COLUMN].astype("int64").tolist(),
             sorted_frame["y"].astype(float).tolist(),
         )
     return groups
@@ -695,6 +729,7 @@ def make_weighted_candidate_predictions(
     prediction_frames = []
     base_with_origin_ns = base.copy()
     base_with_origin_ns["origin_ns"] = base_with_origin_ns["forecast_origin_utc"].astype("int64")
+    base_with_origin_ns["target_ns"] = base_with_origin_ns["ds_utc"].astype("int64")
     for label, spec in candidates.items():
         print(f"Running {label} over {base['forecast_origin_utc'].nunique()} origins...", flush=True)
         predictions = base_with_origin_ns.copy()
@@ -705,7 +740,7 @@ def make_weighted_candidate_predictions(
             predict_weighted_median(row, history_groups, spec=spec, min_periods=min_periods)
             for row in predictions.itertuples(index=False)
         ]
-        prediction_frames.append(predictions.drop(columns=["origin_ns"]))
+        prediction_frames.append(predictions.drop(columns=["origin_ns", "target_ns"]))
     return add_prediction_diagnostics(pd.concat(prediction_frames, ignore_index=True))
 
 
@@ -719,6 +754,7 @@ def score_marginal_candidates(
 ) -> pd.DataFrame:
     work = base.copy()
     work["origin_ns"] = work["forecast_origin_utc"].astype("int64")
+    work["target_ns"] = work["ds_utc"].astype("int64")
     rows = list(work.itertuples(index=False))
     rows_by_day_type = {
         "weekday": [row for row in rows if not bool(row.is_weekend)],
@@ -767,21 +803,30 @@ def predict_weighted_median(
     group = history_groups.get(key)
     if group is None:
         return None
-    timestamps, values = group
+    timestamps, available_at, values = group
     origin_ns = int(row.origin_ns)
-    start = origin_ns - spec.lookback_days * NS_PER_DAY
+    target_ns = int(row.target_ns)
+    start = target_ns - spec.lookback_days * NS_PER_DAY
     left = bisect_left(timestamps, start)
-    right = bisect_left(timestamps, origin_ns)
+    right = bisect_left(timestamps, target_ns)
     if right <= left:
         return None
     window_timestamps = timestamps[left:right]
+    window_available_at = available_at[left:right]
     window_values = values[left:right]
-    if len(window_values) < min_periods:
+    eligible = [
+        (timestamp, value)
+        for timestamp, published_at, value in zip(window_timestamps, window_available_at, window_values)
+        if published_at < origin_ns
+    ]
+    if len(eligible) < min_periods:
         return None
+    window_timestamps = [timestamp for timestamp, _value in eligible]
+    window_values = [value for _timestamp, value in eligible]
     if spec.weight_family == "equal":
         return median(window_values)
 
-    weights = candidate_weights(origin_ns, window_timestamps, spec)
+    weights = candidate_weights(target_ns, window_timestamps, spec)
     positive = [(value, weight) for value, weight in zip(window_values, weights) if weight > 0]
     if len(positive) < min_periods:
         return None
@@ -789,11 +834,11 @@ def predict_weighted_median(
 
 
 def candidate_weights(
-    origin_ns: int,
+    target_ns: int,
     timestamps: list[int],
     spec: WeightedMedianSpec,
 ) -> list[float]:
-    ages = [(origin_ns - timestamp) / NS_PER_DAY for timestamp in timestamps]
+    ages = [(target_ns - timestamp) / NS_PER_DAY for timestamp in timestamps]
     if spec.weight_family == "exponential":
         half_life_days = float(spec.half_life_days)
         weights = [0.5 ** (float(age) / half_life_days) for age in ages]
@@ -938,6 +983,7 @@ def predict_selected_composite(
     }
     output = base.copy()
     output["origin_ns"] = output["forecast_origin_utc"].astype("int64")
+    output["target_ns"] = output["ds_utc"].astype("int64")
     output["model_name"] = "weekday_weekend_weighted_seasonal_median"
     output["model_version"] = "v1"
     output["model_label"] = "weekday_weekend_weighted_median_composite"
@@ -957,7 +1003,7 @@ def predict_selected_composite(
     output["error"] = output["y_pred"] - output["y"]
     output["abs_error"] = output["error"].abs()
     output["squared_error"] = output["error"] ** 2
-    return output.drop(columns=["origin_ns"])
+    return output.drop(columns=["origin_ns", "target_ns"])
 
 
 def make_official_manifest(
@@ -982,7 +1028,9 @@ def make_official_manifest(
         "forecast_origin_count": int(len(origins)),
         "prediction_row_count": int(len(predictions)),
         "days": int(args.days),
-        "at_hour_utc": int(args.at_hour_utc),
+        "at_hour_utc": None if args.at_hour_utc is None else int(args.at_hour_utc),
+        "forecast_local_time": args.forecast_local_time,
+        "price_availability_policy": price_availability_manifest(),
         "min_train_days": int(args.min_train_days),
         "git_commit": git_commit(ROOT),
     }
@@ -1018,7 +1066,9 @@ def make_common_weighted_manifest(
         "lookback_days": int(args.weighted_lookback_days),
         "min_periods": int(args.weighted_min_periods),
         "min_history_days": int(args.weighted_min_history_days),
-        "at_hour_utc": int(args.at_hour_utc),
+        "at_hour_utc": None if args.at_hour_utc is None else int(args.at_hour_utc),
+        "forecast_local_time": args.forecast_local_time,
+        "price_availability_policy": price_availability_manifest(),
         "elspot_origin_stride_days": int(weighted_elspot_stride_days(args)),
         "elspot_origin_count": int(len(elspot_origins)),
         "dayahead_origin_count": int(len(dayahead_origins)),
@@ -1065,7 +1115,9 @@ def make_weekday_weekend_weighted_manifest(
         "seasonal_keys": ["local_hour", "is_weekend"],
         "min_periods": int(args.weighted_min_periods),
         "min_history_days": int(args.weighted_min_history_days),
-        "at_hour_utc": int(args.at_hour_utc),
+        "at_hour_utc": None if args.at_hour_utc is None else int(args.at_hour_utc),
+        "forecast_local_time": args.forecast_local_time,
+        "price_availability_policy": price_availability_manifest(),
         "elspot_origin_stride_days": int(weighted_elspot_stride_days(args)),
         "elspot_origin_count": int(len(elspot_origins)),
         "dayahead_origin_count": int(len(dayahead_origins)),
@@ -1089,6 +1141,16 @@ def weight_schedule_manifest(candidate_grid: str) -> dict[str, list[str]]:
         }
     labels = [schedule[0] for schedule in broad_weight_schedules()]
     return {"weekday": labels, "weekend": labels}
+
+
+def price_availability_manifest() -> dict[str, str]:
+    return {
+        "column": PRICE_AVAILABILITY_COLUMN,
+        "publication_local_time": DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
+        "timezone": COPENHAGEN_TZ,
+        "eligibility_operator": "< forecast_origin_utc",
+        "median_window_reference": "target ds_utc",
+    }
 
 
 def write_manifest(output_dir: Path, manifest: dict[str, Any]) -> None:

@@ -20,7 +20,12 @@ from dkenergy_forecast.tuning.catboost_common import (
     suggest_catboost_params,
     trials_to_frame,
 )
-from dkenergy_forecast.types import require_columns
+from dkenergy_forecast.types import (
+    PRICE_AVAILABILITY_COLUMN,
+    ensure_price_availability,
+    price_available_before_mask,
+    require_columns,
+)
 
 
 RESIDUAL_BASELINE_COLUMN = "baseline_wdwe_weighted_median_y_pred"
@@ -771,6 +776,7 @@ def baseline_predictions_from_feature_frame(
             "is_weekend",
             "is_dst",
             "utc_offset_hours",
+            PRICE_AVAILABILITY_COLUMN,
             "dataset_version",
         ]
         if column in prepared.columns
@@ -951,6 +957,7 @@ def prepare_nested_frame(frame: pd.DataFrame) -> pd.DataFrame:
     prepared = frame.copy()
     prepared["forecast_origin_utc"] = pd.to_datetime(prepared["forecast_origin_utc"], utc=True)
     prepared["ds_utc"] = pd.to_datetime(prepared["ds_utc"], utc=True)
+    prepared = ensure_price_availability(prepared)
     prepared["outer_month"] = origin_month_labels(prepared["forecast_origin_utc"])
     return prepared.sort_values(["forecast_origin_utc", "unique_id", "ds_utc"]).reset_index(drop=True)
 
@@ -1102,10 +1109,15 @@ def training_rows_for_origin(
     training_origin_days: int | None,
 ) -> pd.DataFrame:
     origin = pd.Timestamp(origin).tz_convert("UTC")
-    mask = (frame["forecast_origin_utc"] < origin) & (frame["ds_utc"] < origin) & frame["y"].notna()
+    prepared = ensure_price_availability(frame)
+    mask = (
+        (prepared["forecast_origin_utc"] < origin)
+        & price_available_before_mask(prepared, origin)
+        & prepared["y"].notna()
+    )
     if training_origin_days is not None:
-        mask &= frame["forecast_origin_utc"] >= origin - pd.Timedelta(days=training_origin_days)
-    return frame[mask].copy()
+        mask &= prepared["forecast_origin_utc"] >= origin - pd.Timedelta(days=training_origin_days)
+    return prepared[mask].copy()
 
 
 def split_train_eval(
@@ -1265,6 +1277,7 @@ def prediction_metadata_columns(frame: pd.DataFrame) -> list[str]:
             "horizon",
             "y",
             "dataset_version",
+            PRICE_AVAILABILITY_COLUMN,
             "outer_month",
         ]
         if column in frame.columns

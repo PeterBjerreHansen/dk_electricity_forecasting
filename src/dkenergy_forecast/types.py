@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from datetime import time
 from typing import Iterable, Protocol
 
 import pandas as pd
 
 
 COPENHAGEN_TZ = "Europe/Copenhagen"
+DEFAULT_PRICE_PUBLICATION_LOCAL_TIME = "12:00"
+PRICE_AVAILABILITY_COLUMN = "price_available_at_utc"
 
 PANEL_REQUIRED_COLUMNS = [
     "unique_id",
@@ -14,6 +17,7 @@ PANEL_REQUIRED_COLUMNS = [
     "area",
     "y",
     "dataset_version",
+    PRICE_AVAILABILITY_COLUMN,
 ]
 
 PREDICTION_REQUIRED_COLUMNS = [
@@ -41,6 +45,7 @@ KNOWN_FUTURE_COLUMNS = [
     "is_dst",
     "utc_offset_hours",
     "dataset_version",
+    PRICE_AVAILABILITY_COLUMN,
 ]
 
 TARGET_LEAKAGE_COLUMNS = ["y", "price_dkk_per_mwh", "price_eur_per_mwh"]
@@ -78,6 +83,86 @@ def normalize_utc_column(frame: pd.DataFrame, column: str) -> pd.DataFrame:
     output = frame.copy()
     output[column] = pd.to_datetime(output[column], utc=True)
     return output
+
+
+def parse_local_time(value: str | time = DEFAULT_PRICE_PUBLICATION_LOCAL_TIME) -> time:
+    if isinstance(value, time):
+        return value
+    parts = str(value).split(":")
+    if len(parts) not in {2, 3}:
+        raise ValueError(f"Local time must use HH:MM or HH:MM:SS format; got {value!r}")
+    hour = int(parts[0])
+    minute = int(parts[1])
+    second = int(parts[2]) if len(parts) == 3 else 0
+    if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
+        raise ValueError(f"Invalid local time: {value!r}")
+    return time(hour=hour, minute=minute, second=second)
+
+
+def add_price_availability(
+    frame: pd.DataFrame,
+    *,
+    publication_local_time: str | time = DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
+    column: str = PRICE_AVAILABILITY_COLUMN,
+) -> pd.DataFrame:
+    """Add deterministic day-ahead price publication timestamps."""
+
+    require_columns(frame, ["ds_utc"], "frame")
+    output = normalize_utc_column(frame, "ds_utc")
+    local_time = parse_local_time(publication_local_time)
+    local_dates = pd.to_datetime(
+        output["ds_utc"].dt.tz_convert(COPENHAGEN_TZ).dt.strftime("%Y-%m-%d")
+    )
+    available_naive = (
+        local_dates
+        - pd.Timedelta(days=1)
+        + pd.Timedelta(hours=local_time.hour, minutes=local_time.minute, seconds=local_time.second)
+    )
+    output[column] = available_naive.dt.tz_localize(COPENHAGEN_TZ).dt.tz_convert("UTC")
+    return output
+
+
+def ensure_price_availability(
+    frame: pd.DataFrame,
+    *,
+    publication_local_time: str | time = DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
+    column: str = PRICE_AVAILABILITY_COLUMN,
+) -> pd.DataFrame:
+    if column in frame.columns:
+        return normalize_utc_column(frame, column)
+    return add_price_availability(
+        frame,
+        publication_local_time=publication_local_time,
+        column=column,
+    )
+
+
+def price_available_before_mask(
+    frame: pd.DataFrame,
+    forecast_origin_utc: object,
+    *,
+    column: str = PRICE_AVAILABILITY_COLUMN,
+) -> pd.Series:
+    require_columns(frame, [column], "frame")
+    origin = to_utc_timestamp(forecast_origin_utc)
+    return pd.to_datetime(frame[column], utc=True) < origin
+
+
+def filter_price_history_available_before(
+    frame: pd.DataFrame,
+    forecast_origin_utc: object,
+    *,
+    publication_local_time: str | time = DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
+    column: str = PRICE_AVAILABILITY_COLUMN,
+) -> pd.DataFrame:
+    prepared = ensure_price_availability(
+        frame,
+        publication_local_time=publication_local_time,
+        column=column,
+    )
+    return prepared.loc[
+        price_available_before_mask(prepared, forecast_origin_utc, column=column)
+    ].copy()
 
 
 def add_copenhagen_calendar(frame: pd.DataFrame) -> pd.DataFrame:

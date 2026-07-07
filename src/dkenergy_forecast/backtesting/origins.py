@@ -7,6 +7,7 @@ import pandas as pd
 from dkenergy_forecast.backtesting.horizons import (
     make_daily_origins,
     make_danish_delivery_day_horizon,
+    make_local_daily_origins,
 )
 from dkenergy_forecast.types import normalize_utc_column, require_columns
 
@@ -18,7 +19,8 @@ def choose_recent_complete_daily_origins(
     panel: pd.DataFrame,
     *,
     days: int,
-    at_hour_utc: int = 10,
+    at_hour_utc: int | None = None,
+    forecast_local_time: str = "12:00",
     max_origins: int = 0,
     min_history_days: int = 90,
     holdout_days: int = 2,
@@ -41,7 +43,15 @@ def choose_recent_complete_daily_origins(
     max_origin = (panel_utc["ds_utc"].max() - pd.Timedelta(days=holdout_days)).normalize()
     start = max(min_origin, max_origin - pd.Timedelta(days=days))
     end = max_origin + pd.Timedelta(days=1)
-    origins = make_daily_origins(panel_utc, start=start, end=end, at_hour_utc=at_hour_utc)
+    if at_hour_utc is None:
+        origins = make_local_daily_origins(
+            panel_utc,
+            start=start,
+            end=end,
+            forecast_local_time=forecast_local_time,
+        )
+    else:
+        origins = make_daily_origins(panel_utc, start=start, end=end, at_hour_utc=at_hour_utc)
 
     valid_origins: list[pd.Timestamp] = []
     for origin in origins["forecast_origin_utc"]:

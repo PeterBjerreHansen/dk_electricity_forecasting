@@ -37,7 +37,13 @@ from dkenergy_forecast.publishing import (  # noqa: E402
     update_latest_exports,
     write_forecast_run_artifacts,
 )
-from dkenergy_forecast.types import to_utc_timestamp  # noqa: E402
+from dkenergy_forecast.types import (  # noqa: E402
+    COPENHAGEN_TZ,
+    DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
+    PRICE_AVAILABILITY_COLUMN,
+    parse_local_time,
+    to_utc_timestamp,
+)
 
 
 def main() -> None:
@@ -61,7 +67,12 @@ def main() -> None:
         qa_path if qa_path and qa_path.exists() else None,
         require_final_historical=not args.allow_incomplete_panel,
     )
-    forecast_origin = resolve_forecast_origin(panel, args.forecast_origin_utc, args.at_hour_utc)
+    forecast_origin = resolve_forecast_origin(
+        panel,
+        args.forecast_origin_utc,
+        args.at_hour_utc,
+        args.forecast_local_time,
+    )
 
     model_labels = list(factories)
     predictions = publish_predictions_for_origins(
@@ -77,6 +88,7 @@ def main() -> None:
         panel,
         days=args.score_days,
         at_hour_utc=args.at_hour_utc,
+        forecast_local_time=args.forecast_local_time,
         max_origins=args.score_max_origins,
         min_history_days=args.min_train_days,
         holdout_days=args.score_holdout_days,
@@ -109,7 +121,14 @@ def main() -> None:
         extra={
             "panel_path": str(panel_path),
             "qa_path": str(qa_path) if qa_path else None,
-            "at_hour_utc": int(args.at_hour_utc),
+            "at_hour_utc": None if args.at_hour_utc is None else int(args.at_hour_utc),
+            "forecast_local_time": args.forecast_local_time,
+            "price_availability_policy": {
+                "column": PRICE_AVAILABILITY_COLUMN,
+                "publication_local_time": DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
+                "timezone": COPENHAGEN_TZ,
+                "eligibility_operator": "< forecast_origin_utc",
+            },
             "min_train_days": int(args.min_train_days),
             "score_origin_min_utc": score_origins["forecast_origin_utc"].min(),
             "score_origin_max_utc": score_origins["forecast_origin_utc"].max(),
@@ -170,7 +189,12 @@ def parse_args() -> argparse.Namespace:
         "--forecast-origin-utc",
         help="Forecast origin timestamp. Defaults to the latest panel UTC date at --at-hour-utc.",
     )
-    parser.add_argument("--at-hour-utc", type=int, default=10)
+    parser.add_argument(
+        "--at-hour-utc",
+        type=int,
+        help="Legacy fixed UTC forecast hour. Omit to use --forecast-local-time.",
+    )
+    parser.add_argument("--forecast-local-time", default="12:00")
     parser.add_argument("--min-train-days", type=int, default=60)
     parser.add_argument(
         "--score-days",
@@ -319,13 +343,24 @@ def selected_chronos_metadata(labels: list[str]) -> dict[str, object]:
 def resolve_forecast_origin(
     panel: pd.DataFrame,
     supplied_origin: str | None,
-    at_hour_utc: int,
+    at_hour_utc: int | None,
+    forecast_local_time: str,
 ) -> pd.Timestamp:
     if supplied_origin:
         return to_utc_timestamp(supplied_origin)
-    if not 0 <= at_hour_utc <= 23:
-        raise ValueError("at_hour_utc must be between 0 and 23")
-    return panel["ds_utc"].max().normalize() + pd.Timedelta(hours=at_hour_utc)
+    if at_hour_utc is not None:
+        if not 0 <= at_hour_utc <= 23:
+            raise ValueError("at_hour_utc must be between 0 and 23")
+        return panel["ds_utc"].max().normalize() + pd.Timedelta(hours=at_hour_utc)
+
+    local_time = parse_local_time(forecast_local_time)
+    latest_local_date = panel["ds_utc"].max().tz_convert(COPENHAGEN_TZ).date()
+    origin_local = pd.Timestamp(latest_local_date).tz_localize(COPENHAGEN_TZ) + pd.Timedelta(
+        hours=local_time.hour,
+        minutes=local_time.minute,
+        seconds=local_time.second,
+    )
+    return origin_local.tz_convert("UTC")
 
 
 if __name__ == "__main__":

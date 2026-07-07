@@ -9,6 +9,12 @@ from typing import Any, Iterable
 
 import pandas as pd
 
+from dkenergy_forecast.types import (
+    DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
+    PRICE_AVAILABILITY_COLUMN,
+    add_price_availability,
+)
+
 
 COPENHAGEN_TZ = "Europe/Copenhagen"
 DATASET_VERSION = "v1"
@@ -459,6 +465,13 @@ def make_qa_report(
         "raw_source_audit": raw_source_audit or {},
         "source_datasets": sorted(panel["source_dataset"].dropna().unique().tolist()),
         "source_metadata_sha256": {},
+        "price_availability_policy": {
+            "column": PRICE_AVAILABILITY_COLUMN,
+            "publication_local_time": DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
+            "timezone": COPENHAGEN_TZ,
+            "delivery_day_offset_days": -1,
+            "eligibility_operator": "< forecast_origin_utc",
+        },
         "row_count": int(len(panel)),
         "min_ds_utc": panel["ds_utc"].min().isoformat(),
         "max_ds_utc": panel["ds_utc"].max().isoformat(),
@@ -698,6 +711,7 @@ def _add_model_ready_columns(panel: pd.DataFrame, *, dataset_version: str) -> pd
     )
     output["y"] = output["price_dkk_per_mwh"]
     output["dataset_version"] = dataset_version
+    output = add_price_availability(output)
     return output.sort_values(["area", "ds_utc"]).reset_index(drop=True)
 
 

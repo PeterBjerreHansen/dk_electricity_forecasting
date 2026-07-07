@@ -56,14 +56,14 @@ pip install -e ".[notebooks,tuning]"
 The current interpreted EDA pass uses a focused real-data artifact:
 
 ```text
-data/model_ready/price_panel_hourly_v1_eda.parquet
-data/model_ready/price_panel_hourly_v1_eda.qa.json
+data/samples/eds_eda/model_ready/price_panel_hourly_v1_eda.parquet
+data/samples/eds_eda/model_ready/price_panel_hourly_v1_eda.qa.json
 ```
 
 It covers Danish local delivery time from 2024-01-01 through 2026-07-01 and
-includes the 2025-10-01 EDS source transition. The local canonical
-`price_panel_hourly_v1.parquet` may also be built from this focused raw slice
-for early modeling work; do not treat that as the final full-history backfill.
+includes the 2025-10-01 EDS source transition. It lives under `data/samples/`
+so it is useful as a fallback without being confused for the canonical
+full-history panel.
 EDA plots are displayed inline when notebooks are run. Generated figures and
 small summary tables are treated as local notebook artifacts and are not
 committed.
@@ -73,8 +73,8 @@ Open-Meteo backfill when present:
 
 ```text
 data/raw/open_meteo/
-data/normalized/open_meteo_previous_runs_open_meteo_previous_runs_v1.parquet
-data/features/weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet
+data/normalized/open_meteo_previous_runs_v1.parquet
+data/features/weather_open_meteo_area_hourly_long_v1.parquet
 data/features/weather_experiment_frame_backtest.parquet
 ```
 
@@ -90,10 +90,10 @@ frame.
 The focused Open-Meteo EDA slice remains useful as a small fallback artifact:
 
 ```text
-data/raw/open_meteo_eda/
-data/normalized/open_meteo_previous_runs_open_meteo_previous_runs_v1_eda.parquet
-data/features/weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1_eda.parquet
-data/features/weather_open_meteo_area_hourly_open_meteo_previous_runs_v1_eda.qa.json
+data/samples/open_meteo_eda/raw/
+data/samples/open_meteo_eda/normalized/open_meteo_previous_runs_v1_eda.parquet
+data/samples/open_meteo_eda/features/weather_open_meteo_area_hourly_long_v1_eda.parquet
+data/samples/open_meteo_eda/features/weather_open_meteo_area_hourly_v1_eda.qa.json
 ```
 
 It covers 2025-01-01 through 2025-01-14. Treat it as a source-shape EDA sample,

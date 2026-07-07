@@ -8,6 +8,8 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from dkenergy_forecast.evaluation.summary import add_prediction_diagnostics, model_score_table
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PANEL_PATH = ROOT / "data" / "model_ready" / "price_panel_hourly_v1.parquet"
@@ -16,6 +18,7 @@ DEFAULT_LATEST_PREDICTIONS = ROOT / "results" / "latest_forecast" / "predictions
 DEFAULT_RECENT_PREDICTIONS = ROOT / "results" / "recent_scores" / "predictions.parquet"
 DEFAULT_RECENT_SCORES = ROOT / "results" / "recent_scores" / "model_scores.parquet"
 DEFAULT_BACKTEST_DIRS = [
+    ROOT / "results" / "notebook_chronos2_experimental_v1",
     ROOT / "results" / "baseline_v1",
 ]
 
@@ -50,7 +53,11 @@ def main() -> None:
     panel = _load_parquet(panel_path)
     predictions = _load_predictions(payload, latest_predictions_path)
     scores = _load_scores(payload, recent_scores_path)
-    backtest_predictions = _load_recent_predictions(payload, recent_predictions_path, backtest_dirs)
+    backtest_predictions = _load_backtest_tab_predictions(
+        payload,
+        recent_predictions_path,
+        backtest_dirs,
+    )
     run = payload.get("run", {}) if payload else {}
 
     st.title("Danish Electricity Forecasts")
@@ -193,10 +200,33 @@ def _render_forecasts(predictions: pd.DataFrame) -> None:
 
 def _render_backtests(predictions: pd.DataFrame, scores: pd.DataFrame) -> None:
     st.subheader("Actual vs Forecast")
-    _render_predicted_vs_actual(predictions)
+
+    if predictions.empty:
+        st.warning("No evaluated prediction artifacts found.")
+        score_frame = scores
+    else:
+        frame = _prepare_backtest_predictions(predictions)
+        runs = sorted(frame["run_id"].dropna().astype(str).unique().tolist())
+        default_run = runs[-1] if runs else None
+        run_id = st.selectbox("Run", runs, index=runs.index(default_run) if default_run in runs else 0)
+        run_frame = frame[frame["run_id"] == run_id].copy()
+
+        visible_days = st.slider(
+            "Backtest visible days",
+            min_value=1,
+            max_value=90,
+            value=30,
+            key=f"backtest_visible_days_{run_id}",
+        )
+        visible_frame = _filter_recent_backtest_rows(run_frame, visible_days)
+        st.caption(_backtest_window_caption(visible_frame, total_rows=len(run_frame)))
+
+        _render_predicted_vs_actual(visible_frame)
+        score_frame = _score_table_for_predictions(visible_frame)
+
     st.divider()
     st.subheader("Metrics")
-    _render_scores(scores)
+    _render_scores(score_frame)
 
 
 def _render_predicted_vs_actual(predictions: pd.DataFrame) -> None:
@@ -207,18 +237,12 @@ def _render_predicted_vs_actual(predictions: pd.DataFrame) -> None:
     frame = predictions.copy()
     frame["ds_utc"] = pd.to_datetime(frame["ds_utc"], utc=True)
     frame["forecast_origin_utc"] = pd.to_datetime(frame["forecast_origin_utc"], utc=True)
-    frame["error"] = frame["y_pred"] - frame["y"]
-    frame["abs_error"] = frame["error"].abs()
+    frame = add_prediction_diagnostics(frame)
     frame = _with_model_display_names(frame)
 
-    runs = sorted(frame["run_id"].dropna().astype(str).unique().tolist())
-    default_run = runs[-1] if runs else None
-    run_id = st.selectbox("Run", runs, index=runs.index(default_run) if default_run in runs else 0)
-    run_frame = frame[frame["run_id"] == run_id].copy()
-
-    areas = sorted(run_frame["area"].dropna().astype(str).unique().tolist())
+    areas = sorted(frame["area"].dropna().astype(str).unique().tolist())
     area = st.selectbox("Price area", areas, index=0)
-    area_frame = run_frame[run_frame["area"] == area].copy()
+    area_frame = frame[frame["area"] == area].copy()
 
     models = sorted(area_frame["model"].dropna().astype(str).unique().tolist())
     model = st.selectbox("Model", models, index=0)
@@ -230,11 +254,7 @@ def _render_predicted_vs_actual(predictions: pd.DataFrame) -> None:
     cols[2].metric("RMSE", f"{((selected['error'] ** 2).mean() ** 0.5):.2f}")
     cols[3].metric("Bias", f"{selected['error'].mean():.2f}")
 
-    visible_days = st.slider("Backtest visible days", min_value=3, max_value=90, value=30)
-    cutoff = selected["ds_utc"].max() - pd.Timedelta(days=visible_days)
-    recent = selected[selected["ds_utc"] >= cutoff].copy()
-
-    line_frame = recent.set_index("ds_utc")[["y", "y_pred"]].rename(
+    line_frame = selected.set_index("ds_utc")[["y", "y_pred"]].rename(
         columns={"y": "actual", "y_pred": "predicted"}
     )
     st.line_chart(line_frame, height=360)
@@ -248,10 +268,51 @@ def _render_scores(scores: pd.DataFrame) -> None:
     frame = _with_model_display_names(scores.copy())
     preferred = [
         column
-        for column in ["model", "area", "mae", "rmse", "bias", "coverage", "interval_width"]
+        for column in [
+            "model",
+            "area",
+            "rows",
+            "evaluated_rows",
+            "mae",
+            "rmse",
+            "bias",
+            "coverage",
+            "interval_width",
+        ]
         if column in frame.columns
     ]
     st.dataframe(frame[preferred].sort_values(["area", "mae"]), width="stretch", hide_index=True)
+
+
+def _prepare_backtest_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
+    frame = predictions.copy()
+    frame["ds_utc"] = pd.to_datetime(frame["ds_utc"], utc=True)
+    frame["forecast_origin_utc"] = pd.to_datetime(frame["forecast_origin_utc"], utc=True)
+    if "run_id" not in frame.columns:
+        frame["run_id"] = "backtest"
+    frame["run_id"] = frame["run_id"].fillna("backtest").astype(str)
+    return frame
+
+
+def _filter_recent_backtest_rows(predictions: pd.DataFrame, visible_days: int) -> pd.DataFrame:
+    if predictions.empty:
+        return predictions.copy()
+    cutoff = predictions["ds_utc"].max() - pd.Timedelta(days=visible_days)
+    return predictions[predictions["ds_utc"] >= cutoff].copy()
+
+
+def _backtest_window_caption(predictions: pd.DataFrame, *, total_rows: int) -> str:
+    if predictions.empty:
+        return f"Showing 0 of {total_rows} rows."
+    start = predictions["ds_utc"].min().strftime("%Y-%m-%d %H:%M UTC")
+    end = predictions["ds_utc"].max().strftime("%Y-%m-%d %H:%M UTC")
+    return f"Showing {len(predictions):,} of {total_rows:,} rows from {start} to {end}."
+
+
+def _score_table_for_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
+    if predictions.empty:
+        return pd.DataFrame()
+    return model_score_table(add_prediction_diagnostics(predictions))
 
 
 def _render_run_details(
@@ -324,6 +385,17 @@ def _load_recent_predictions(
     if _is_evaluated_prediction_frame(frame):
         return _parse_time_columns(frame, ["forecast_origin_utc", "ds_utc", "ds_local"])
     return _load_backtest_predictions(legacy_backtest_dirs)
+
+
+def _load_backtest_tab_predictions(
+    payload: dict[str, Any],
+    recent_predictions_path: Path,
+    backtest_dirs: list[Path],
+) -> pd.DataFrame:
+    backtests = _load_backtest_predictions(backtest_dirs)
+    if not backtests.empty:
+        return backtests
+    return _load_recent_predictions(payload, recent_predictions_path, backtest_dirs)
 
 
 def _load_backtest_predictions(backtest_dirs: list[Path]) -> pd.DataFrame:

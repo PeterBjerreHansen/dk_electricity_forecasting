@@ -8,6 +8,8 @@ from dkenergy_forecast.types import (
     PREDICTION_REQUIRED_COLUMNS,
     TARGET_LEAKAGE_COLUMNS,
     ForecastModel,
+    ensure_price_availability,
+    filter_price_history_available_before,
     normalize_utc_column,
     require_columns,
 )
@@ -26,6 +28,7 @@ METADATA_JOIN_COLUMNS = [
     "is_weekend",
     "is_dst",
     "utc_offset_hours",
+    "price_available_at_utc",
     "dataset_version",
 ]
 
@@ -39,12 +42,16 @@ def rolling_origin_backtest(
 ) -> pd.DataFrame:
     require_columns(panel, ["unique_id", "ds_utc", "y"], "panel")
     require_columns(origins, ["forecast_origin_utc"], "origins")
-    panel_utc = normalize_utc_column(panel, "ds_utc").sort_values(["unique_id", "ds_utc"]).reset_index(drop=True)
+    panel_utc = (
+        ensure_price_availability(normalize_utc_column(panel, "ds_utc"))
+        .sort_values(["unique_id", "ds_utc"])
+        .reset_index(drop=True)
+    )
     origins_utc = normalize_utc_column(origins, "forecast_origin_utc")
 
     outputs: list[pd.DataFrame] = []
     for origin in origins_utc["forecast_origin_utc"].sort_values().drop_duplicates():
-        history = panel_utc[panel_utc["ds_utc"] < origin].copy()
+        history = filter_price_history_available_before(panel_utc, origin)
         if min_train_rows is not None and len(history) < min_train_rows:
             raise ValueError(
                 "Not enough training rows before forecast origin "

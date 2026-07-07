@@ -249,14 +249,17 @@ jupyter notebook notebooks/05_catboost_model_development.ipynb
 
 ## QA Expectations
 
-The builder writes:
+The default builder writes:
 
 ```text
-data/normalized/open_meteo_previous_runs_open_meteo_previous_runs_v1.parquet
-data/features/weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet
-data/features/weather_open_meteo_area_hourly_wide_open_meteo_previous_runs_v1.parquet
-data/features/weather_open_meteo_area_hourly_open_meteo_previous_runs_v1.qa.json
+data/normalized/open_meteo_previous_runs_v1.parquet
+data/features/weather_open_meteo_area_hourly_long_v1.parquet
+data/features/weather_open_meteo_area_hourly_v1.qa.json
 ```
+
+The long table is the canonical weather feature artifact. A derived wide table
+can be written for ad hoc inspection with `--write-wide`, but it is not part of
+the normal source-processing contract.
 
 The QA report includes raw batch count, row counts, UTC range, model ids,
 parameters, lead days, null count, usable feature-row counts, and distinct

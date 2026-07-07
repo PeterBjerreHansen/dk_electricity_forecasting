@@ -67,7 +67,10 @@ def test_rolling_origin_future_frame_drops_target_columns_before_model_predictio
             overlap = set(TARGET_LEAKAGE_COLUMNS).intersection(future.columns)
             assert overlap == set()
             assert history is not None
-            assert history["ds_utc"].max() < future["forecast_origin_utc"].min()
+            assert (
+                pd.to_datetime(history["price_available_at_utc"], utc=True)
+                < future["forecast_origin_utc"].min()
+            ).all()
 
             output = future[["unique_id", "ds_utc", "forecast_origin_utc", "horizon"]].copy()
             output["model_name"] = self.model_name

@@ -36,7 +36,7 @@ def test_production_catboost_residual_adapter_returns_publishable_predictions(mo
     )
     panel = _panel(periods=24 * 70)
     origin = pd.Timestamp("2024-03-01T00:00:00Z")
-    history = panel[panel["ds_utc"] < origin].copy()
+    history = panel.copy()
     future = make_danish_delivery_day_horizon(panel, origin)
     future["y"] = 999999.0
     config = CatBoostProductionConfig(
@@ -99,10 +99,10 @@ def test_chronos_zero_shot_adapter_emits_quantiles_and_uses_q50_as_point_forecas
     assert predictions["q90"].tolist() == pytest.approx([11.0, 12.0, 13.0, 14.0])
 
 
-def test_chronos_lora_weather_adapter_emits_delivery_quantiles_and_uses_bridge_context(tmp_path) -> None:
+def test_chronos_lora_weather_adapter_emits_delivery_quantiles_and_uses_published_context(tmp_path) -> None:
     panel = _panel(periods=24 * 14)
     origin = pd.Timestamp("2024-01-09T10:00:00Z")
-    history = panel[panel["ds_utc"] < origin].copy()
+    history = panel.copy()
     future = make_danish_delivery_day_horizon(panel, origin)
     artifact_path = _chronos_artifact(
         tmp_path,
@@ -130,9 +130,9 @@ def test_chronos_lora_weather_adapter_emits_delivery_quantiles_and_uses_bridge_c
     assert predictions["y_pred"].tolist() == predictions["q50"].tolist()
     assert predictions[["unique_id", "forecast_origin_utc", "ds_utc"]].duplicated().sum() == 0
     assert predictions["ds_utc"].tolist() == future["ds_utc"].tolist()
-    assert pipeline.prediction_length == 37
-    assert pipeline.context_df["timestamp"].max() == pd.Timestamp("2024-01-09T09:00:00")
-    assert pipeline.future_df["timestamp"].min() == pd.Timestamp("2024-01-09T10:00:00")
+    assert pipeline.prediction_length == len(future)
+    assert pipeline.context_df["timestamp"].max() == future["ds_utc"].min().tz_localize(None) - pd.Timedelta(hours=1)
+    assert pipeline.future_df["timestamp"].min() == future["ds_utc"].min().tz_localize(None)
     assert pipeline.future_df["timestamp"].max() == future["ds_utc"].max().tz_localize(None)
 
 
@@ -175,8 +175,8 @@ def test_chronos_lora_loader_uses_chronos2_pipeline_for_adapter_artifact(tmp_pat
 @pytest.mark.parametrize(
     ("origin", "expected_prediction_length", "expected_delivery_rows"),
     [
-        ("2026-03-28T10:00:00Z", 36, 23),
-        ("2026-10-24T10:00:00Z", 37, 25),
+        ("2026-03-28T11:00:00Z", 23, 23),
+        ("2026-10-24T10:00:00Z", 25, 25),
     ],
 )
 def test_chronos_lora_weather_adapter_handles_dst_bridge_lengths(
@@ -187,7 +187,7 @@ def test_chronos_lora_weather_adapter_handles_dst_bridge_lengths(
 ) -> None:
     panel = _panel(start="2026-02-01T00:00:00Z", periods=24 * 310)
     origin_ts = pd.Timestamp(origin)
-    history = panel[panel["ds_utc"] < origin_ts].copy()
+    history = panel.copy()
     future = make_danish_delivery_day_horizon(panel, origin_ts)
     artifact_path = _chronos_artifact(
         tmp_path,
@@ -218,7 +218,7 @@ def test_chronos_lora_weather_adapter_handles_dst_bridge_lengths(
 def test_chronos_lora_weather_adapter_allows_partial_weather_nans_when_other_signal_exists(tmp_path) -> None:
     panel = _panel(periods=24 * 14)
     origin = pd.Timestamp("2024-01-09T10:00:00Z")
-    history = panel[panel["ds_utc"] < origin].copy()
+    history = panel.copy()
     future = make_danish_delivery_day_horizon(panel, origin)
     covariates = [
         *CALENDAR_COVARIATES,
@@ -253,7 +253,7 @@ def test_chronos_lora_weather_adapter_allows_partial_weather_nans_when_other_sig
 def test_chronos_lora_weather_adapter_fails_for_missing_weather_file(tmp_path) -> None:
     panel = _panel(periods=24 * 14)
     origin = pd.Timestamp("2024-01-09T10:00:00Z")
-    history = panel[panel["ds_utc"] < origin].copy()
+    history = panel.copy()
     future = make_danish_delivery_day_horizon(panel, origin)
     artifact_path = _chronos_artifact(
         tmp_path,
@@ -274,7 +274,7 @@ def test_chronos_lora_weather_adapter_fails_for_missing_weather_file(tmp_path) -
 def test_chronos_lora_weather_adapter_enforces_artifact_covariate_schema(tmp_path) -> None:
     panel = _panel(periods=24 * 14)
     origin = pd.Timestamp("2024-01-09T10:00:00Z")
-    history = panel[panel["ds_utc"] < origin].copy()
+    history = panel.copy()
     future = make_danish_delivery_day_horizon(panel, origin)
     artifact_path = _chronos_artifact(
         tmp_path,

@@ -9,11 +9,16 @@ import pandas as pd
 from dkenergy_forecast.backtesting.horizons import (
     make_daily_origins,
     make_danish_delivery_day_horizon,
+    make_local_daily_origins,
 )
 from dkenergy_forecast.statistics import weighted_median
 from dkenergy_forecast.types import (
+    PRICE_AVAILABILITY_COLUMN,
     add_horizon_column,
+    ensure_price_availability,
+    filter_price_history_available_before,
     normalize_utc_column,
+    price_available_before_mask,
     require_columns,
     to_utc_timestamp,
 )
@@ -187,7 +192,7 @@ def _build_price_feature_frame_prepared(
     config: PriceFeatureConfig,
 ) -> pd.DataFrame:
     origin = to_utc_timestamp(forecast_origin_utc)
-    history = panel_utc.loc[panel_utc["ds_utc"] < origin]
+    history = filter_price_history_available_before(panel_utc, origin)
     features = _base_feature_frame(future_utc, config)
 
     features = _add_lag_features(features, history, origin, config)
@@ -281,7 +286,8 @@ def build_training_matrix(
     forecast_origin_utc: object,
     *,
     training_origin_days: int = 70,
-    at_hour_utc: int = 10,
+    at_hour_utc: int | None = None,
+    forecast_local_time: str = "12:00",
     config: PriceFeatureConfig | None = None,
     horizon_builder: HorizonBuilder = make_danish_delivery_day_horizon,
     require_complete_horizons_before_origin: bool = True,
@@ -299,21 +305,32 @@ def build_training_matrix(
         if config.include_weighted_median_baseline
         else config
     )
-    train_origin_end = origin.normalize()
+    train_origin_end = origin
     train_origin_start = train_origin_end - pd.Timedelta(days=training_origin_days)
-    train_origins = make_daily_origins(
-        panel_utc,
-        start=train_origin_start,
-        end=train_origin_end,
-        at_hour_utc=at_hour_utc,
-    )
+    if at_hour_utc is None:
+        train_origins = make_local_daily_origins(
+            panel_utc,
+            start=train_origin_start,
+            end=train_origin_end,
+            forecast_local_time=forecast_local_time,
+        )
+    else:
+        train_origins = make_daily_origins(
+            panel_utc,
+            start=train_origin_start,
+            end=train_origin_end,
+            at_hour_utc=at_hour_utc,
+        )
 
     frames: list[pd.DataFrame] = []
     for train_origin in train_origins["forecast_origin_utc"]:
         horizon = horizon_builder(panel_utc, train_origin)
         if horizon.empty:
             continue
-        if require_complete_horizons_before_origin and horizon["ds_utc"].max() >= origin:
+        horizon_with_availability = ensure_price_availability(horizon)
+        if require_complete_horizons_before_origin and not bool(
+            price_available_before_mask(horizon_with_availability, origin).all()
+        ):
             continue
         if horizon["ds_utc"].min() < panel_utc["ds_utc"].min():
             continue
@@ -338,7 +355,7 @@ def build_training_matrix(
 
 def _prepare_panel(panel: pd.DataFrame, config: PriceFeatureConfig) -> pd.DataFrame:
     require_columns(panel, ["unique_id", "area", "ds_utc", "y"], "panel")
-    prepared = normalize_utc_column(panel, "ds_utc")
+    prepared = ensure_price_availability(normalize_utc_column(panel, "ds_utc"))
     required_calendar = _required_calendar_columns(config)
     require_columns(prepared, required_calendar, "panel")
     return prepared.sort_values(["area", "ds_utc"]).reset_index(drop=True)
@@ -346,7 +363,7 @@ def _prepare_panel(panel: pd.DataFrame, config: PriceFeatureConfig) -> pd.DataFr
 
 def _prepare_future(future: pd.DataFrame, config: PriceFeatureConfig) -> pd.DataFrame:
     require_columns(future, ["unique_id", "area", "ds_utc", "forecast_origin_utc"], "future")
-    prepared = normalize_utc_column(future, "ds_utc")
+    prepared = ensure_price_availability(normalize_utc_column(future, "ds_utc"))
     prepared = normalize_utc_column(prepared, "forecast_origin_utc")
     if "horizon" not in prepared.columns:
         prepared = add_horizon_column(prepared)
@@ -398,6 +415,7 @@ def _base_feature_frame(future: pd.DataFrame, config: PriceFeatureConfig) -> pd.
         "forecast_origin_utc",
         "horizon",
         "dataset_version",
+        PRICE_AVAILABILITY_COLUMN,
     ]
     columns = _ordered_existing(metadata_columns + list(config.base_features), future.columns)
     return future[columns].copy()
@@ -409,8 +427,12 @@ def _add_lag_features(
     origin: pd.Timestamp,
     config: PriceFeatureConfig,
 ) -> pd.DataFrame:
-    lookup = history[["area", "ds_utc", "y"]].rename(
-        columns={"ds_utc": "feature_time", "y": "feature_y"}
+    lookup = history[["area", "ds_utc", "y", PRICE_AVAILABILITY_COLUMN]].rename(
+        columns={
+            "ds_utc": "feature_time",
+            "y": "feature_y",
+            PRICE_AVAILABILITY_COLUMN: "feature_available_at",
+        }
     )
     output = features.copy()
     for lag in config.lag_hours:
@@ -418,7 +440,7 @@ def _add_lag_features(
         lagged["feature_time"] = lagged["ds_utc"] - pd.Timedelta(hours=lag)
         lagged = lagged.merge(lookup, on=["area", "feature_time"], how="left")
         output[f"lag_{lag}h"] = lagged["feature_y"].where(
-            lagged["feature_time"] < origin
+            pd.to_datetime(lagged["feature_available_at"], utc=True) < origin
         ).to_numpy()
     return output
 
@@ -431,8 +453,13 @@ def _add_rolling_features(
 ) -> pd.DataFrame:
     output = features.copy()
     for window in config.rolling_windows_hours:
+        window_history = (
+            history.sort_values(["area", "ds_utc"])
+            .groupby("area", group_keys=False)
+            .tail(window)
+        )
         summary = (
-            history.loc[history["ds_utc"] >= origin - pd.Timedelta(hours=window)]
+            window_history
             .groupby("area")["y"]
             .agg(["mean", "median"])
             .rename(
@@ -454,28 +481,39 @@ def _add_seasonal_features(
     config: PriceFeatureConfig,
 ) -> pd.DataFrame:
     output = features.copy()
-    seasonal_history = history.loc[
-        history["ds_utc"] >= origin - pd.Timedelta(days=config.seasonal_lookback_days)
-    ].copy()
+    hour_groups = _seasonal_history_groups(history, ["area", "local_hour"])
+    hour_weekend_groups = _seasonal_history_groups(history, ["area", "local_hour", "is_weekend"])
+    lookback = pd.Timedelta(days=config.seasonal_lookback_days)
+    hour_values: list[float | None] = []
+    hour_weekend_values: list[float | None] = []
 
-    hour_summary = (
-        seasonal_history.groupby(["area", "local_hour"])["y"]
-        .median()
-        .rename("seasonal_median_local_hour")
-        .reset_index()
-    )
-    hour_weekend_summary = (
-        seasonal_history.groupby(["area", "local_hour", "is_weekend"])["y"]
-        .median()
-        .rename("seasonal_median_hour_weekend")
-        .reset_index()
-    )
-    output = output.merge(hour_summary, on=["area", "local_hour"], how="left")
-    return output.merge(
-        hour_weekend_summary,
-        on=["area", "local_hour", "is_weekend"],
-        how="left",
-    )
+    for row in output.itertuples(index=False):
+        target_time = to_utc_timestamp(getattr(row, "ds_utc"))
+        window_start = target_time - lookback
+        hour_values.append(
+            _median_from_target_relative_window(
+                hour_groups.get((getattr(row, "area"), int(getattr(row, "local_hour")))),
+                target_time=target_time,
+                window_start=window_start,
+            )
+        )
+        hour_weekend_values.append(
+            _median_from_target_relative_window(
+                hour_weekend_groups.get(
+                    (
+                        getattr(row, "area"),
+                        int(getattr(row, "local_hour")),
+                        bool(getattr(row, "is_weekend")),
+                    )
+                ),
+                target_time=target_time,
+                window_start=window_start,
+            )
+        )
+
+    output["seasonal_median_local_hour"] = hour_values
+    output["seasonal_median_hour_weekend"] = hour_weekend_values
+    return output
 
 
 def _add_weighted_median_baseline_feature(
@@ -515,15 +553,17 @@ def _weighted_median_baseline_predictions(
 
         lookback_days, half_life_days, floor = _weighted_median_parameters(config, is_weekend)
         origin = to_utc_timestamp(getattr(row, "forecast_origin_utc"))
+        target_time = to_utc_timestamp(getattr(row, "ds_utc"))
         window = group[
-            (group["ds_utc"] < origin)
-            & (group["ds_utc"] >= origin - pd.Timedelta(days=lookback_days))
+            (pd.to_datetime(group[PRICE_AVAILABILITY_COLUMN], utc=True) < origin)
+            & (group["ds_utc"] < target_time)
+            & (group["ds_utc"] >= target_time - pd.Timedelta(days=lookback_days))
         ].dropna(subset=["y"])
         if len(window) < config.weighted_median_min_periods:
             predictions.append(None)
             continue
 
-        age_days = (origin - window["ds_utc"]) / pd.Timedelta(days=1)
+        age_days = (target_time - window["ds_utc"]) / pd.Timedelta(days=1)
         weights = 0.5 ** (age_days / float(half_life_days))
         if floor is not None:
             floor_value = float(floor)
@@ -540,7 +580,9 @@ def _weighted_median_history_groups(
     for key, frame in history.groupby(["unique_id", "local_hour", "is_weekend"], dropna=False, sort=False):
         unique_id, local_hour, is_weekend = key
         groups[(unique_id, int(local_hour), bool(is_weekend))] = (
-            frame[["ds_utc", "y"]].sort_values("ds_utc").reset_index(drop=True)
+            frame[["ds_utc", "y", PRICE_AVAILABILITY_COLUMN]]
+            .sort_values("ds_utc")
+            .reset_index(drop=True)
         )
     return groups
 
@@ -589,8 +631,38 @@ def _add_spread_features(
             lagged = needed_times.copy()
             lagged[column] = pd.NA
         lagged = lagged.set_index("feature_time")
-        output[column] = feature_time.map(lagged[column]).where(feature_time < origin)
+        output[column] = feature_time.map(lagged[column])
     return output
+
+
+def _seasonal_history_groups(
+    history: pd.DataFrame,
+    key_columns: list[str],
+) -> dict[tuple[object, ...], pd.DataFrame]:
+    groups: dict[tuple[object, ...], pd.DataFrame] = {}
+    if history.empty:
+        return groups
+    for key, frame in history.groupby(key_columns, dropna=False, sort=False):
+        group_key = key if isinstance(key, tuple) else (key,)
+        groups[group_key] = frame[["ds_utc", "y"]].sort_values("ds_utc").reset_index(drop=True)
+    return groups
+
+
+def _median_from_target_relative_window(
+    group: pd.DataFrame | None,
+    *,
+    target_time: pd.Timestamp,
+    window_start: pd.Timestamp,
+) -> float | None:
+    if group is None or group.empty:
+        return None
+    window = group[
+        (group["ds_utc"] < target_time)
+        & (group["ds_utc"] >= window_start)
+    ].dropna(subset=["y"])
+    if window.empty:
+        return None
+    return float(window["y"].median())
 
 
 def _ordered_existing(columns: list[str], available: Any) -> list[str]:

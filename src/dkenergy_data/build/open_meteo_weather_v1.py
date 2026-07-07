@@ -13,7 +13,7 @@ import pandas as pd
 
 SOURCE_PROVIDER = "open_meteo"
 SOURCE_PRODUCT = "previous_runs"
-DATASET_VERSION = "open_meteo_previous_runs_v1"
+DATASET_VERSION = "v1"
 OPEN_METEO_MODELS = ("gfs_global", "icon_eu", "metno_nordic")
 DMI_HARMONIE_MODEL = "dmi_harmonie_arome_europe"
 BASE_VARIABLES = (
@@ -51,9 +51,9 @@ class OpenMeteoRawBatch:
 class OpenMeteoBuildResult:
     normalized_path: Path
     area_features_long_path: Path
-    area_features_wide_path: Path
     qa_path: Path
     qa: dict[str, Any]
+    area_features_wide_path: Path | None = None
 
 
 OPEN_METEO_LOCATION_BASKET: tuple[WeatherLocation, ...] = (
@@ -410,6 +410,7 @@ def build_open_meteo_weather_from_raw(
     features_dir: Path,
     dataset_version: str = DATASET_VERSION,
     coverage_threshold: float = COVERAGE_THRESHOLD,
+    write_wide: bool = False,
 ) -> OpenMeteoBuildResult:
     batches = load_raw_batches(raw_root)
     if not batches:
@@ -421,7 +422,6 @@ def build_open_meteo_weather_from_raw(
         dataset_version=dataset_version,
         coverage_threshold=coverage_threshold,
     )
-    area_wide = build_area_feature_wide(area_long)
     qa = make_qa_report(
         normalized,
         area_long,
@@ -434,19 +434,21 @@ def build_open_meteo_weather_from_raw(
     features_dir.mkdir(parents=True, exist_ok=True)
     normalized_path = normalized_dir / f"open_meteo_previous_runs_{dataset_version}.parquet"
     area_long_path = features_dir / f"weather_open_meteo_area_hourly_long_{dataset_version}.parquet"
-    area_wide_path = features_dir / f"weather_open_meteo_area_hourly_wide_{dataset_version}.parquet"
     qa_path = features_dir / f"weather_open_meteo_area_hourly_{dataset_version}.qa.json"
     normalized.to_parquet(normalized_path, index=False)
     area_long.to_parquet(area_long_path, index=False)
-    area_wide.to_parquet(area_wide_path, index=False)
+    area_wide_path = None
+    if write_wide:
+        area_wide_path = features_dir / f"weather_open_meteo_area_hourly_wide_{dataset_version}.parquet"
+        build_area_feature_wide(area_long).to_parquet(area_wide_path, index=False)
     qa_path.write_text(json.dumps(_json_safe(qa), indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     return OpenMeteoBuildResult(
         normalized_path=normalized_path,
         area_features_long_path=area_long_path,
-        area_features_wide_path=area_wide_path,
         qa_path=qa_path,
         qa=qa,
+        area_features_wide_path=area_wide_path,
     )
 
 

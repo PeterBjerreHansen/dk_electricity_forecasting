@@ -54,7 +54,8 @@ class CatBoostProductionConfig:
     feature_set: str = "price_full_engineered"
     target_mode: TargetMode = "residual_baseline"
     training_origin_days: int = 365
-    at_hour_utc: int = 10
+    at_hour_utc: int | None = None
+    forecast_local_time: str = "12:00"
     recency_half_life_days: float | None = 720.0
     recency_floor: float | None = None
     residual_baseline_column: str = WEIGHTED_MEDIAN_BASELINE_COLUMN
@@ -100,6 +101,7 @@ class ProductionCatBoostDayAhead(ForecastModel):
             origin,
             training_origin_days=self.config.training_origin_days,
             at_hour_utc=self.config.at_hour_utc,
+            forecast_local_time=self.config.forecast_local_time,
             config=self.config.price_feature_config,
         )
         future_features = build_price_feature_frame(

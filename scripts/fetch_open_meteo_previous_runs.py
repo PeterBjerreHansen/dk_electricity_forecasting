@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -58,10 +59,24 @@ def main() -> None:
     for model in models:
         for location in locations:
             for window_start, window_end in windows:
-                if existing_raw_batch_paths(raw_root, model, location.location_id, window_start, window_end) and not args.force:
+                valid_existing, invalid_existing = partition_existing_raw_batch_paths(
+                    raw_root,
+                    model,
+                    location.location_id,
+                    window_start,
+                    window_end,
+                )
+                for path, reason in invalid_existing:
+                    print(
+                        f"  ignore invalid existing {model} {location.location_id} "
+                        f"{window_start} -> {window_end}: {path} ({reason})",
+                        flush=True,
+                    )
+                if valid_existing and not args.force:
                     skipped += 1
                     print(
-                        f"  skip {model} {location.location_id} {window_start} -> {window_end}",
+                        f"  skip {model} {location.location_id} {window_start} -> {window_end}: "
+                        f"{len(valid_existing)} valid existing raw file(s)",
                         flush=True,
                     )
                     continue
@@ -142,18 +157,74 @@ def existing_raw_batch_paths(
         f"previous_runs/{weather_model}/{location_id}/fetched_at=*/"
         f"start={start.isoformat()}_end={end.isoformat()}.json"
     )
-    candidates = sorted(raw_root.glob(pattern))
-    return [path for path in candidates if _looks_like_open_meteo_payload(path)]
+    return sorted(raw_root.glob(pattern))
 
 
-def _looks_like_open_meteo_payload(path: Path) -> bool:
+def partition_existing_raw_batch_paths(
+    raw_root: Path,
+    weather_model: str,
+    location_id: str,
+    start: date,
+    end: date,
+) -> tuple[list[Path], list[tuple[Path, str]]]:
+    manifest_hashes = manifest_hashes_by_raw_path(raw_root)
+    valid: list[Path] = []
+    invalid: list[tuple[Path, str]] = []
+
+    for path in existing_raw_batch_paths(raw_root, weather_model, location_id, start, end):
+        reason = invalid_raw_batch_reason(path, manifest_hashes.get(path))
+        if reason:
+            invalid.append((path, reason))
+        else:
+            valid.append(path)
+    return valid, invalid
+
+
+def invalid_raw_batch_reason(path: Path, expected_sha256: str | None) -> str | None:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
+        content = path.read_bytes()
+    except OSError as exc:
+        return f"cannot read file: {exc}"
+
+    if expected_sha256:
+        actual_sha256 = hashlib.sha256(content).hexdigest()
+        if actual_sha256 != expected_sha256:
+            return f"manifest hash mismatch: expected {expected_sha256}, got {actual_sha256}"
+
+    try:
+        payload = json.loads(content)
+    except ValueError as exc:
+        return f"invalid JSON: {exc}"
+
     hourly = payload.get("hourly") if isinstance(payload, dict) else None
     times = hourly.get("time") if isinstance(hourly, dict) else None
-    return isinstance(times, list)
+    if not isinstance(times, list):
+        return "payload does not contain an hourly time list"
+    return None
+
+
+def manifest_hashes_by_raw_path(raw_root: Path) -> dict[Path, str]:
+    manifest_path = raw_root / "manifest.jsonl"
+    if not manifest_path.exists():
+        return {}
+
+    hashes: dict[Path, str] = {}
+    with manifest_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            if entry.get("source_provider") != "open_meteo":
+                continue
+            if entry.get("source_product") != "previous_runs":
+                continue
+            raw_path = Path(entry["raw_path"])
+            if not raw_path.is_absolute():
+                raw_path = raw_root / raw_path
+            expected_sha256 = entry.get("saved_json_sha256") or entry.get("response_sha256")
+            if expected_sha256:
+                hashes[raw_path] = str(expected_sha256)
+    return hashes
 
 
 if __name__ == "__main__":

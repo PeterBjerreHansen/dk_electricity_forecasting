@@ -3,25 +3,25 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from dkenergy_forecast.backtesting.horizons import make_next_utc_hours_horizon
+from dkenergy_forecast.backtesting.horizons import make_danish_delivery_day_horizon, make_next_utc_hours_horizon
 from dkenergy_forecast.features.price_features import (
     PriceFeatureConfig,
     WEIGHTED_MEDIAN_BASELINE_COLUMN,
     build_price_feature_frame,
     build_training_matrix,
 )
-from dkenergy_forecast.types import add_copenhagen_calendar
+from dkenergy_forecast.types import PRICE_AVAILABILITY_COLUMN, add_copenhagen_calendar, ensure_price_availability
 
 
-def test_price_feature_frame_uses_only_values_before_forecast_origin() -> None:
-    panel = _two_area_panel(periods=96)
-    origin = pd.Timestamp("2024-01-03T10:00:00Z")
-    future = make_next_utc_hours_horizon(panel, origin, hours=2)
+def test_price_feature_frame_uses_prices_published_before_forecast_origin() -> None:
+    panel = _two_area_panel(periods=24 * 12)
+    origin = pd.Timestamp("2024-01-09T11:00:00Z")
+    future = make_danish_delivery_day_horizon(panel, origin)
     config = PriceFeatureConfig(
-        lag_hours=(1, 2),
-        rolling_windows_hours=(3,),
-        seasonal_lookback_days=2,
-        spread_lag_hours=(1, 2),
+        lag_hours=(24,),
+        rolling_windows_hours=(24,),
+        seasonal_lookback_days=7,
+        spread_lag_hours=(24,),
     )
 
     features = build_price_feature_frame(
@@ -31,24 +31,12 @@ def test_price_feature_frame_uses_only_values_before_forecast_origin() -> None:
         include_target=True,
         config=config,
     )
-    dk1_first = features[
-        (features["area"] == "DK1")
-        & (features["ds_utc"] == origin + pd.Timedelta(hours=1))
-    ].iloc[0]
-
-    assert pd.isna(dk1_first["lag_1h"])
-    assert dk1_first["lag_2h"] == _value_at(panel, "DK1", origin - pd.Timedelta(hours=1))
-    assert pd.isna(dk1_first["dk1_minus_dk2_lag_1h"])
-    assert dk1_first["dk1_minus_dk2_lag_2h"] == pytest.approx(-1000.0)
-
-    expected_rolling = [
-        _value_at(panel, "DK1", origin - pd.Timedelta(hours=hour))
-        for hour in [3, 2, 1]
-    ]
-    assert dk1_first["rolling_mean_3h_asof_origin"] == pytest.approx(
-        sum(expected_rolling) / len(expected_rolling)
-    )
-    assert dk1_first["y"] == _value_at(panel, "DK1", origin + pd.Timedelta(hours=1))
+    assert features["lag_24h"].notna().all()
+    assert features["dk1_minus_dk2_lag_24h"].notna().all()
+    dk1_first = features[features["area"] == "DK1"].sort_values("ds_utc").iloc[0]
+    assert dk1_first["lag_24h"] == _value_at(panel, "DK1", dk1_first["ds_utc"] - pd.Timedelta(hours=24))
+    assert dk1_first["dk1_minus_dk2_lag_24h"] == pytest.approx(-1000.0)
+    assert dk1_first["y"] == _value_at(panel, "DK1", dk1_first["ds_utc"])
 
 
 def test_training_matrix_keeps_complete_training_horizons_before_origin() -> None:
@@ -69,7 +57,7 @@ def test_training_matrix_keeps_complete_training_horizons_before_origin() -> Non
     )
 
     assert not training.empty
-    assert training["ds_utc"].max() < origin
+    assert (pd.to_datetime(training[PRICE_AVAILABILITY_COLUMN], utc=True) < origin).all()
     assert training["y"].notna().all()
     assert {"lag_24h", "rolling_mean_24h_asof_origin", "dk1_minus_dk2_lag_24h"}.issubset(
         training.columns
@@ -78,8 +66,8 @@ def test_training_matrix_keeps_complete_training_horizons_before_origin() -> Non
 
 def test_weighted_median_baseline_feature_is_origin_safe() -> None:
     panel = _two_area_panel(periods=24 * 20)
-    origin = pd.Timestamp("2024-01-16T10:00:00Z")
-    future = make_next_utc_hours_horizon(panel, origin, hours=24)
+    origin = pd.Timestamp("2024-01-16T11:00:00Z")
+    future = make_danish_delivery_day_horizon(panel, origin)
     config = PriceFeatureConfig(
         lag_hours=(24,),
         rolling_windows_hours=(24,),
@@ -95,7 +83,11 @@ def test_weighted_median_baseline_feature_is_origin_safe() -> None:
         config=config,
     )
     leaky_panel = panel.copy()
-    leaky_panel.loc[leaky_panel["ds_utc"] >= origin, "y"] = 999999.0
+    leaky_panel = ensure_price_availability(leaky_panel)
+    leaky_panel.loc[
+        pd.to_datetime(leaky_panel[PRICE_AVAILABILITY_COLUMN], utc=True) >= origin,
+        "y",
+    ] = 999999.0
     leaky = build_price_feature_frame(
         leaky_panel,
         future,

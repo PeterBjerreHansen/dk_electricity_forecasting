@@ -26,6 +26,7 @@ from dkenergy_forecast.models.baselines import (
     WeightedSeasonalMedian,
 )
 from dkenergy_forecast.types import add_copenhagen_calendar
+from dkenergy_forecast.types import add_price_availability
 
 
 def test_load_price_panel_normalizes_utc_and_validates_qa(tmp_path) -> None:
@@ -73,7 +74,7 @@ def test_lag_naive_uses_utc_lag_for_24_and_168_hours() -> None:
     assert pred_168["y_pred"].iloc[0] == 1.0
 
 
-def test_lag_naive_missing_lag_and_last_available_fallback_are_leakage_safe() -> None:
+def test_lag_naive_missing_lag_and_last_available_fallback_use_published_prices() -> None:
     panel = _panel(start="2024-01-01T00:00:00Z", periods=4)
     origin = pd.Timestamp("2024-01-01T02:00:00Z")
     future = make_next_utc_hours_horizon(panel, origin, hours=1)
@@ -87,7 +88,30 @@ def test_lag_naive_missing_lag_and_last_available_fallback_are_leakage_safe() ->
     )
 
     assert pd.isna(missing["y_pred"].iloc[0])
-    assert fallback["y_pred"].iloc[0] == 1.0
+    assert fallback["y_pred"].iloc[0] == 999.0
+
+
+def test_price_availability_uses_previous_local_day_noon_across_dst() -> None:
+    frame = pd.DataFrame(
+        {
+            "ds_utc": pd.to_datetime(
+                [
+                    "2024-01-10T00:00:00Z",
+                    "2024-03-31T00:00:00Z",
+                    "2024-10-27T00:00:00Z",
+                ],
+                utc=True,
+            )
+        }
+    )
+
+    output = add_price_availability(frame)
+
+    assert output["price_available_at_utc"].dt.strftime("%Y-%m-%dT%H:%M:%S%z").tolist() == [
+        "2024-01-09T11:00:00+0000",
+        "2024-03-30T11:00:00+0000",
+        "2024-10-26T10:00:00+0000",
+    ]
 
 
 def test_seasonal_rolling_median_respects_origin_window_keys_and_min_periods() -> None:
@@ -196,7 +220,10 @@ def test_weekday_weekend_weighted_median_uses_separate_parameter_sets() -> None:
                 pd.Timestamp("2024-01-15T01:00:00Z"),
                 pd.Timestamp("2024-01-20T01:00:00Z"),
             ],
-            "forecast_origin_utc": [origin, origin],
+            "forecast_origin_utc": [
+                origin,
+                pd.Timestamp("2024-01-20T00:00:00Z"),
+            ],
             "horizon": [1, 2],
             "local_hour": [1, 1],
             "is_weekend": [False, True],
@@ -209,9 +236,9 @@ def test_weekday_weekend_weighted_median_uses_separate_parameter_sets() -> None:
                 pd.Timestamp("2024-01-12T01:00:00Z"),
                 pd.Timestamp("2024-01-13T01:00:00Z"),
                 pd.Timestamp("2024-01-14T01:00:00Z"),
-                pd.Timestamp("2024-01-12T01:00:00Z"),
-                pd.Timestamp("2024-01-13T01:00:00Z"),
-                pd.Timestamp("2024-01-14T01:00:00Z"),
+                pd.Timestamp("2024-01-17T01:00:00Z"),
+                pd.Timestamp("2024-01-18T01:00:00Z"),
+                pd.Timestamp("2024-01-19T01:00:00Z"),
             ],
             "local_hour": [1, 1, 1, 1, 1, 1],
             "is_weekend": [False, False, False, True, True, True],
@@ -339,7 +366,7 @@ def test_rolling_origin_backtest_rejects_insufficient_training_rows() -> None:
                 origin_arg,
                 hours=1,
             ),
-            min_train_rows=2,
+            min_train_rows=6,
         )
 
 

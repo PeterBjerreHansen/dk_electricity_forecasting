@@ -14,7 +14,14 @@ from dkenergy_forecast.features.weather_features import (
     join_weather_features,
     weather_value_columns,
 )
-from dkenergy_forecast.types import add_copenhagen_calendar, normalize_utc_column, require_columns, to_utc_timestamp
+from dkenergy_forecast.types import (
+    add_copenhagen_calendar,
+    ensure_price_availability,
+    filter_price_history_available_before,
+    normalize_utc_column,
+    require_columns,
+    to_utc_timestamp,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -25,7 +32,7 @@ DEFAULT_WEATHER_FEATURES_LONG_PATH = (
     PROJECT_ROOT
     / "data"
     / "features"
-    / "weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet"
+    / "weather_open_meteo_area_hourly_long_v1.parquet"
 )
 CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION = 1
 
@@ -111,7 +118,10 @@ class ChronosZeroShotDayAhead:
         ]
         contexts = [
             _history_context(
-                history_frame,
+                filter_price_history_available_before(
+                    history_frame,
+                    frame["forecast_origin_utc"].iloc[0],
+                ),
                 unique_id=str(frame["unique_id"].iloc[0]),
                 context_length=self.config.context_length,
             )
@@ -262,15 +272,15 @@ def build_lora_weather_prediction_frames(
     history_frame = _prepare_weather_history(history)
     future_frame = _prepare_weather_future(future)
     origin = _single_forecast_origin(future_frame)
-    history_before_origin = history_frame[history_frame["ds_utc"] < origin].copy()
-    if history_before_origin.empty:
-        raise ValueError(f"No Chronos history rows before {origin.isoformat()}")
+    history_available = filter_price_history_available_before(history_frame, origin)
+    if history_available.empty:
+        raise ValueError(f"No Chronos history rows available before {origin.isoformat()}")
 
-    context = history_before_origin.groupby("unique_id", group_keys=False).tail(config.context_length).copy()
+    context = history_available.groupby("unique_id", group_keys=False).tail(config.context_length).copy()
     context_lengths = context.groupby("unique_id")["ds_utc"].size()
     if int(context_lengths.min()) < config.context_length:
         raise ValueError(
-            "Insufficient Chronos history before "
+            "Insufficient Chronos history available before "
             f"{origin.isoformat()}: minimum rows per series is {int(context_lengths.min())}"
         )
 
@@ -487,12 +497,20 @@ def from_chronos_timestamp(series: pd.Series) -> pd.Series:
 
 def _prepare_history(history: pd.DataFrame) -> pd.DataFrame:
     require_columns(history, ["unique_id", "ds_utc", "y"], "history")
-    return normalize_utc_column(history, "ds_utc").sort_values(["unique_id", "ds_utc"]).reset_index(drop=True)
+    return (
+        ensure_price_availability(normalize_utc_column(history, "ds_utc"))
+        .sort_values(["unique_id", "ds_utc"])
+        .reset_index(drop=True)
+    )
 
 
 def _prepare_weather_history(history: pd.DataFrame) -> pd.DataFrame:
     require_columns(history, ["unique_id", "area", "ds_utc", "y"], "history")
-    return normalize_utc_column(history, "ds_utc").sort_values(["unique_id", "ds_utc"]).reset_index(drop=True)
+    return (
+        ensure_price_availability(normalize_utc_column(history, "ds_utc"))
+        .sort_values(["unique_id", "ds_utc"])
+        .reset_index(drop=True)
+    )
 
 
 def _prepare_future(future: pd.DataFrame) -> pd.DataFrame:

@@ -7,8 +7,11 @@ import pandas as pd
 
 from dkenergy_forecast.statistics import weighted_median
 from dkenergy_forecast.types import (
+    PRICE_AVAILABILITY_COLUMN,
     add_horizon_column,
+    ensure_price_availability,
     normalize_utc_column,
+    price_available_before_mask,
     require_columns,
 )
 
@@ -45,8 +48,12 @@ class LagNaive:
         history_frame = _resolve_history(history, self._history)
 
         lookup = history_frame.rename(
-            columns={"ds_utc": "lagged_ds_utc", "y": "lagged_y"}
-        )[["unique_id", "lagged_ds_utc", "lagged_y"]]
+            columns={
+                "ds_utc": "lagged_ds_utc",
+                "y": "lagged_y",
+                PRICE_AVAILABILITY_COLUMN: "lagged_available_at_utc",
+            }
+        )[["unique_id", "lagged_ds_utc", "lagged_y", "lagged_available_at_utc"]]
         output = future_base.copy()
         output["lagged_ds_utc"] = output["ds_utc"] - pd.Timedelta(hours=self.lag_hours)
         output = output.merge(
@@ -54,7 +61,7 @@ class LagNaive:
             on=["unique_id", "lagged_ds_utc"],
             how="left",
         )
-        known_before_origin = output["lagged_ds_utc"] < output["forecast_origin_utc"]
+        known_before_origin = pd.to_datetime(output["lagged_available_at_utc"], utc=True) < output["forecast_origin_utc"]
         output["y_pred"] = output["lagged_y"].where(known_before_origin)
 
         if self.fallback == "last_available":
@@ -103,10 +110,12 @@ class SeasonalRollingMedian:
         lookback = pd.Timedelta(days=self.lookback_days)
         predictions: list[float | None] = []
         for row in future_base.itertuples(index=False):
+            target_time = row.ds_utc
             candidates = history_frame[
                 (history_frame["unique_id"] == row.unique_id)
-                & (history_frame["ds_utc"] < row.forecast_origin_utc)
-                & (history_frame["ds_utc"] >= row.forecast_origin_utc - lookback)
+                & (pd.to_datetime(history_frame[PRICE_AVAILABILITY_COLUMN], utc=True) < row.forecast_origin_utc)
+                & (history_frame["ds_utc"] < target_time)
+                & (history_frame["ds_utc"] >= target_time - lookback)
             ]
             for key in self.seasonal_keys:
                 candidates = candidates[candidates[key] == getattr(row, key)]
@@ -180,14 +189,16 @@ class WeightedSeasonalMedian:
                 continue
 
             lookback = pd.Timedelta(days=self.lookback_days)
-            window_start = row.forecast_origin_utc - lookback
+            target_time = row.ds_utc
+            window_start = target_time - lookback
             window = candidates[
-                (candidates["ds_utc"] < row.forecast_origin_utc)
+                (pd.to_datetime(candidates[PRICE_AVAILABILITY_COLUMN], utc=True) < row.forecast_origin_utc)
+                & (candidates["ds_utc"] < target_time)
                 & (candidates["ds_utc"] >= window_start)
             ]
             prediction = self._predict_from_window(
                 window,
-                row.forecast_origin_utc,
+                target_time,
                 lookback_days=self.lookback_days,
             )
             predictions.append(prediction)
@@ -199,7 +210,7 @@ class WeightedSeasonalMedian:
     def _predict_from_window(
         self,
         window: pd.DataFrame,
-        forecast_origin_utc: pd.Timestamp,
+        target_time_utc: pd.Timestamp,
         *,
         lookback_days: int,
     ) -> float | None:
@@ -216,7 +227,7 @@ class WeightedSeasonalMedian:
             return float(values["y"].median())
 
         age_days = (
-            forecast_origin_utc - values["ds_utc"]
+            target_time_utc - values["ds_utc"]
         ) / pd.Timedelta(days=1)
         weights = self._weights_for_age_days(age_days, lookback_days=lookback_days)
         positive_weight = weights > 0
@@ -314,15 +325,17 @@ class WeekdayWeekendWeightedMedian:
                 continue
 
             lookback_days, half_life_days, floor = self._parameters_for_row(row)
-            window_start = row.forecast_origin_utc - pd.Timedelta(days=lookback_days)
+            target_time = row.ds_utc
+            window_start = target_time - pd.Timedelta(days=lookback_days)
             window = candidates[
-                (candidates["ds_utc"] < row.forecast_origin_utc)
+                (pd.to_datetime(candidates[PRICE_AVAILABILITY_COLUMN], utc=True) < row.forecast_origin_utc)
+                & (candidates["ds_utc"] < target_time)
                 & (candidates["ds_utc"] >= window_start)
             ]
             predictions.append(
                 self._predict_from_window(
                     window,
-                    row.forecast_origin_utc,
+                    target_time,
                     half_life_days=half_life_days,
                     floor=floor,
                 )
@@ -348,7 +361,7 @@ class WeekdayWeekendWeightedMedian:
     def _predict_from_window(
         self,
         window: pd.DataFrame,
-        forecast_origin_utc: pd.Timestamp,
+        target_time_utc: pd.Timestamp,
         *,
         half_life_days: float,
         floor: float | None,
@@ -359,7 +372,7 @@ class WeekdayWeekendWeightedMedian:
         if len(values) < self.min_periods:
             return None
 
-        age_days = (forecast_origin_utc - values["ds_utc"]) / pd.Timedelta(days=1)
+        age_days = (target_time_utc - values["ds_utc"]) / pd.Timedelta(days=1)
         weights = 0.5 ** (age_days / float(half_life_days))
         if floor is not None:
             floor_value = float(floor)
@@ -369,7 +382,7 @@ class WeekdayWeekendWeightedMedian:
 
 def _prepare_history(history: pd.DataFrame) -> pd.DataFrame:
     require_columns(history, ["unique_id", "ds_utc", "y"], "history")
-    prepared = normalize_utc_column(history, "ds_utc")
+    prepared = ensure_price_availability(normalize_utc_column(history, "ds_utc"))
     return prepared.sort_values(["unique_id", "ds_utc"]).reset_index(drop=True)
 
 
@@ -401,7 +414,11 @@ def _seasonal_history_groups(
     groups: dict[tuple[object, ...], pd.DataFrame] = {}
     for key, frame in history.groupby(key_columns, dropna=False, sort=False):
         group_key = key if isinstance(key, tuple) else (key,)
-        groups[group_key] = frame[["ds_utc", "y"]].sort_values("ds_utc").reset_index(drop=True)
+        groups[group_key] = (
+            frame[["ds_utc", "y", PRICE_AVAILABILITY_COLUMN]]
+            .sort_values("ds_utc")
+            .reset_index(drop=True)
+        )
     return groups
 
 
@@ -416,7 +433,7 @@ def _last_available_y(
 ) -> float | None:
     candidates = history[
         (history["unique_id"] == unique_id)
-        & (history["ds_utc"] < forecast_origin_utc)
+        & price_available_before_mask(history, forecast_origin_utc)
     ]
     if candidates.empty:
         return None

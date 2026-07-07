@@ -14,13 +14,11 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from dkenergy_forecast.models.registry import default_production_model_labels, production_model_specs  # noqa: E402
-
 DEFAULT_WEATHER_FEATURES_LONG_PATH = (
     ROOT
     / "data"
     / "features"
-    / "weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet"
+    / "weather_open_meteo_area_hourly_long_v1.parquet"
 )
 
 
@@ -32,14 +30,18 @@ def main() -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Run the daily file-based ingestion, training, and dashboard publish pipeline."
-    )
+    parser = argparse.ArgumentParser(description="Run the daily file-based data refresh and forecast publish pipeline.")
     parser.add_argument("--eds-start", default=_env("EDS_START", "2024-07-01"))
     parser.add_argument("--eds-end", default=_env("EDS_END"))
     parser.add_argument("--open-meteo-start", default=_env("OPEN_METEO_START", "2024-07-01"))
     parser.add_argument("--open-meteo-end", default=_env("OPEN_METEO_END", _tomorrow_copenhagen()))
-    parser.add_argument("--at-hour-utc", type=int, default=int(_env("FORECAST_AT_HOUR_UTC", "10")))
+    parser.add_argument(
+        "--at-hour-utc",
+        type=int,
+        default=_env_int("FORECAST_AT_HOUR_UTC"),
+        help="Legacy fixed UTC forecast hour. Omit to use --forecast-local-time.",
+    )
+    parser.add_argument("--forecast-local-time", default=_env("FORECAST_LOCAL_TIME", "12:00"))
     parser.add_argument("--min-train-days", type=int, default=int(_env("MIN_TRAIN_DAYS", "60")))
     parser.add_argument("--score-days", type=int, default=int(_env("SCORE_DAYS", "14")))
     parser.add_argument("--score-max-origins", type=int, default=int(_env("SCORE_MAX_ORIGINS", "7")))
@@ -48,16 +50,7 @@ def parse_args() -> argparse.Namespace:
         "--with-weather",
         action="store_true",
         default=_env_bool("WITH_WEATHER", False),
-        help="Fetch/build Open-Meteo source weather artifacts.",
-    )
-    parser.add_argument(
-        "--with-weather-frame",
-        action="store_true",
-        default=_env_bool("WITH_WEATHER_FRAME", False),
-        help=(
-            "Also build a recent availability-masked weather backtest frame. "
-            "This is for modeling diagnostics and is not used by forecast publishing."
-        ),
+        help="Explicitly fetch/build Open-Meteo source weather artifacts.",
     )
     parser.add_argument(
         "--models",
@@ -109,9 +102,7 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
         build_prices.append("--allow-incomplete-recent")
     commands.append(build_prices)
 
-    selected_models = args.models or default_production_model_labels()
-    needs_weather = selected_models_require_weather(selected_models)
-    refresh_weather = (args.with_weather or needs_weather) and not args.skip_weather
+    refresh_weather = args.with_weather and not args.skip_weather
 
     if refresh_weather:
         commands.append(
@@ -126,26 +117,17 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
         )
         commands.append([python, str(ROOT / "scripts" / "build_open_meteo_weather_features.py")])
 
-    if args.with_weather_frame:
-        weather_frame = [
-            python,
-            str(ROOT / "scripts" / "build_weather_backtest_frame.py"),
-            "--frame-kind",
-            "recent",
-        ]
-        if not args.strict_panel:
-            weather_frame.append("--allow-incomplete-panel")
-        commands.append(weather_frame)
-
     if not args.skip_backtest:
         baseline_backtest = [
             python,
             str(ROOT / "scripts" / "run_baseline_backtest.py"),
-            "--at-hour-utc",
-            str(args.at_hour_utc),
+            "--forecast-local-time",
+            str(args.forecast_local_time),
             "--min-train-days",
             str(args.min_train_days),
         ]
+        if args.at_hour_utc is not None:
+            baseline_backtest.extend(["--at-hour-utc", str(args.at_hour_utc)])
         if not args.strict_panel:
             baseline_backtest.append("--allow-incomplete-panel")
         commands.append(baseline_backtest)
@@ -154,8 +136,8 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
         publish = [
             python,
             str(ROOT / "scripts" / "run_publish_forecast.py"),
-            "--at-hour-utc",
-            str(args.at_hour_utc),
+            "--forecast-local-time",
+            str(args.forecast_local_time),
             "--min-train-days",
             str(args.min_train_days),
             "--score-days",
@@ -165,6 +147,8 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
             "--score-holdout-days",
             str(args.score_holdout_days),
         ]
+        if args.at_hour_utc is not None:
+            publish.extend(["--at-hour-utc", str(args.at_hour_utc)])
         if args.models:
             publish.extend(["--models", *args.models])
         publish.extend(["--weather-features-long-path", args.weather_features_long_path])
@@ -200,20 +184,13 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _today_copenhagen() -> str:
-    return datetime.now(ZoneInfo("Europe/Copenhagen")).date().isoformat()
+def _env_int(name: str, default: int | None = None) -> int | None:
+    value = os.environ.get(name)
+    return int(value) if value else default
 
 
 def _tomorrow_copenhagen() -> str:
     return (datetime.now(ZoneInfo("Europe/Copenhagen")).date() + timedelta(days=1)).isoformat()
-
-
-def selected_models_require_weather(labels: list[str]) -> bool:
-    specs = production_model_specs()
-    missing = sorted(set(labels) - set(specs))
-    if missing:
-        raise SystemExit(f"Unknown production model label(s): {missing}; available={sorted(specs)}")
-    return any(specs[label].requires_weather for label in labels)
 
 
 if __name__ == "__main__":

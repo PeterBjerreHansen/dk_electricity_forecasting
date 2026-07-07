@@ -48,6 +48,7 @@ def main(argv: list[str] | None = None) -> None:
         panel,
         days=days,
         at_hour_utc=args.at_hour_utc,
+        forecast_local_time=args.forecast_local_time,
         max_origins=args.max_origins,
     )
     frame = build_weather_experiment_frame(
@@ -110,7 +111,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             ROOT
             / "data"
             / "features"
-            / "weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet"
+            / "weather_open_meteo_area_hourly_long_v1.parquet"
         ),
     )
     parser.add_argument(
@@ -132,7 +133,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Number of recent complete daily origins to include. Defaults depend on --frame-kind.",
     )
     parser.add_argument("--max-origins", type=int, default=0)
-    parser.add_argument("--at-hour-utc", type=int, default=10)
+    parser.add_argument(
+        "--at-hour-utc",
+        type=int,
+        help="Legacy fixed UTC forecast hour. Omit to use --forecast-local-time.",
+    )
+    parser.add_argument("--forecast-local-time", default="12:00")
     parser.add_argument(
         "--include-weighted-median-baseline",
         action="store_true",
@@ -195,7 +201,8 @@ def make_qa(
         "frame_kind": args.frame_kind,
         "days": int(days),
         "max_origins": int(args.max_origins),
-        "at_hour_utc": int(args.at_hour_utc),
+        "at_hour_utc": None if args.at_hour_utc is None else int(args.at_hour_utc),
+        "forecast_local_time": args.forecast_local_time,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "panel_path": str(panel_path),
         "weather_features_long_path": str(weather_path),

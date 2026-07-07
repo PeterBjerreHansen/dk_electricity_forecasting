@@ -10,7 +10,9 @@ from dkenergy_forecast.types import (
     TARGET_LEAKAGE_COLUMNS,
     add_copenhagen_calendar,
     add_horizon_column,
+    ensure_price_availability,
     normalize_utc_column,
+    parse_local_time,
     require_columns,
     to_utc_timestamp,
 )
@@ -38,6 +40,33 @@ def make_daily_origins(
         tz="UTC",
     )
     return pd.DataFrame({"forecast_origin_utc": dates + pd.Timedelta(hours=at_hour_utc)})
+
+
+def make_local_daily_origins(
+    panel: pd.DataFrame,
+    start: object,
+    end: object,
+    *,
+    forecast_local_time: str = "12:00",
+) -> pd.DataFrame:
+    local_time = parse_local_time(forecast_local_time)
+    start_midnight = to_utc_timestamp(start).tz_convert(COPENHAGEN_TZ).normalize()
+    end_midnight = to_utc_timestamp(end).tz_convert(COPENHAGEN_TZ).normalize()
+    if end_midnight <= start_midnight:
+        return pd.DataFrame({"forecast_origin_utc": pd.Series(dtype="datetime64[ns, UTC]")})
+
+    dates = pd.date_range(
+        start=start_midnight,
+        end=end_midnight - pd.Timedelta(days=1),
+        freq="D",
+        tz=COPENHAGEN_TZ,
+    )
+    origins = dates + pd.Timedelta(
+        hours=local_time.hour,
+        minutes=local_time.minute,
+        seconds=local_time.second,
+    )
+    return pd.DataFrame({"forecast_origin_utc": origins.tz_convert("UTC")})
 
 
 def make_next_utc_hours_horizon(
@@ -91,7 +120,7 @@ def _make_horizon_for_timestamps(
     timestamps: pd.DatetimeIndex,
 ) -> pd.DataFrame:
     require_columns(panel, ["unique_id", "area", "ds_utc"], "panel")
-    panel_utc = normalize_utc_column(panel, "ds_utc")
+    panel_utc = ensure_price_availability(normalize_utc_column(panel, "ds_utc"))
     unique_ids = panel_utc[["unique_id", "area"]].drop_duplicates().reset_index(drop=True)
     times = pd.DataFrame({"ds_utc": timestamps})
     horizon = unique_ids.merge(times, how="cross")
