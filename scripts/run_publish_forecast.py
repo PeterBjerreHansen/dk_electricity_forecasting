@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -56,6 +58,7 @@ def main() -> None:
         factories = latest_publish_model_factories(
             args.models,
             weather_features_long_path=args.weather_features_long_path,
+            chronos_model_artifact_path=args.chronos_model_artifact_path,
         )
     except (ValueError, ImportError) as exc:
         raise SystemExit(str(exc)) from exc
@@ -139,7 +142,7 @@ def main() -> None:
             "score_holdout_days": int(args.score_holdout_days),
             "model_registry_labels": model_labels,
             "model_registry": selected_model_registry_metadata(model_labels),
-            **selected_chronos_metadata(model_labels),
+            **selected_chronos_metadata(model_labels, args.chronos_model_artifact_path),
             **selected_weather_metadata(model_labels, args.weather_features_long_path),
         },
     )
@@ -226,6 +229,14 @@ def parse_args() -> argparse.Namespace:
         "--weather-features-long-path",
         default=str(PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG.weather_features_long_path),
         help="Open-Meteo long weather feature parquet used by weather-aware production models.",
+    )
+    parser.add_argument(
+        "--chronos-model-artifact-path",
+        default=os.environ.get(
+            "DKENERGY_CHRONOS_MODEL_ARTIFACT_PATH",
+            str(PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG.model_artifact_path),
+        ),
+        help="Local trained Chronos LoRA artifact directory used by the production Chronos model.",
     )
     parser.add_argument("--list-models", action="store_true", help="Print registered production models and exit.")
     parser.add_argument("--run-id", help="Optional explicit immutable forecast run id.")
@@ -320,10 +331,13 @@ def selected_weather_metadata(labels: list[str], weather_features_long_path: str
     }
 
 
-def selected_chronos_metadata(labels: list[str]) -> dict[str, object]:
+def selected_chronos_metadata(labels: list[str], chronos_model_artifact_path: str | Path) -> dict[str, object]:
     if "chronos2_lora_calendar_weather_ctx1024_v1" not in labels:
         return {}
-    config = PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG
+    config = replace(
+        PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG,
+        model_artifact_path=chronos_model_artifact_path,
+    )
     manifest = load_lora_artifact_manifest(config.model_artifact_path)
     covariates = manifest.get("covariates", [])
     return {

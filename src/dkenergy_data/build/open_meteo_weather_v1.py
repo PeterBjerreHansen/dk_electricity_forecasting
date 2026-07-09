@@ -15,7 +15,6 @@ SOURCE_PROVIDER = "open_meteo"
 SOURCE_PRODUCT = "previous_runs"
 DATASET_VERSION = "open_meteo_previous_runs_v1"
 OPEN_METEO_MODELS = ("gfs_global", "icon_eu", "metno_nordic")
-DMI_HARMONIE_MODEL = "dmi_harmonie_arome_europe"
 BASE_VARIABLES = (
     "temperature_2m",
     "wind_speed_10m",
@@ -138,19 +137,26 @@ def normalize_batches(
     locations: Iterable[WeatherLocation] = OPEN_METEO_LOCATION_BASKET,
     base_variables: Iterable[str] = BASE_VARIABLES,
     lead_time_days: Iterable[int] = LEAD_TIME_DAYS,
+    min_valid_time: str | pd.Timestamp | None = None,
+    max_valid_time: str | pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     locations_tuple = tuple(locations)
     base_variables_tuple = tuple(base_variables)
     lead_time_days_tuple = tuple(lead_time_days)
+    min_valid_timestamp = _optional_utc_timestamp(min_valid_time)
+    max_valid_timestamp = _optional_utc_timestamp(max_valid_time, inclusive_date_end=True)
     frames = [
         normalize_batch(
             batch,
             locations=locations_tuple,
             base_variables=base_variables_tuple,
             lead_time_days=lead_time_days_tuple,
+            min_valid_time=min_valid_timestamp,
+            max_valid_time=max_valid_timestamp,
         )
         for batch in batches
     ]
+    frames = [frame for frame in frames if not frame.empty]
     if not frames:
         return _empty_normalized_frame()
     normalized = pd.concat(frames, ignore_index=True)[NORMALIZED_COLUMNS]
@@ -163,6 +169,8 @@ def normalize_batch(
     locations: Iterable[WeatherLocation] = OPEN_METEO_LOCATION_BASKET,
     base_variables: Iterable[str] = BASE_VARIABLES,
     lead_time_days: Iterable[int] = LEAD_TIME_DAYS,
+    min_valid_time: str | pd.Timestamp | None = None,
+    max_valid_time: str | pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     location_by_id = {location.location_id: location for location in locations}
     if batch.location_id not in location_by_id:
@@ -176,7 +184,18 @@ def normalize_batch(
     if not isinstance(times, list):
         raise ValueError(f"Open-Meteo payload has no hourly time list: {batch.raw_path}")
 
-    valid_time = pd.to_datetime(times, utc=True)
+    valid_time = pd.Series(pd.to_datetime(times, utc=True))
+    min_valid_timestamp = _optional_utc_timestamp(min_valid_time)
+    max_valid_timestamp = _optional_utc_timestamp(max_valid_time, inclusive_date_end=True)
+    valid_mask = pd.Series(True, index=valid_time.index)
+    if min_valid_timestamp is not None:
+        valid_mask &= valid_time >= min_valid_timestamp
+    if max_valid_timestamp is not None:
+        valid_mask &= valid_time <= max_valid_timestamp
+    if not bool(valid_mask.any()):
+        return _empty_normalized_frame()
+
+    valid_time = valid_time.loc[valid_mask].reset_index(drop=True)
     units = batch.payload.get("hourly_units") if isinstance(batch.payload.get("hourly_units"), dict) else {}
     rows: list[pd.DataFrame] = []
 
@@ -187,6 +206,13 @@ def normalize_batch(
             if values is None:
                 continue
             if not isinstance(values, list) or len(values) != len(valid_time):
+                if isinstance(values, list) and len(values) == len(times):
+                    values = pd.Series(values, dtype="object").loc[valid_mask].reset_index(drop=True).tolist()
+                else:
+                    raise ValueError(f"Open-Meteo hourly field has wrong length: {raw_key}")
+            if not values:
+                continue
+            if len(values) != len(valid_time):
                 raise ValueError(f"Open-Meteo hourly field has wrong length: {raw_key}")
 
             frame = pd.DataFrame(
@@ -202,8 +228,8 @@ def normalize_batch(
                     "price_area": location.area,
                     "latitude": location.latitude,
                     "longitude": location.longitude,
-                    "valid_time_utc": valid_time,
-                    "valid_time": valid_time,
+                    "valid_time_utc": valid_time.to_numpy(),
+                    "valid_time": valid_time.to_numpy(),
                     "forecast_available_at_utc": valid_time - pd.Timedelta(days=int(lead_day)),
                     "forecast_reference_time": valid_time - pd.Timedelta(days=int(lead_day)),
                     "parameter_id": variable,
@@ -411,12 +437,18 @@ def build_open_meteo_weather_from_raw(
     dataset_version: str = DATASET_VERSION,
     coverage_threshold: float = COVERAGE_THRESHOLD,
     write_wide: bool = False,
+    min_valid_time: str | pd.Timestamp | None = None,
+    max_valid_time: str | pd.Timestamp | None = None,
 ) -> OpenMeteoBuildResult:
     batches = load_raw_batches(raw_root)
     if not batches:
         raise ValueError(f"No Open-Meteo raw batches found under {raw_root}")
 
-    normalized = normalize_batches(batches)
+    normalized = normalize_batches(
+        batches,
+        min_valid_time=min_valid_time,
+        max_valid_time=max_valid_time,
+    )
     area_long = build_area_feature_long(
         normalized,
         dataset_version=dataset_version,
@@ -618,6 +650,25 @@ def _empty_area_feature_long_frame() -> pd.DataFrame:
     frame["forecast_available_at_utc"] = pd.to_datetime(frame["forecast_available_at_utc"], utc=True)
     frame["forecast_reference_time"] = pd.to_datetime(frame["forecast_reference_time"], utc=True)
     return frame
+
+
+def _optional_utc_timestamp(
+    value: str | pd.Timestamp | None,
+    *,
+    inclusive_date_end: bool = False,
+) -> pd.Timestamp | None:
+    if value is None or value == "":
+        return None
+    timestamp = pd.Timestamp(value)
+    if inclusive_date_end and _is_date_only(value):
+        timestamp = timestamp + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
+    if timestamp.tzinfo is None:
+        return timestamp.tz_localize("UTC")
+    return timestamp.tz_convert("UTC")
+
+
+def _is_date_only(value: str | pd.Timestamp) -> bool:
+    return isinstance(value, str) and bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", value.strip()))
 
 
 def _slug(value: str) -> str:

@@ -22,9 +22,11 @@ from dkenergy_forecast.models.chronos_production import (
     CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION,
     Chronos2LoRAWeatherConfig,
     Chronos2LoRAWeatherDayAhead,
+    load_chronos_lora_pipeline,
+)
+from dkenergy_forecast.models.chronos_zero_shot import (
     ChronosProductionConfig,
     ChronosZeroShotDayAhead,
-    load_chronos_lora_pipeline,
 )
 from dkenergy_forecast.types import add_copenhagen_calendar
 

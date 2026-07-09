@@ -11,6 +11,8 @@ from dkenergy_forecast.models.catboost_production import (
 from dkenergy_forecast.models.chronos_production import (
     Chronos2LoRAWeatherConfig,
     Chronos2LoRAWeatherDayAhead,
+)
+from dkenergy_forecast.models.chronos_zero_shot import (
     ChronosProductionConfig,
     ChronosZeroShotDayAhead,
 )

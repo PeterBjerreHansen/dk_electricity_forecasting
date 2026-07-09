@@ -131,6 +131,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--logging-steps", type=int, default=25)
     parser.add_argument("--weather-covariate-mode", choices=["all", "raw", "ensemble", "ensemble_mean"], default="all")
+    parser.add_argument(
+        "--validation-scores-path",
+        help="Optional model_scores.parquet path to summarize into the exported artifact manifest.",
+    )
+    parser.add_argument(
+        "--validation-score-model-label",
+        help="Optional model_label to select from --validation-scores-path.",
+    )
     parser.add_argument("--device-map", default="cpu")
     parser.add_argument("--allow-incomplete-panel", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
@@ -281,7 +289,10 @@ def make_manifest(
         chronos_version = getattr(chronos, "__version__", None)
     except ImportError:
         chronos_version = None
-    scores = read_validation_scores()
+    scores = read_validation_scores(
+        args.validation_scores_path,
+        model_label=args.validation_score_model_label,
+    )
     return {
         "artifact_schema_version": CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION,
         "created_at_utc": datetime.now(timezone.utc),
@@ -318,20 +329,33 @@ def make_manifest(
     }
 
 
-def read_validation_scores() -> dict[str, Any] | None:
-    score_path = ROOT / "results" / "notebook_chronos2_experimental_v1" / "model_scores.parquet"
-    if not score_path.exists():
+def read_validation_scores(
+    score_path: str | Path | None,
+    *,
+    model_label: str | None = None,
+) -> dict[str, Any] | None:
+    if not score_path:
         return None
-    scores = pd.read_parquet(score_path)
-    model = "chronos2_lora_calendar_weather_ctx1024_300steps"
-    row = scores[(scores["model_label"].eq(model)) & (scores["area"].eq("ALL"))].head(1)
+    path = Path(score_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Validation scores file does not exist: {path}")
+
+    scores = pd.read_parquet(path)
+    row = scores
+    if model_label is not None and "model_label" in row.columns:
+        row = row[row["model_label"].eq(model_label)]
+    if "area" in row.columns and row["area"].eq("ALL").any():
+        row = row[row["area"].eq("ALL")]
+    row = row.head(1)
     if row.empty:
         return None
     values = row.iloc[0].to_dict()
-    return {
+    output = {
         key: (None if isinstance(value, float) and not math.isfinite(value) else value)
         for key, value in values.items()
     }
+    output["source_path"] = str(path)
+    return output
 
 
 if __name__ == "__main__":

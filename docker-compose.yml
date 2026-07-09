@@ -1,30 +1,45 @@
 services:
   dashboard:
-    build: .
-    image: dk-energy-forecasts:local
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    image: dk-energy-forecasts-web:local
+    command: ["web"]
     ports:
       - "${STREAMLIT_PORT:-8501}:8501"
     environment:
-      DKENERGY_PANEL_PATH: /app/data/model_ready/price_panel_hourly_v1.parquet
-      DKENERGY_DASHBOARD_JSON: /app/app_data/forecast_dashboard.json
-      DKENERGY_LATEST_PREDICTIONS_PATH: /app/results/latest_forecast/predictions.parquet
-      DKENERGY_RECENT_SCORES_PATH: /app/results/recent_scores/model_scores.parquet
+      DKENERGY_ARTIFACT_STORE_URI: ${DKENERGY_ARTIFACT_STORE_URI:-file:///app/cloud_store}
+      DKENERGY_PANEL_PATH: ${DKENERGY_PANEL_PATH:-file:///app/cloud_store/latest/price_panel_hourly_v1.parquet}
+      DKENERGY_DASHBOARD_JSON: ${DKENERGY_DASHBOARD_JSON:-file:///app/cloud_store/latest/forecast_dashboard.json}
+      DKENERGY_LATEST_PREDICTIONS_PATH: ${DKENERGY_LATEST_PREDICTIONS_PATH:-file:///app/cloud_store/latest/predictions.parquet}
+      DKENERGY_RECENT_PREDICTIONS_PATH: ${DKENERGY_RECENT_PREDICTIONS_PATH:-file:///app/cloud_store/recent_scores/predictions.parquet}
+      DKENERGY_RECENT_SCORES_PATH: ${DKENERGY_RECENT_SCORES_PATH:-file:///app/cloud_store/recent_scores/model_scores.parquet}
+      DKENERGY_ENABLE_LEGACY_BACKTESTS: ${DKENERGY_ENABLE_LEGACY_BACKTESTS:-0}
     volumes:
-      - ./data:/app/data
-      - ./results:/app/results
-      - ./artifacts:/app/artifacts
-      - ./app_data:/app/app_data
+      - ./cloud_store:/app/cloud_store
 
   pipeline:
-    build: .
-    image: dk-energy-forecasts:local
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    image: dk-energy-forecasts-pipeline:local
     profiles:
       - jobs
-    command: ["python", "scripts/run_daily_pipeline.py"]
+    command:
+      [
+        "pipeline",
+        "--artifact-store-uri",
+        "${DKENERGY_ARTIFACT_STORE_URI:-file:///app/cloud_store}",
+        "--workdir",
+        "${DKENERGY_WORKDIR:-/app/runtime}",
+      ]
     environment:
-      EDS_START: ${EDS_START:-2024-07-01}
+      DKENERGY_ARTIFACT_STORE_URI: ${DKENERGY_ARTIFACT_STORE_URI:-file:///app/cloud_store}
+      DKENERGY_WORKDIR: ${DKENERGY_WORKDIR:-/app/runtime}
+      DKENERGY_MODEL_ARTIFACT_URI: ${DKENERGY_MODEL_ARTIFACT_URI:-file:///app/cloud_store/models/chronos2_lora_calendar_weather_ctx1024_v1}
+      EDS_START: ${EDS_START:-}
       EDS_END: ${EDS_END:-}
-      OPEN_METEO_START: ${OPEN_METEO_START:-2024-07-01}
+      OPEN_METEO_START: ${OPEN_METEO_START:-}
       OPEN_METEO_END: ${OPEN_METEO_END:-}
       FORECAST_AT_HOUR_UTC: ${FORECAST_AT_HOUR_UTC:-10}
       MIN_TRAIN_DAYS: ${MIN_TRAIN_DAYS:-60}
@@ -32,9 +47,7 @@ services:
       SCORE_MAX_ORIGINS: ${SCORE_MAX_ORIGINS:-7}
       SCORE_HOLDOUT_DAYS: ${SCORE_HOLDOUT_DAYS:-2}
       PUBLISH_MODELS: ${PUBLISH_MODELS:-}
-      WITH_WEATHER: ${WITH_WEATHER:-0}
+      WITH_WEATHER: ${WITH_WEATHER:-1}
     volumes:
-      - ./data:/app/data
-      - ./results:/app/results
-      - ./artifacts:/app/artifacts
-      - ./app_data:/app/app_data
+      - ./cloud_store:/app/cloud_store
+      - ./runtime:/app/runtime

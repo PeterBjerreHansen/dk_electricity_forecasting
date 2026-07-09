@@ -6,8 +6,9 @@ import hashlib
 import json
 import sys
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,9 @@ from dkenergy_data.sources.open_meteo import (  # noqa: E402
     previous_runs_params,
     write_previous_runs_response,
 )
+
+
+DEFAULT_LOOKBACK_DAYS = 90
 
 
 def main() -> None:
@@ -112,9 +116,11 @@ def main() -> None:
 
 
 def parse_args() -> argparse.Namespace:
+    default_start = _lookback_month_start_copenhagen(DEFAULT_LOOKBACK_DAYS)
+    default_end = _tomorrow_copenhagen()
     parser = argparse.ArgumentParser(description="Fetch raw Open-Meteo Previous Runs forecasts.")
-    parser.add_argument("--start", default="2024-07-01", help="Inclusive start date.")
-    parser.add_argument("--end", required=True, help="Inclusive end date.")
+    parser.add_argument("--start", default=default_start, help="Inclusive start date.")
+    parser.add_argument("--end", default=default_end, help="Inclusive end date.")
     parser.add_argument("--models", nargs="+", default=list(OPEN_METEO_MODELS))
     parser.add_argument("--variables", nargs="+", default=list(BASE_VARIABLES))
     parser.add_argument("--lead-time-days", nargs="+", type=int, default=list(LEAD_TIME_DAYS))
@@ -134,6 +140,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sleep-between-requests-seconds", type=float, default=0.1)
     parser.add_argument("--force", action="store_true")
     return parser.parse_args()
+
+
+def _tomorrow_copenhagen() -> str:
+    return (datetime.now(ZoneInfo("Europe/Copenhagen")).date() + timedelta(days=1)).isoformat()
+
+
+def _lookback_month_start_copenhagen(days: int) -> str:
+    lookback_date = datetime.now(ZoneInfo("Europe/Copenhagen")).date() - timedelta(days=days)
+    return lookback_date.replace(day=1).isoformat()
 
 
 def selected_locations(location_ids: list[str] | None) -> list[WeatherLocation]:

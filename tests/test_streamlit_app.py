@@ -82,6 +82,39 @@ def test_backtest_tab_loader_prefers_backtest_artifacts(tmp_path) -> None:
     assert loaded["model_label"].tolist() == ["model_a"]
 
 
+def test_streamlit_parquet_loader_accepts_file_uri(tmp_path) -> None:
+    parquet_path = tmp_path / "frame.parquet"
+    pd.DataFrame([{"x": 1}]).to_parquet(parquet_path, index=False)
+
+    loaded = streamlit_app._load_parquet(f"file://{parquet_path}")
+
+    assert loaded.to_dict(orient="records") == [{"x": 1}]
+
+
+def test_cloud_mode_disables_legacy_backtest_dirs_by_default(monkeypatch) -> None:
+    monkeypatch.setenv("DKENERGY_ARTIFACT_STORE_URI", "s3://bucket/prefix")
+
+    assert streamlit_app._paths_from_env("DKENERGY_BACKTEST_DIRS", []) == []
+
+
+def test_legacy_backtests_are_opt_in_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("DKENERGY_ENABLE_LEGACY_BACKTESTS", raising=False)
+
+    assert not streamlit_app._env_bool("DKENERGY_ENABLE_LEGACY_BACKTESTS", default=False)
+
+
+def test_backtest_loader_accepts_string_directories(tmp_path) -> None:
+    backtest_dir = tmp_path / "baseline_v1"
+    backtest_dir.mkdir()
+    pd.DataFrame(
+        [_prediction_row("ignored", "2026-07-01T00:00:00Z", "DK1", "model_a", 10.0, 11.0)]
+    ).drop(columns=["run_id"]).to_parquet(backtest_dir / "predictions.parquet", index=False)
+
+    loaded = streamlit_app._load_backtest_predictions([str(backtest_dir)])
+
+    assert loaded["run_id"].tolist() == ["baseline_v1"]
+
+
 def _prediction_row(
     run_id: str,
     ds_utc: str,

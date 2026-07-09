@@ -14,12 +14,11 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-DEFAULT_WEATHER_FEATURES_LONG_PATH = (
-    ROOT
-    / "data"
-    / "features"
-    / "weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet"
-)
+WEATHER_FEATURES_LONG_FILENAME = "weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet"
+
+
+DEFAULT_WEATHER_LOOKBACK_DAYS = 90
+DEFAULT_PRICE_LOOKBACK_DAYS = 450
 
 
 def main() -> None:
@@ -31,10 +30,21 @@ def main() -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the daily file-based data refresh and forecast publish pipeline.")
-    parser.add_argument("--eds-start", default=_env("EDS_START", "2024-07-01"))
+    parser.add_argument(
+        "--eds-start",
+        default=_env("EDS_START", _lookback_month_start_copenhagen(DEFAULT_PRICE_LOOKBACK_DAYS)),
+    )
     parser.add_argument("--eds-end", default=_env("EDS_END"))
-    parser.add_argument("--open-meteo-start", default=_env("OPEN_METEO_START", "2024-07-01"))
+    parser.add_argument(
+        "--open-meteo-start",
+        default=_env("OPEN_METEO_START", _lookback_month_start_copenhagen(DEFAULT_WEATHER_LOOKBACK_DAYS)),
+    )
     parser.add_argument("--open-meteo-end", default=_env("OPEN_METEO_END", _tomorrow_copenhagen()))
+    parser.add_argument(
+        "--runtime-root",
+        default=_env("DKENERGY_RUNTIME_ROOT"),
+        help="Optional root for data/results/artifacts/app_data. Defaults to the repository root.",
+    )
     parser.add_argument(
         "--at-hour-utc",
         type=int,
@@ -60,8 +70,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--weather-features-long-path",
-        default=_env("WEATHER_FEATURES_LONG_PATH", str(DEFAULT_WEATHER_FEATURES_LONG_PATH)),
+        default=_env("WEATHER_FEATURES_LONG_PATH"),
         help="Open-Meteo long weather feature parquet passed to weather-aware publish models.",
+    )
+    parser.add_argument(
+        "--chronos-model-artifact-path",
+        default=_env("DKENERGY_CHRONOS_MODEL_ARTIFACT_PATH"),
+        help="Local trained Chronos LoRA artifact path passed to production publishing.",
     )
     parser.add_argument("--skip-price-ingest", action="store_true")
     parser.add_argument("--skip-weather", action="store_true", help="Disable weather even when WITH_WEATHER is set.")
@@ -84,6 +99,10 @@ def parse_args() -> argparse.Namespace:
 
 def build_commands(args: argparse.Namespace) -> list[list[str]]:
     python = sys.executable
+    runtime_root = Path(args.runtime_root) if args.runtime_root else ROOT
+    paths = runtime_paths(runtime_root)
+    weather_features_long_path = args.weather_features_long_path or str(paths["weather_features_long"])
+    chronos_model_artifact_path = args.chronos_model_artifact_path or str(paths["chronos_model_artifact"])
     commands: list[list[str]] = []
 
     if not args.skip_price_ingest:
@@ -92,12 +111,27 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
             str(ROOT / "scripts" / "fetch_eds_prices.py"),
             "--start",
             args.eds_start,
+            "--raw-dir",
+            str(paths["eds_raw"]),
         ]
         if args.eds_end:
             fetch_prices.extend(["--end", args.eds_end])
         commands.append(fetch_prices)
 
-    build_prices = [python, str(ROOT / "scripts" / "build_price_panel.py")]
+    build_prices = [
+        python,
+        str(ROOT / "scripts" / "build_price_panel.py"),
+        "--raw-dir",
+        str(paths["eds_raw"]),
+        "--normalized-dir",
+        str(paths["normalized"]),
+        "--model-ready-dir",
+        str(paths["model_ready"]),
+        "--start",
+        args.eds_start,
+    ]
+    if args.eds_end:
+        build_prices.extend(["--end", args.eds_end])
     if not args.strict_panel:
         build_prices.append("--allow-incomplete-recent")
     commands.append(build_prices)
@@ -113,14 +147,37 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
                 args.open_meteo_start,
                 "--end",
                 args.open_meteo_end,
+                "--raw-dir",
+                str(paths["open_meteo_raw"]),
             ]
         )
-        commands.append([python, str(ROOT / "scripts" / "build_open_meteo_weather_features.py")])
+        commands.append(
+            [
+                python,
+                str(ROOT / "scripts" / "build_open_meteo_weather_features.py"),
+                "--start",
+                args.open_meteo_start,
+                "--end",
+                args.open_meteo_end,
+                "--raw-dir",
+                str(paths["open_meteo_raw"]),
+                "--normalized-dir",
+                str(paths["normalized"]),
+                "--features-dir",
+                str(paths["features"]),
+            ]
+        )
 
     if not args.skip_backtest:
         baseline_backtest = [
             python,
             str(ROOT / "scripts" / "run_baseline_backtest.py"),
+            "--panel-path",
+            str(paths["price_panel"]),
+            "--qa-path",
+            str(paths["price_panel_qa"]),
+            "--output-dir",
+            str(paths["baseline_results"]),
             "--forecast-local-time",
             str(args.forecast_local_time),
             "--min-train-days",
@@ -136,6 +193,18 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
         publish = [
             python,
             str(ROOT / "scripts" / "run_publish_forecast.py"),
+            "--panel-path",
+            str(paths["price_panel"]),
+            "--qa-path",
+            str(paths["price_panel_qa"]),
+            "--artifact-root",
+            str(paths["forecast_runs"]),
+            "--latest-forecast-dir",
+            str(paths["latest_forecast"]),
+            "--recent-scores-dir",
+            str(paths["recent_scores"]),
+            "--dashboard-path",
+            str(paths["dashboard_json"]),
             "--forecast-local-time",
             str(args.forecast_local_time),
             "--min-train-days",
@@ -151,12 +220,35 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
             publish.extend(["--at-hour-utc", str(args.at_hour_utc)])
         if args.models:
             publish.extend(["--models", *args.models])
-        publish.extend(["--weather-features-long-path", args.weather_features_long_path])
+        publish.extend(["--weather-features-long-path", weather_features_long_path])
+        publish.extend(["--chronos-model-artifact-path", chronos_model_artifact_path])
         if not args.strict_panel:
             publish.append("--allow-incomplete-panel")
         commands.append(publish)
 
     return commands
+
+
+def runtime_paths(runtime_root: Path) -> dict[str, Path]:
+    return {
+        "eds_raw": runtime_root / "data" / "raw" / "energi_data_service",
+        "open_meteo_raw": runtime_root / "data" / "raw" / "open_meteo",
+        "normalized": runtime_root / "data" / "normalized",
+        "features": runtime_root / "data" / "features",
+        "model_ready": runtime_root / "data" / "model_ready",
+        "price_panel": runtime_root / "data" / "model_ready" / "price_panel_hourly_v1.parquet",
+        "price_panel_qa": runtime_root / "data" / "model_ready" / "price_panel_hourly_v1.qa.json",
+        "weather_features_long": runtime_root / "data" / "features" / WEATHER_FEATURES_LONG_FILENAME,
+        "chronos_model_artifact": runtime_root
+        / "artifacts"
+        / "models"
+        / "chronos2_lora_calendar_weather_ctx1024_v1",
+        "baseline_results": runtime_root / "results" / "baseline_v1",
+        "forecast_runs": runtime_root / "artifacts" / "forecast_runs",
+        "latest_forecast": runtime_root / "results" / "latest_forecast",
+        "recent_scores": runtime_root / "results" / "recent_scores",
+        "dashboard_json": runtime_root / "app_data" / "forecast_dashboard.json",
+    }
 
 
 def run_command(command: list[str], *, dry_run: bool) -> None:
@@ -191,6 +283,11 @@ def _env_int(name: str, default: int | None = None) -> int | None:
 
 def _tomorrow_copenhagen() -> str:
     return (datetime.now(ZoneInfo("Europe/Copenhagen")).date() + timedelta(days=1)).isoformat()
+
+
+def _lookback_month_start_copenhagen(days: int) -> str:
+    lookback_date = datetime.now(ZoneInfo("Europe/Copenhagen")).date() - timedelta(days=days)
+    return lookback_date.replace(day=1).isoformat()
 
 
 if __name__ == "__main__":

@@ -52,6 +52,59 @@ def test_normalize_previous_runs_payload_to_long_forecast_rows() -> None:
     assert first["raw_batch_id"] == "batch-dk1_a"
 
 
+def test_normalize_previous_runs_can_filter_valid_time_window() -> None:
+    batch = _raw_batch(
+        "dk1_a",
+        payload={
+            "hourly": {
+                "time": ["2025-01-01T00:00", "2025-01-02T00:00", "2025-01-03T00:00"],
+                "temperature_2m_previous_day1": [1.0, 2.0, 3.0],
+            },
+            "hourly_units": {"temperature_2m_previous_day1": "degC"},
+        },
+    )
+
+    normalized = normalize_batch(
+        batch,
+        locations=[WeatherLocation("dk1_a", "DK1", 56.0, 10.0)],
+        base_variables=["temperature_2m"],
+        lead_time_days=[1],
+        min_valid_time="2025-01-02",
+        max_valid_time="2025-01-02T23:59:59Z",
+    )
+
+    assert normalized["valid_time_utc"].tolist() == [pd.Timestamp("2025-01-02T00:00:00Z")]
+    assert normalized["value"].tolist() == [2.0]
+
+
+def test_normalize_previous_runs_treats_date_only_end_as_full_day() -> None:
+    batch = _raw_batch(
+        "dk1_a",
+        payload={
+            "hourly": {
+                "time": ["2025-01-02T00:00", "2025-01-02T23:00", "2025-01-03T00:00"],
+                "temperature_2m_previous_day1": [1.0, 2.0, 3.0],
+            },
+            "hourly_units": {"temperature_2m_previous_day1": "degC"},
+        },
+    )
+
+    normalized = normalize_batch(
+        batch,
+        locations=[WeatherLocation("dk1_a", "DK1", 56.0, 10.0)],
+        base_variables=["temperature_2m"],
+        lead_time_days=[1],
+        min_valid_time="2025-01-02",
+        max_valid_time="2025-01-02",
+    )
+
+    assert normalized["valid_time_utc"].tolist() == [
+        pd.Timestamp("2025-01-02T00:00:00Z"),
+        pd.Timestamp("2025-01-02T23:00:00Z"),
+    ]
+    assert normalized["value"].tolist() == [1.0, 2.0]
+
+
 def test_area_aggregation_uses_available_points_without_imputation() -> None:
     locations = [
         WeatherLocation("dk1_a", "DK1", 56.0, 10.0),

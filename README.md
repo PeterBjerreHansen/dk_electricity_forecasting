@@ -42,7 +42,7 @@ features. Raw API payloads are stored before normalized forecasts and the
 canonical long area-hour weather feature table are built:
 
 ```bash
-python scripts/fetch_open_meteo_previous_runs.py --start 2024-07-01 --end YYYY-MM-DD
+python scripts/fetch_open_meteo_previous_runs.py
 python scripts/build_open_meteo_weather_features.py
 ```
 
@@ -115,9 +115,9 @@ python scripts/train_chronos_lora.py
 ```
 
 `rolling_median_hour_weekend_56d`, `rolling_median_local_hour_28d`,
-`catboost_price_manual_v1`, and `chronos_zero_shot_v1` are registered
-comparison models, but disabled by default. Use them from notebooks or pass an
-explicit `--models` list when you want a production smoke comparison.
+`catboost_price_manual_v1`, and `chronos_zero_shot_v1` live in the comparison
+registry for notebooks and smoke diagnostics. They are intentionally not
+accepted by the production publish command.
 
 Weighted median recency experiments are baseline modes. The default command
 stays compact; heavier grids are explicit. The weekday/weekend diagnostic tunes
@@ -150,8 +150,8 @@ windows are explicit, for
 example `--frame-kind custom --days 730 --output-path data/features/weather_experiment_frame_backtest_730d.parquet`.
 
 CatBoost development remains notebook-first. A fixed adapter,
-`catboost_price_manual_v1`, remains registered for explicit smoke publishes,
-but it is not part of the default latest-forecast set.
+`catboost_price_manual_v1`, remains available through the comparison registry,
+but it is not part of production latest-forecast publishing.
 
 ## Evaluation
 
@@ -210,9 +210,9 @@ before publishing. Weather-aware models consume the existing long weather featur
 artifact and fail rather than silently fetching or falling back if that artifact
 or its covariate schema is missing.
 
-In production, schedule that command from cron, GitHub Actions, Airflow, or a
-container scheduler with persistent volumes mounted for `data/`, `results/`,
-`artifacts/`, and `app_data/`.
+In production, run the cloud wrapper in a scheduled pipeline container. It
+hydrates the small runtime state it needs from S3, runs the daily command, writes
+immutable run artifacts, then updates the `latest/` dashboard artifacts last.
 
 ## Dashboard
 
@@ -243,12 +243,55 @@ docker compose up dashboard
 docker compose --profile jobs run --rm pipeline
 ```
 
-The Compose services mount local `data/`, `results/`, `artifacts/`, and
-`app_data/` directories so runs survive container restarts. The image installs
-the dashboard plus the production Chronos extra used by the default publish
-registry.
+Compose mirrors the production artifact layout with separate images:
+
+- `Dockerfile.web` builds the lightweight Streamlit dashboard image.
+- `Dockerfile.pipeline` builds the heavier Chronos/PyTorch pipeline image.
+
+It uses a file-backed store under ignored `cloud_store/` and a runtime workdir
+under ignored `runtime/`. Bootstrap the local store with the trained LoRA
+artifact before running the real pipeline:
+
+```bash
+mkdir -p cloud_store/models
+rsync -a artifacts/models/chronos2_lora_calendar_weather_ctx1024_v1 cloud_store/models/
+```
+
+The containerized pipeline defaults to rolling production windows rather than
+fetching all historical data on every run. Override `EDS_START` or
+`OPEN_METEO_START` only when you intentionally want to rebuild a longer slice.
+
+## AWS MVP
+
+The `production` branch deploys a small AWS MVP from `infra/aws/`: separate web
+and pipeline images, private S3 artifacts, ECR, ECS/Fargate, EventBridge
+Scheduler, ALB, CloudFront HTTPS, and CloudWatch logs.
+
+Set the backend/deploy values, build the stack, and upload the one-time Chronos
+LoRA artifact before enabling scheduled runs:
+
+```bash
+export TF_STATE_BUCKET=<terraform-state-bucket>
+export AWS_REGION=eu-central-1
+make aws-deploy
+export AWS_MODEL_ARTIFACT_URI="$(terraform -chdir=infra/aws output -raw model_artifact_uri)"
+make aws-bootstrap-model
+AWS_ENABLE_PIPELINE_SCHEDULE=true make aws-deploy
+```
+
+The scheduled production task loads the existing LoRA artifact and refreshes
+weather data by default; it does not retrain Chronos on every update.
+
+For a local cloud-layout smoke test:
+
+```bash
+python scripts/run_cloud_pipeline.py --artifact-store-uri file:///tmp/dkenergy-store --workdir /tmp/dkenergy-work --dry-run
+```
 
 ## CI
 
 GitHub Actions runs `python -m pytest` on Python 3.10, 3.11, and 3.12. The
-workflow lives in `.github/workflows/ci.yml`.
+workflow lives in `.github/workflows/ci.yml`. Pushes to `production` also run
+`.github/workflows/production.yml`, which tests, builds/pushes the images, and
+applies Terraform using the `AWS_DEPLOY_ROLE_ARN` and `TF_STATE_BUCKET`
+repository secrets.

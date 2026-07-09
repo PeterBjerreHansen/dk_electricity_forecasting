@@ -17,6 +17,10 @@ from dkenergy_forecast.models.registry import (
     latest_publish_model_factories,
     production_model_specs,
 )
+from dkenergy_forecast.models.comparison_registry import (
+    comparison_model_factories,
+    comparison_model_specs,
+)
 from dkenergy_forecast.publishing import (
     build_dashboard_payload,
     make_forecast_run_manifest,
@@ -231,7 +235,7 @@ def test_future_dashboard_payload_serializes_missing_actuals_as_null(tmp_path) -
     assert first_prediction["actual_price"] is None
 
 
-def test_production_registry_defaults_include_lora_chronos_and_optional_catboost(monkeypatch) -> None:
+def test_production_registry_contains_only_deployed_models(monkeypatch, tmp_path) -> None:
     specs = production_model_specs()
 
     assert default_production_model_labels() == [
@@ -239,42 +243,52 @@ def test_production_registry_defaults_include_lora_chronos_and_optional_catboost
         "median_weekday_exp_hl4_floor10_42d__median_weekend_exp_hl28_floor20_56d",
         "chronos2_lora_calendar_weather_ctx1024_v1",
     ]
-    assert not specs["rolling_median_local_hour_28d"].default_enabled
-    assert not specs["rolling_median_hour_weekend_56d"].default_enabled
-    assert specs["catboost_price_manual_v1"].family == "catboost"
-    assert specs["catboost_price_manual_v1"].required_extra == "catboost"
-    assert not specs["catboost_price_manual_v1"].default_enabled
-    assert not specs["catboost_price_manual_v1"].emits_quantiles
+    assert set(specs) == set(default_production_model_labels())
     assert specs["chronos2_lora_calendar_weather_ctx1024_v1"].family == "chronos"
     assert specs["chronos2_lora_calendar_weather_ctx1024_v1"].required_extra == "chronos"
     assert specs["chronos2_lora_calendar_weather_ctx1024_v1"].default_enabled
     assert specs["chronos2_lora_calendar_weather_ctx1024_v1"].emits_quantiles
     assert specs["chronos2_lora_calendar_weather_ctx1024_v1"].requires_weather
-    assert specs["chronos_zero_shot_v1"].family == "chronos"
-    assert specs["chronos_zero_shot_v1"].required_extra == "chronos"
-    assert not specs["chronos_zero_shot_v1"].default_enabled
-    assert specs["chronos_zero_shot_v1"].emits_quantiles
-    assert not any(spec.family == "weather_catboost" for spec in specs.values())
     monkeypatch.setattr("dkenergy_forecast.models.registry.ensure_chronos_available", lambda: None)
     assert set(latest_publish_model_factories()) == set(default_production_model_labels())
+    chronos_factory = latest_publish_model_factories(
+        ["chronos2_lora_calendar_weather_ctx1024_v1"],
+        weather_features_long_path=tmp_path / "weather.parquet",
+        chronos_model_artifact_path=tmp_path / "chronos_model",
+    )["chronos2_lora_calendar_weather_ctx1024_v1"]
+    chronos_model = chronos_factory()
+    assert chronos_model.config.weather_features_long_path == tmp_path / "weather.parquet"
+    assert chronos_model.config.model_artifact_path == tmp_path / "chronos_model"
     with pytest.raises(ValueError, match="Unknown production model"):
         latest_publish_model_factories(["weather_catboost_all_weather"])
-    monkeypatch.setattr(
-        "dkenergy_forecast.models.registry.ensure_chronos_available",
-        lambda: (_ for _ in ()).throw(ImportError("Install it with chronos")),
-    )
-    with pytest.raises(ImportError, match="chronos"):
+    with pytest.raises(ValueError, match="Unknown production model"):
         latest_publish_model_factories(["chronos_zero_shot_v1"])
 
 
-def test_selecting_catboost_publish_model_fails_fast_without_catboost(monkeypatch) -> None:
+def test_comparison_registry_holds_notebook_and_smoke_models(monkeypatch) -> None:
+    specs = comparison_model_specs()
+
+    assert specs["rolling_median_local_hour_28d"].family == "baseline"
+    assert specs["rolling_median_hour_weekend_56d"].family == "baseline"
+    assert specs["catboost_price_manual_v1"].family == "catboost"
+    assert specs["catboost_price_manual_v1"].required_extra == "catboost"
+    assert not specs["catboost_price_manual_v1"].supports_latest_publish
+    assert specs["chronos_zero_shot_v1"].family == "chronos"
+    assert specs["chronos_zero_shot_v1"].required_extra == "chronos"
+    assert specs["chronos_zero_shot_v1"].emits_quantiles
+    monkeypatch.setattr("dkenergy_forecast.models.comparison_registry.ensure_chronos_zero_shot_available", lambda: None)
+    factories = comparison_model_factories(["chronos_zero_shot_v1"])
+    assert set(factories) == {"chronos_zero_shot_v1"}
+
+
+def test_selecting_comparison_catboost_model_fails_fast_without_catboost(monkeypatch) -> None:
     monkeypatch.setattr(
-        "dkenergy_forecast.models.registry.ensure_catboost_available",
+        "dkenergy_forecast.models.comparison_registry.ensure_catboost_available",
         lambda: (_ for _ in ()).throw(ImportError("Install CatBoost with catboost extra")),
     )
 
     with pytest.raises(ImportError, match="CatBoost"):
-        latest_publish_model_factories(["catboost_price_manual_v1"])
+        comparison_model_factories(["catboost_price_manual_v1"])
 
 
 def test_publish_model_listing_includes_required_extra_and_quantile_metadata() -> None:
@@ -286,12 +300,12 @@ def test_publish_model_listing_includes_required_extra_and_quantile_metadata() -
         capture_output=True,
     )
 
-    assert "catboost_price_manual_v1: catboost, optional, latest-publish, extra=catboost, point" in result.stdout
     assert (
         "chronos2_lora_calendar_weather_ctx1024_v1: chronos, default, latest-publish, "
         "extra=chronos, quantiles, weather"
     ) in result.stdout
-    assert "chronos_zero_shot_v1: chronos, optional, latest-publish, extra=chronos, quantiles" in result.stdout
+    assert "catboost_price_manual_v1" not in result.stdout
+    assert "chronos_zero_shot_v1" not in result.stdout
 
 
 def _panel(*, periods: int) -> pd.DataFrame:

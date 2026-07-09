@@ -1,0 +1,86 @@
+name: Production Deploy
+
+on:
+  push:
+    branches:
+      - production
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: eu-central-1
+  ENABLE_PIPELINE_SCHEDULE: ${{ vars.ENABLE_PIPELINE_SCHEDULE || 'false' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+
+      - name: Run tests
+        run: python -m pytest
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform init
+        run: |
+          terraform -chdir=infra/aws init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=dk-energy-forecasts/production.tfstate" \
+            -backend-config="region=${AWS_REGION}"
+
+      - name: Ensure ECR exists
+        run: |
+          terraform -chdir=infra/aws apply -auto-approve \
+            -target=aws_ecr_repository.web \
+            -target=aws_ecr_repository.pipeline \
+            -var "aws_region=${AWS_REGION}"
+
+      - name: Read ECR repository URLs
+        id: ecr
+        run: |
+          echo "web_repository_url=$(terraform -chdir=infra/aws output -raw web_ecr_repository_url)" >> "$GITHUB_OUTPUT"
+          echo "pipeline_repository_url=$(terraform -chdir=infra/aws output -raw pipeline_ecr_repository_url)" >> "$GITHUB_OUTPUT"
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push images
+        id: images
+        env:
+          WEB_IMAGE_URI: ${{ steps.ecr.outputs.web_repository_url }}:${{ github.sha }}
+          PIPELINE_IMAGE_URI: ${{ steps.ecr.outputs.pipeline_repository_url }}:${{ github.sha }}
+        run: |
+          docker build -f Dockerfile.web -t "$WEB_IMAGE_URI" .
+          docker build -f Dockerfile.pipeline -t "$PIPELINE_IMAGE_URI" .
+          docker push "$WEB_IMAGE_URI"
+          docker push "$PIPELINE_IMAGE_URI"
+          echo "web_image_uri=$WEB_IMAGE_URI" >> "$GITHUB_OUTPUT"
+          echo "pipeline_image_uri=$PIPELINE_IMAGE_URI" >> "$GITHUB_OUTPUT"
+
+      - name: Terraform apply
+        run: |
+          terraform -chdir=infra/aws apply -auto-approve \
+            -var "aws_region=${AWS_REGION}" \
+            -var "web_image_uri=${{ steps.images.outputs.web_image_uri }}" \
+            -var "pipeline_image_uri=${{ steps.images.outputs.pipeline_image_uri }}" \
+            -var "enable_pipeline_schedule=${ENABLE_PIPELINE_SCHEDULE}"

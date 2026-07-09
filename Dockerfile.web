@@ -1,7 +1,5 @@
 FROM python:3.11-slim
 
-# Default local builds produce the dashboard image. The Chronos pipeline image is
-# built explicitly from Dockerfile.pipeline.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1

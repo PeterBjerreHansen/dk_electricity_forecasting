@@ -9,6 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from dkenergy_forecast.evaluation.summary import add_prediction_diagnostics, model_score_table
+from dkenergy_forecast.storage import materialize_uri, resource_exists
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +22,7 @@ DEFAULT_BACKTEST_DIRS = [
     ROOT / "results" / "notebook_chronos2_experimental_v1",
     ROOT / "results" / "baseline_v1",
 ]
+CACHE_TTL_SECONDS = 300
 
 MODEL_DISPLAY_NAMES = {
     "chronos2_lora_calendar_weather_ctx1024_v1": "Chronos 2 LoRA Weather",
@@ -33,21 +35,34 @@ MODEL_DISPLAY_NAMES = {
 }
 
 
+def _cache_data(ttl: int):
+    if hasattr(st, "cache_data"):
+        return st.cache_data(ttl=ttl)
+    return lambda func: func
+
+
 def main() -> None:
     st.set_page_config(page_title="Danish Electricity Forecasts", layout="wide")
 
-    panel_path = _path_from_env("DKENERGY_PANEL_PATH", DEFAULT_PANEL_PATH)
-    dashboard_json = _path_from_env("DKENERGY_DASHBOARD_JSON", DEFAULT_DASHBOARD_JSON)
-    latest_predictions_path = _path_from_env(
+    panel_path = _resource_from_env("DKENERGY_PANEL_PATH", DEFAULT_PANEL_PATH)
+    dashboard_json = _resource_from_env("DKENERGY_DASHBOARD_JSON", DEFAULT_DASHBOARD_JSON)
+    latest_predictions_path = _resource_from_env(
         "DKENERGY_LATEST_PREDICTIONS_PATH",
         DEFAULT_LATEST_PREDICTIONS,
     )
-    recent_predictions_path = _path_from_env(
+    recent_predictions_path = _resource_from_env(
         "DKENERGY_RECENT_PREDICTIONS_PATH",
         DEFAULT_RECENT_PREDICTIONS,
     )
-    recent_scores_path = _path_from_env("DKENERGY_RECENT_SCORES_PATH", DEFAULT_RECENT_SCORES)
-    backtest_dirs = _paths_from_env("DKENERGY_BACKTEST_DIRS", DEFAULT_BACKTEST_DIRS)
+    recent_scores_path = _resource_from_env("DKENERGY_RECENT_SCORES_PATH", DEFAULT_RECENT_SCORES)
+    enable_legacy_backtests = _env_bool(
+        "DKENERGY_ENABLE_LEGACY_BACKTESTS",
+        default=False,
+    )
+    backtest_dirs = _paths_from_env(
+        "DKENERGY_BACKTEST_DIRS",
+        DEFAULT_BACKTEST_DIRS if enable_legacy_backtests else [],
+    )
 
     payload = _load_dashboard_payload(dashboard_json)
     panel = _load_parquet(panel_path)
@@ -317,33 +332,33 @@ def _score_table_for_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
 
 def _render_run_details(
     run: dict[str, Any],
-    panel_path: Path,
-    dashboard_json: Path,
-    latest_predictions_path: Path,
-    recent_predictions_path: Path,
-    recent_scores_path: Path,
-    backtest_dirs: list[Path],
+    panel_path: str,
+    dashboard_json: str,
+    latest_predictions_path: str,
+    recent_predictions_path: str,
+    recent_scores_path: str,
+    backtest_dirs: list[str],
 ) -> None:
     paths = pd.DataFrame(
         [
-            {"artifact": "price_panel", "path": str(panel_path), "exists": panel_path.exists()},
-            {"artifact": "dashboard_json", "path": str(dashboard_json), "exists": dashboard_json.exists()},
+            {"artifact": "price_panel", "path": str(panel_path), "exists": _resource_exists(panel_path)},
+            {"artifact": "dashboard_json", "path": str(dashboard_json), "exists": _resource_exists(dashboard_json)},
             {
                 "artifact": "latest_predictions",
                 "path": str(latest_predictions_path),
-                "exists": latest_predictions_path.exists(),
+                "exists": _resource_exists(latest_predictions_path),
             },
             {
                 "artifact": "recent_predictions",
                 "path": str(recent_predictions_path),
-                "exists": recent_predictions_path.exists(),
+                "exists": _resource_exists(recent_predictions_path),
             },
-            {"artifact": "recent_scores", "path": str(recent_scores_path), "exists": recent_scores_path.exists()},
+            {"artifact": "recent_scores", "path": str(recent_scores_path), "exists": _resource_exists(recent_scores_path)},
             *[
                 {
-                    "artifact": f"backtest_predictions:{path.name}",
-                    "path": str(path / "predictions.parquet"),
-                    "exists": (path / "predictions.parquet").exists(),
+                    "artifact": f"backtest_predictions:{Path(path).name}",
+                    "path": str(Path(path) / "predictions.parquet"),
+                    "exists": (Path(path) / "predictions.parquet").exists(),
                 }
                 for path in backtest_dirs
             ],
@@ -353,13 +368,14 @@ def _render_run_details(
     st.json(_json_display_safe(run))
 
 
-def _load_dashboard_payload(path: Path) -> dict[str, Any]:
-    if not path.exists():
+def _load_dashboard_payload(path: str) -> dict[str, Any]:
+    local_path = _materialize_resource(path, required=False)
+    if not local_path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(local_path.read_text(encoding="utf-8"))
 
 
-def _load_predictions(payload: dict[str, Any], fallback_path: Path) -> pd.DataFrame:
+def _load_predictions(payload: dict[str, Any], fallback_path: str) -> pd.DataFrame:
     if payload.get("predictions"):
         frame = pd.DataFrame(payload["predictions"])
     else:
@@ -367,7 +383,7 @@ def _load_predictions(payload: dict[str, Any], fallback_path: Path) -> pd.DataFr
     return _parse_time_columns(frame, ["forecast_origin_utc", "ds_utc", "ds_local"])
 
 
-def _load_scores(payload: dict[str, Any], fallback_path: Path) -> pd.DataFrame:
+def _load_scores(payload: dict[str, Any], fallback_path: str) -> pd.DataFrame:
     if payload.get("model_scores"):
         return pd.DataFrame(payload["model_scores"])
     return _load_parquet(fallback_path)
@@ -375,8 +391,8 @@ def _load_scores(payload: dict[str, Any], fallback_path: Path) -> pd.DataFrame:
 
 def _load_recent_predictions(
     payload: dict[str, Any],
-    fallback_path: Path,
-    legacy_backtest_dirs: list[Path],
+    fallback_path: str,
+    legacy_backtest_dirs: list[str],
 ) -> pd.DataFrame:
     if payload.get("recent_predictions"):
         frame = pd.DataFrame(payload["recent_predictions"])
@@ -389,8 +405,8 @@ def _load_recent_predictions(
 
 def _load_backtest_tab_predictions(
     payload: dict[str, Any],
-    recent_predictions_path: Path,
-    backtest_dirs: list[Path],
+    recent_predictions_path: str,
+    backtest_dirs: list[str],
 ) -> pd.DataFrame:
     backtests = _load_backtest_predictions(backtest_dirs)
     if not backtests.empty:
@@ -398,10 +414,10 @@ def _load_backtest_tab_predictions(
     return _load_recent_predictions(payload, recent_predictions_path, backtest_dirs)
 
 
-def _load_backtest_predictions(backtest_dirs: list[Path]) -> pd.DataFrame:
+def _load_backtest_predictions(backtest_dirs: list[str]) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     for run_dir in backtest_dirs:
-        path = run_dir / "predictions.parquet"
+        path = Path(run_dir) / "predictions.parquet"
         if not path.exists():
             continue
         frame = pd.read_parquet(path)
@@ -409,7 +425,7 @@ def _load_backtest_predictions(backtest_dirs: list[Path]) -> pd.DataFrame:
             frame["model_label"] = frame["model_name"]
         if not {"ds_utc", "forecast_origin_utc", "area", "model_label", "y", "y_pred"}.issubset(frame.columns):
             continue
-        frame["run_id"] = run_dir.name
+        frame["run_id"] = Path(run_dir).name
         frames.append(frame)
 
     if not frames:
@@ -429,10 +445,11 @@ def _is_evaluated_prediction_frame(frame: pd.DataFrame) -> bool:
     }.issubset(frame.columns)
 
 
-def _load_parquet(path: Path) -> pd.DataFrame:
-    if not path.exists():
+def _load_parquet(path: str) -> pd.DataFrame:
+    local_path = _materialize_resource(path, required=False)
+    if not local_path.exists():
         return pd.DataFrame()
-    return pd.read_parquet(path)
+    return pd.read_parquet(local_path)
 
 
 def _parse_time_columns(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
@@ -443,15 +460,34 @@ def _parse_time_columns(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame
     return output
 
 
-def _path_from_env(name: str, default: Path) -> Path:
-    return Path(os.environ.get(name, str(default))).expanduser()
+def _resource_from_env(name: str, default: Path) -> str:
+    return os.environ.get(name, str(default))
 
 
-def _paths_from_env(name: str, default: list[Path]) -> list[Path]:
+def _paths_from_env(name: str, default: list[Path]) -> list[str]:
     value = os.environ.get(name)
-    if not value:
+    if value is None:
+        return [str(path) for path in default]
+    if value.strip() == "":
+        return []
+    return [str(Path(item).expanduser()) for item in value.split(os.pathsep) if item]
+
+
+def _env_bool(name: str, *, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None or value == "":
         return default
-    return [Path(item).expanduser() for item in value.split(os.pathsep) if item]
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resource_exists(resource: str) -> bool:
+    return resource_exists(resource)
+
+
+@_cache_data(ttl=CACHE_TTL_SECONDS)
+def _materialize_resource(resource: str, *, required: bool = False) -> Path:
+    cache_dir = Path(os.environ.get("DKENERGY_CACHE_DIR", "/tmp/dkenergy-dashboard-cache"))
+    return materialize_uri(resource, cache_dir=cache_dir, required=required)
 
 
 def _complete_quantile_row_count(frame: pd.DataFrame) -> int:

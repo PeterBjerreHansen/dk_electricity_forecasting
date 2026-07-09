@@ -1,0 +1,527 @@
+data "aws_caller_identity" "current" {}
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+locals {
+  name            = "${var.project_name}-${var.environment}"
+  artifact_prefix = trim(var.artifact_prefix, "/")
+  bucket_name = (
+    var.artifact_bucket_name != ""
+    ? var.artifact_bucket_name
+    : "${var.project_name}-${var.environment}-${data.aws_caller_identity.current.account_id}"
+  )
+  artifact_store_uri = (
+    local.artifact_prefix == ""
+    ? "s3://${aws_s3_bucket.artifacts.bucket}"
+    : "s3://${aws_s3_bucket.artifacts.bucket}/${local.artifact_prefix}"
+  )
+  artifact_object_arn = (
+    local.artifact_prefix == ""
+    ? "${aws_s3_bucket.artifacts.arn}/*"
+    : "${aws_s3_bucket.artifacts.arn}/${local.artifact_prefix}/*"
+  )
+  model_artifact_uri = "${local.artifact_store_uri}/models/chronos2_lora_calendar_weather_ctx1024_v1"
+}
+
+resource "aws_ecr_repository" "web" {
+  name                 = "${var.project_name}-web"
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+resource "aws_ecr_repository" "pipeline" {
+  name                 = "${var.project_name}-pipeline"
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "web" {
+  repository = aws_ecr_repository.web.name
+  policy     = local.ecr_lifecycle_policy
+}
+
+resource "aws_ecr_lifecycle_policy" "pipeline" {
+  repository = aws_ecr_repository.pipeline.name
+  policy     = local.ecr_lifecycle_policy
+}
+
+locals {
+  ecr_lifecycle_policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Keep the last 20 images"
+        selection = {
+          tagStatus   = "any"
+          countType   = "imageCountMoreThan"
+          countNumber = 20
+        }
+        action = {
+          type = "expire"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_s3_bucket" "artifacts" {
+  bucket = local.bucket_name
+}
+
+resource "aws_s3_bucket_public_access_block" "artifacts" {
+  bucket                  = aws_s3_bucket.artifacts.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_versioning" "artifacts" {
+  bucket = aws_s3_bucket.artifacts.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "artifacts" {
+  bucket = aws_s3_bucket.artifacts.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_vpc" "main" {
+  cidr_block           = "10.42.0.0/16"
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = {
+    Name = local.name
+  }
+}
+
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = local.name
+  }
+}
+
+resource "aws_subnet" "public" {
+  count                   = 2
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = cidrsubnet(aws_vpc.main.cidr_block, 8, count.index)
+  availability_zone       = data.aws_availability_zones.available.names[count.index]
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "${local.name}-public-${count.index + 1}"
+  }
+}
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+
+  tags = {
+    Name = "${local.name}-public"
+  }
+}
+
+resource "aws_route_table_association" "public" {
+  count          = length(aws_subnet.public)
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_security_group" "alb" {
+  name        = "${local.name}-alb"
+  description = "Public HTTP ingress for dashboard ALB"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "tasks" {
+  name        = "${local.name}-tasks"
+  description = "ECS task security group"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port       = 8501
+    to_port         = 8501
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_lb" "web" {
+  name               = replace(substr(local.name, 0, 32), "_", "-")
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb.id]
+  subnets            = aws_subnet.public[*].id
+}
+
+resource "aws_lb_target_group" "web" {
+  name        = replace(substr("${local.name}-web", 0, 32), "_", "-")
+  port        = 8501
+  protocol    = "HTTP"
+  target_type = "ip"
+  vpc_id      = aws_vpc.main.id
+
+  health_check {
+    enabled             = true
+    path                = "/_stcore/health"
+    matcher             = "200-399"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+  }
+}
+
+resource "aws_lb_listener" "web" {
+  load_balancer_arn = aws_lb.web.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.web.arn
+  }
+}
+
+resource "aws_cloudfront_distribution" "web" {
+  enabled         = true
+  is_ipv6_enabled = true
+  comment         = "${local.name} Streamlit dashboard"
+
+  origin {
+    domain_name = aws_lb.web.dns_name
+    origin_id   = "alb"
+
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "http-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
+  }
+
+  default_cache_behavior {
+    target_origin_id       = "alb"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods         = ["GET", "HEAD"]
+    min_ttl                = 0
+    default_ttl            = 0
+    max_ttl                = 0
+
+    forwarded_values {
+      query_string = true
+      headers      = ["*"]
+      cookies {
+        forward = "all"
+      }
+    }
+  }
+
+  restrictions {
+    geo_restriction {
+      restriction_type = "none"
+    }
+  }
+
+  viewer_certificate {
+    cloudfront_default_certificate = true
+  }
+}
+
+resource "aws_cloudwatch_log_group" "web" {
+  name              = "/ecs/${local.name}/web"
+  retention_in_days = 14
+}
+
+resource "aws_cloudwatch_log_group" "pipeline" {
+  name              = "/ecs/${local.name}/pipeline"
+  retention_in_days = 14
+}
+
+resource "aws_ecs_cluster" "main" {
+  name = local.name
+}
+
+resource "aws_iam_role" "ecs_execution" {
+  name = "${local.name}-ecs-execution"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ecs-tasks.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_execution" {
+  role       = aws_iam_role.ecs_execution.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+resource "aws_iam_role" "ecs_task" {
+  name = "${local.name}-ecs-task"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ecs-tasks.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "ecs_task_s3" {
+  name = "${local.name}-s3"
+  role = aws_iam_role.ecs_task.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = ["s3:ListBucket"]
+        Resource = aws_s3_bucket.artifacts.arn
+        Condition = {
+          StringLike = {
+            "s3:prefix" = local.artifact_prefix == "" ? ["*"] : ["${local.artifact_prefix}/*"]
+          }
+        }
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject"
+        ]
+        Resource = local.artifact_object_arn
+      }
+    ]
+  })
+}
+
+resource "aws_ecs_task_definition" "web" {
+  family                   = "${local.name}-web"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.web_cpu
+  memory                   = var.web_memory
+  execution_role_arn       = aws_iam_role.ecs_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([
+    {
+      name      = "web"
+      image     = var.web_image_uri
+      essential = true
+      command   = ["web"]
+      portMappings = [
+        {
+          containerPort = 8501
+          hostPort      = 8501
+          protocol      = "tcp"
+        }
+      ]
+      environment = [
+        { name = "DKENERGY_ARTIFACT_STORE_URI", value = local.artifact_store_uri },
+        { name = "DKENERGY_DASHBOARD_JSON", value = "${local.artifact_store_uri}/latest/forecast_dashboard.json" },
+        { name = "DKENERGY_PANEL_PATH", value = "${local.artifact_store_uri}/latest/price_panel_hourly_v1.parquet" },
+        { name = "DKENERGY_ENABLE_LEGACY_BACKTESTS", value = "0" },
+        { name = "DKENERGY_CACHE_DIR", value = "/tmp/dkenergy-dashboard-cache" }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.web.name
+          awslogs-region        = var.aws_region
+          awslogs-stream-prefix = "web"
+        }
+      }
+    }
+  ])
+}
+
+resource "aws_ecs_service" "web" {
+  name            = "${local.name}-web"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.web.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = aws_subnet.public[*].id
+    security_groups  = [aws_security_group.tasks.id]
+    assign_public_ip = true
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.web.arn
+    container_name   = "web"
+    container_port   = 8501
+  }
+
+  depends_on = [aws_lb_listener.web]
+}
+
+resource "aws_ecs_task_definition" "pipeline" {
+  family                   = "${local.name}-pipeline"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.pipeline_cpu
+  memory                   = var.pipeline_memory
+  execution_role_arn       = aws_iam_role.ecs_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  ephemeral_storage {
+    size_in_gib = var.pipeline_ephemeral_storage_gib
+  }
+
+  container_definitions = jsonencode([
+    {
+      name      = "pipeline"
+      image     = var.pipeline_image_uri
+      essential = true
+      command = [
+        "pipeline",
+        "--artifact-store-uri",
+        local.artifact_store_uri,
+        "--model-artifact-uri",
+        local.model_artifact_uri,
+        "--workdir",
+        "/var/lib/dkenergy",
+        "--score-max-origins",
+        tostring(var.score_max_origins)
+      ]
+      environment = [
+        { name = "DKENERGY_ARTIFACT_STORE_URI", value = local.artifact_store_uri },
+        { name = "DKENERGY_MODEL_ARTIFACT_URI", value = local.model_artifact_uri },
+        { name = "DKENERGY_WORKDIR", value = "/var/lib/dkenergy" },
+        { name = "WITH_WEATHER", value = "1" }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.pipeline.name
+          awslogs-region        = var.aws_region
+          awslogs-stream-prefix = "pipeline"
+        }
+      }
+    }
+  ])
+}
+
+resource "aws_iam_role" "scheduler" {
+  name = "${local.name}-scheduler"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "scheduler.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "scheduler" {
+  name = "${local.name}-run-task"
+  role = aws_iam_role.scheduler.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["ecs:RunTask"]
+        Resource = aws_ecs_task_definition.pipeline.arn
+      },
+      {
+        Effect = "Allow"
+        Action = ["iam:PassRole"]
+        Resource = [
+          aws_iam_role.ecs_execution.arn,
+          aws_iam_role.ecs_task.arn
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_scheduler_schedule" "pipeline" {
+  count = var.enable_pipeline_schedule ? 1 : 0
+
+  name                         = "${local.name}-pipeline"
+  schedule_expression          = var.forecast_schedule_expression
+  schedule_expression_timezone = var.forecast_schedule_timezone
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_ecs_cluster.main.arn
+    role_arn = aws_iam_role.scheduler.arn
+
+    ecs_parameters {
+      task_definition_arn = aws_ecs_task_definition.pipeline.arn
+      launch_type         = "FARGATE"
+
+      network_configuration {
+        subnets          = aws_subnet.public[*].id
+        security_groups  = [aws_security_group.tasks.id]
+        assign_public_ip = true
+      }
+    }
+  }
+}
