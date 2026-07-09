@@ -155,8 +155,7 @@ def _render_actual_prices(panel: pd.DataFrame) -> None:
         st.warning("No price panel parquet found.")
         return
 
-    frame = panel.copy()
-    frame["ds_utc"] = pd.to_datetime(frame["ds_utc"], utc=True)
+    frame = normalize_utc_column(panel, "ds_utc")
     value_column = "y" if "y" in frame.columns else "price_dkk_per_mwh"
     days = st.slider("Visible days", min_value=3, max_value=30, value=7)
     cutoff = frame["ds_utc"].max() - pd.Timedelta(days=days)
@@ -222,9 +221,8 @@ def _render_forecasts(
 
 
 def _render_latest_forecast(predictions: pd.DataFrame) -> None:
-    frame = predictions.copy()
-    frame["ds_utc"] = pd.to_datetime(frame["ds_utc"], utc=True)
-    frame["forecast_origin_utc"] = pd.to_datetime(frame["forecast_origin_utc"], utc=True)
+    frame = normalize_utc_column(predictions, "ds_utc")
+    frame = normalize_utc_column(frame, "forecast_origin_utc")
     frame = _with_model_display_names(frame)
     labels = sorted(frame["model"].dropna().astype(str).unique().tolist())
     selected = st.multiselect("Models", labels, default=labels, key="latest_forecast_models")
@@ -340,9 +338,8 @@ def _render_predicted_vs_actual(predictions: pd.DataFrame, *, key_prefix: str) -
         st.warning("No evaluated prediction artifacts found.")
         return
 
-    frame = predictions.copy()
-    frame["ds_utc"] = pd.to_datetime(frame["ds_utc"], utc=True)
-    frame["forecast_origin_utc"] = pd.to_datetime(frame["forecast_origin_utc"], utc=True)
+    frame = normalize_utc_column(predictions, "ds_utc")
+    frame = normalize_utc_column(frame, "forecast_origin_utc")
     frame = add_prediction_diagnostics(frame)
     frame = _with_model_display_names(frame)
 
@@ -391,9 +388,8 @@ def _render_scores(scores: pd.DataFrame) -> None:
 
 
 def _prepare_backtest_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
-    frame = predictions.copy()
-    frame["ds_utc"] = pd.to_datetime(frame["ds_utc"], utc=True)
-    frame["forecast_origin_utc"] = pd.to_datetime(frame["forecast_origin_utc"], utc=True)
+    frame = normalize_utc_column(predictions, "ds_utc")
+    frame = normalize_utc_column(frame, "forecast_origin_utc")
     if "run_id" not in frame.columns:
         frame["run_id"] = "backtest"
     frame["run_id"] = frame["run_id"].fillna("backtest").astype(str)
