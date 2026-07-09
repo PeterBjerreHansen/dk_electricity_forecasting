@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from dkenergy_forecast.io import load_price_panel  # noqa: E402
+from dkenergy_forecast.layout import PROJECT_ROOT, runtime_layout  # noqa: E402
 from dkenergy_forecast.publishing import (  # noqa: E402
     build_published_forecast_history,
     build_published_forecast_scores,
@@ -19,6 +20,9 @@ from dkenergy_forecast.publishing import (  # noqa: E402
     write_json,
     write_published_forecast_history,
 )
+
+
+DEFAULT_LAYOUT = runtime_layout(PROJECT_ROOT)
 
 
 def main() -> None:
@@ -77,22 +81,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--artifact-root",
-        default=str(ROOT / "artifacts" / "forecast_runs"),
+        default=str(DEFAULT_LAYOUT.forecast_runs),
         help="Directory containing immutable forecast run subdirectories.",
     )
     parser.add_argument(
         "--panel-path",
-        default=str(ROOT / "data" / "model_ready" / "price_panel_hourly_v1.parquet"),
+        default=str(DEFAULT_LAYOUT.price_panel),
         help="Model-ready hourly price panel containing actual prices.",
     )
     parser.add_argument(
         "--qa-path",
-        default=str(ROOT / "data" / "model_ready" / "price_panel_hourly_v1.qa.json"),
+        default=str(DEFAULT_LAYOUT.price_panel_qa),
         help="Optional QA JSON for the price panel.",
     )
     parser.add_argument(
         "--output-dir",
-        default=str(ROOT / "results" / "published_forecast_history"),
+        default=str(DEFAULT_LAYOUT.published_history),
         help="Directory for evaluated predictions and published forecast score artifacts.",
     )
     parser.add_argument(

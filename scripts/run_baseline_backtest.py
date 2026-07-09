@@ -25,6 +25,7 @@ from dkenergy_forecast.evaluation.summary import (  # noqa: E402
     model_score_table,
 )
 from dkenergy_forecast.io import load_price_panel  # noqa: E402
+from dkenergy_forecast.layout import PROJECT_ROOT, runtime_layout  # noqa: E402
 from dkenergy_forecast.models.registry import baseline_model_factories  # noqa: E402
 from dkenergy_forecast.publishing import git_commit, json_safe  # noqa: E402
 from dkenergy_forecast.types import (  # noqa: E402
@@ -38,6 +39,7 @@ from dkenergy_forecast.types import (  # noqa: E402
 
 
 BASELINE_FACTORIES = baseline_model_factories()
+DEFAULT_LAYOUT = runtime_layout(PROJECT_ROOT)
 NS_PER_DAY = 86_400_000_000_000
 
 DayType = Literal["weekday", "weekend"]
@@ -144,11 +146,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--panel-path",
-        default=str(ROOT / "data" / "model_ready" / "price_panel_hourly_v1.parquet"),
+        default=str(DEFAULT_LAYOUT.price_panel),
     )
     parser.add_argument(
         "--qa-path",
-        default=str(ROOT / "data" / "model_ready" / "price_panel_hourly_v1.qa.json"),
+        default=str(DEFAULT_LAYOUT.price_panel_qa),
     )
     parser.add_argument(
         "--output-dir",

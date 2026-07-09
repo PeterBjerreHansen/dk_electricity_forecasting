@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from dkenergy_forecast.backtesting.horizons import make_danish_delivery_day_horizon, make_next_utc_hours_horizon
+from dkenergy_forecast.backtesting.horizons import make_danish_delivery_day_horizon
 from dkenergy_forecast.features.price_features import (
     PriceFeatureConfig,
     WEIGHTED_MEDIAN_BASELINE_COLUMN,

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from dataclasses import replace
 from pathlib import Path
 
+from dkenergy_forecast.layout import CHRONOS_LORA_WEATHER_MODEL_LABEL
 from dkenergy_forecast.models.baselines import (
     LagNaive,
     WeekdayWeekendWeightedMedian,
@@ -73,8 +74,8 @@ def baseline_production_model_specs() -> dict[str, ProductionModelSpec]:
 
 def chronos_production_model_specs() -> dict[str, ProductionModelSpec]:
     return {
-        "chronos2_lora_calendar_weather_ctx1024_v1": ProductionModelSpec(
-            label="chronos2_lora_calendar_weather_ctx1024_v1",
+        CHRONOS_LORA_WEATHER_MODEL_LABEL: ProductionModelSpec(
+            label=CHRONOS_LORA_WEATHER_MODEL_LABEL,
             family="chronos",
             default_enabled=True,
             supports_latest_publish=True,
@@ -151,7 +152,7 @@ def latest_publish_model_factories(
         spec = specs[label]
         if spec.factory is None:
             continue
-        if label == "chronos2_lora_calendar_weather_ctx1024_v1":
+        if label == CHRONOS_LORA_WEATHER_MODEL_LABEL:
             config = PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG
             if weather_features_long_path is not None:
                 config = replace(config, weather_features_long_path=weather_features_long_path)

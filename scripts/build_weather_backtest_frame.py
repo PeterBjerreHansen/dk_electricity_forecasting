@@ -18,15 +18,15 @@ from dkenergy_forecast.backtesting.origins import choose_recent_complete_daily_o
 from dkenergy_forecast.features.price_features import PriceFeatureConfig  # noqa: E402
 from dkenergy_forecast.features.weather_features import build_weather_experiment_frame  # noqa: E402
 from dkenergy_forecast.io import load_price_panel  # noqa: E402
+from dkenergy_forecast.layout import PROJECT_ROOT, runtime_layout  # noqa: E402
 from dkenergy_forecast.publishing import git_commit, json_safe  # noqa: E402
 
 
+DEFAULT_LAYOUT = runtime_layout(PROJECT_ROOT)
 DEFAULT_RECENT_DAYS = 45
 DEFAULT_BACKTEST_DAYS = 180
-DEFAULT_RECENT_OUTPUT = ROOT / "data" / "features" / "weather_experiment_frame_recent.parquet"
-DEFAULT_BACKTEST_OUTPUT = (
-    ROOT / "data" / "features" / "weather_experiment_frame_backtest.parquet"
-)
+DEFAULT_RECENT_OUTPUT = DEFAULT_LAYOUT.features / "weather_experiment_frame_recent.parquet"
+DEFAULT_BACKTEST_OUTPUT = DEFAULT_LAYOUT.features / "weather_experiment_frame_backtest.parquet"
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -99,20 +99,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--panel-path",
-        default=str(ROOT / "data" / "model_ready" / "price_panel_hourly_v1.parquet"),
+        default=str(DEFAULT_LAYOUT.price_panel),
     )
     parser.add_argument(
         "--qa-path",
-        default=str(ROOT / "data" / "model_ready" / "price_panel_hourly_v1.qa.json"),
+        default=str(DEFAULT_LAYOUT.price_panel_qa),
     )
     parser.add_argument(
         "--weather-features-long-path",
-        default=str(
-            ROOT
-            / "data"
-            / "features"
-            / "weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet"
-        ),
+        default=str(DEFAULT_LAYOUT.weather_features_long),
     )
     parser.add_argument(
         "--frame-kind",

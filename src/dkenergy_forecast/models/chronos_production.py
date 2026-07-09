@@ -14,6 +14,7 @@ from dkenergy_forecast.features.weather_features import (
     join_weather_features,
     weather_value_columns,
 )
+from dkenergy_forecast.layout import runtime_layout
 from dkenergy_forecast.types import (
     add_copenhagen_calendar,
     ensure_price_availability,
@@ -24,16 +25,9 @@ from dkenergy_forecast.types import (
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_CHRONOS_LORA_ARTIFACT_PATH = (
-    PROJECT_ROOT / "artifacts" / "models" / "chronos2_lora_calendar_weather_ctx1024_v1"
-)
-DEFAULT_WEATHER_FEATURES_LONG_PATH = (
-    PROJECT_ROOT
-    / "data"
-    / "features"
-    / "weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet"
-)
+DEFAULT_RUNTIME_LAYOUT = runtime_layout()
+DEFAULT_CHRONOS_LORA_ARTIFACT_PATH = DEFAULT_RUNTIME_LAYOUT.chronos_model_artifact
+DEFAULT_WEATHER_FEATURES_LONG_PATH = DEFAULT_RUNTIME_LAYOUT.weather_features_long
 CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION = 1
 
 CALENDAR_COVARIATES = [

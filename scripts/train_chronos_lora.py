@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from dkenergy_forecast.io import load_price_panel  # noqa: E402
+from dkenergy_forecast.layout import PROJECT_ROOT, runtime_layout  # noqa: E402
 from dkenergy_forecast.models.chronos_production import (  # noqa: E402
     CALENDAR_COVARIATES,
     CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION,
@@ -37,6 +38,9 @@ from dkenergy_forecast.types import (  # noqa: E402
     normalize_utc_column,
     to_utc_timestamp,
 )
+
+
+DEFAULT_LAYOUT = runtime_layout(PROJECT_ROOT)
 
 
 def main() -> None:
@@ -114,11 +118,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train and export the production Chronos-2 LoRA weather artifact.")
     parser.add_argument(
         "--panel-path",
-        default=str(ROOT / "data" / "model_ready" / "price_panel_hourly_v1.parquet"),
+        default=str(DEFAULT_LAYOUT.price_panel),
     )
     parser.add_argument(
         "--qa-path",
-        default=str(ROOT / "data" / "model_ready" / "price_panel_hourly_v1.qa.json"),
+        default=str(DEFAULT_LAYOUT.price_panel_qa),
     )
     parser.add_argument("--weather-features-long-path", default=str(DEFAULT_WEATHER_FEATURES_LONG_PATH))
     parser.add_argument("--output-dir", default=str(DEFAULT_CHRONOS_LORA_ARTIFACT_PATH))

@@ -9,17 +9,19 @@ import pandas as pd
 import streamlit as st
 
 from dkenergy_forecast.evaluation.summary import add_prediction_diagnostics, model_score_table
+from dkenergy_forecast.layout import CHRONOS_LORA_WEATHER_MODEL_LABEL, PROJECT_ROOT, runtime_layout
 from dkenergy_forecast.storage import materialize_uri, resource_exists
 
 
-ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_PANEL_PATH = ROOT / "data" / "model_ready" / "price_panel_hourly_v1.parquet"
-DEFAULT_DASHBOARD_JSON = ROOT / "app_data" / "forecast_dashboard.json"
-DEFAULT_LATEST_PREDICTIONS = ROOT / "results" / "latest_forecast" / "predictions.parquet"
-DEFAULT_RECENT_PREDICTIONS = ROOT / "results" / "recent_scores" / "predictions.parquet"
-DEFAULT_RECENT_SCORES = ROOT / "results" / "recent_scores" / "model_scores.parquet"
-DEFAULT_PUBLISHED_HISTORY_PREDICTIONS = ROOT / "results" / "published_forecast_history" / "predictions.parquet"
-DEFAULT_PUBLISHED_HISTORY_SCORES = ROOT / "results" / "published_forecast_history" / "model_scores.parquet"
+ROOT = PROJECT_ROOT
+DEFAULT_LAYOUT = runtime_layout(ROOT)
+DEFAULT_PANEL_PATH = DEFAULT_LAYOUT.price_panel
+DEFAULT_DASHBOARD_JSON = DEFAULT_LAYOUT.dashboard_json
+DEFAULT_LATEST_PREDICTIONS = DEFAULT_LAYOUT.latest_forecast / "predictions.parquet"
+DEFAULT_RECENT_PREDICTIONS = DEFAULT_LAYOUT.recent_scores / "predictions.parquet"
+DEFAULT_RECENT_SCORES = DEFAULT_LAYOUT.recent_scores / "model_scores.parquet"
+DEFAULT_PUBLISHED_HISTORY_PREDICTIONS = DEFAULT_LAYOUT.published_history / "predictions.parquet"
+DEFAULT_PUBLISHED_HISTORY_SCORES = DEFAULT_LAYOUT.published_history / "model_scores.parquet"
 DEFAULT_BACKTEST_DIRS = [
     ROOT / "results" / "notebook_chronos2_experimental_v1",
     ROOT / "results" / "baseline_v1",
@@ -27,7 +29,7 @@ DEFAULT_BACKTEST_DIRS = [
 CACHE_TTL_SECONDS = 300
 
 MODEL_DISPLAY_NAMES = {
-    "chronos2_lora_calendar_weather_ctx1024_v1": "Chronos 2 LoRA Weather",
+    CHRONOS_LORA_WEATHER_MODEL_LABEL: "Chronos 2 LoRA Weather",
     "median_weekday_exp_hl4_floor10_42d__median_weekend_exp_hl28_floor20_56d": "Weighted Rolling Median",
     "rolling_median_hour_weekend_56d": "Rolling Median",
     "rolling_median_local_hour_28d": "Rolling Median",

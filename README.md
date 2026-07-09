@@ -301,8 +301,8 @@ python scripts/run_cloud_pipeline.py --artifact-store-uri file:///tmp/dkenergy-s
 
 ## CI
 
-GitHub Actions runs `python -m pytest` on Python 3.10, 3.11, and 3.12. The
-workflow lives in `.github/workflows/ci.yml`. Pushes to `production` also run
-`.github/workflows/production.yml`, which tests, builds/pushes the images, and
-applies Terraform using the `AWS_DEPLOY_ROLE_ARN` and `TF_STATE_BUCKET`
-repository secrets.
+GitHub Actions runs `python -m ruff check .` and `python -m pytest` on Python
+3.10, 3.11, and 3.12. The workflow lives in `.github/workflows/ci.yml`.
+Pushes to `production` also run `.github/workflows/production.yml`, which
+tests, builds/pushes the images, and applies Terraform using the
+`AWS_DEPLOY_ROLE_ARN` and `TF_STATE_BUCKET` repository secrets.

@@ -7,14 +7,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from dkenergy_forecast.layout import (
+    CHRONOS_MODEL_ARTIFACT_RELATIVE_PATH,
+    PROJECT_ROOT,
+    WEATHER_FEATURES_LONG_PROJECT_RELATIVE_PATH,
+    runtime_layout,
+)
 from dkenergy_forecast.storage import ArtifactStore, join_uri
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MODEL_ARTIFACT_RELATIVE_PATH = "models/chronos2_lora_calendar_weather_ctx1024_v1"
-WEATHER_FEATURES_RELATIVE_PATH = (
-    "data/features/weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet"
-)
+MODEL_ARTIFACT_RELATIVE_PATH = CHRONOS_MODEL_ARTIFACT_RELATIVE_PATH
+WEATHER_FEATURES_RELATIVE_PATH = WEATHER_FEATURES_LONG_PROJECT_RELATIVE_PATH
 STATE_DOWNLOAD_PREFIXES = (
     "state/data/raw/energi_data_service",
     "state/data/raw/open_meteo",
@@ -44,7 +47,7 @@ CommandRunner = Callable[..., subprocess.CompletedProcess]
 
 
 def default_model_artifact_uri(artifact_store_uri: str) -> str:
-    return join_uri(artifact_store_uri, MODEL_ARTIFACT_RELATIVE_PATH)
+    return join_uri(artifact_store_uri, MODEL_ARTIFACT_RELATIVE_PATH.as_posix())
 
 
 def run_cloud_pipeline(
@@ -119,12 +122,13 @@ def _local_model_artifact_path(workdir: Path) -> Path:
 
 
 def _upload_runtime_outputs(store: ArtifactStore, workdir: Path) -> list[str]:
+    paths = runtime_layout(workdir)
     uploaded: list[str] = []
     for source_relative, destination_prefix in STATE_UPLOAD_PREFIXES:
         uploaded.extend(store.upload_prefix(workdir / source_relative, destination_prefix))
-    uploaded.extend(store.upload_prefix(workdir / "artifacts" / "forecast_runs", "forecast_runs"))
-    uploaded.extend(store.upload_prefix(workdir / "results" / "recent_scores", "recent_scores"))
-    uploaded.extend(store.upload_prefix(workdir / "results" / "published_forecast_history", "published_forecast_history"))
+    uploaded.extend(store.upload_prefix(paths.forecast_runs, "forecast_runs"))
+    uploaded.extend(store.upload_prefix(paths.recent_scores, "recent_scores"))
+    uploaded.extend(store.upload_prefix(paths.published_history, "published_forecast_history"))
 
     for source, key in _latest_artifacts(workdir):
         _require_output(source)
@@ -134,25 +138,26 @@ def _upload_runtime_outputs(store: ArtifactStore, workdir: Path) -> list[str]:
 
 
 def _latest_artifacts(workdir: Path) -> list[tuple[Path, str]]:
+    paths = runtime_layout(workdir)
     return [
         (
-            workdir / "data" / "model_ready" / "price_panel_hourly_v1.parquet",
-            "latest/price_panel_hourly_v1.parquet",
+            paths.price_panel,
+            f"latest/{paths.price_panel.name}",
         ),
         (
-            workdir / "data" / "model_ready" / "price_panel_hourly_v1.qa.json",
-            "latest/price_panel_hourly_v1.qa.json",
+            paths.price_panel_qa,
+            f"latest/{paths.price_panel_qa.name}",
         ),
         (
-            workdir / "results" / "latest_forecast" / "predictions.parquet",
+            paths.latest_forecast / "predictions.parquet",
             "latest/predictions.parquet",
         ),
         (
-            workdir / "results" / "latest_forecast" / "manifest.json",
+            paths.latest_forecast / "manifest.json",
             "latest/manifest.json",
         ),
         (
-            workdir / "app_data" / "forecast_dashboard.json",
+            paths.dashboard_json,
             "latest/forecast_dashboard.json",
         ),
     ]

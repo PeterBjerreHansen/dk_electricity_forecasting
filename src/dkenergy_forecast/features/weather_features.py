@@ -10,7 +10,7 @@ from dkenergy_forecast.features.price_features import (
     PriceFeatureConfig,
     build_price_experiment_frame,
 )
-from dkenergy_forecast.types import normalize_utc_column, require_columns, to_utc_timestamp
+from dkenergy_forecast.types import normalize_utc_column, require_columns
 
 
 HorizonBuilder = Callable[[pd.DataFrame, pd.Timestamp], pd.DataFrame]

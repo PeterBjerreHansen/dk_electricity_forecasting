@@ -123,7 +123,11 @@ class ProductionCatBoostDayAhead(ForecastModel):
             residual_baseline_column=self.config.residual_baseline_column,
         )
 
-        feature_columns = tabular_feature_columns_for_set(training, self.config.feature_set)
+        feature_columns = tabular_feature_columns_for_set(
+            training,
+            self.config.feature_set,
+            price_feature_config=self.config.price_feature_config,
+        )
         if not feature_columns:
             raise ValueError(f"No usable CatBoost feature columns for {self.config.feature_set!r}")
         missing_future_features = sorted(set(feature_columns) - set(future_features.columns))
