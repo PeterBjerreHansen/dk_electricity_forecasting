@@ -295,6 +295,82 @@ def test_published_forecast_history_scores_immutable_run_predictions(tmp_path) -
     assert written["published_history_scores"].exists()
 
 
+def test_score_published_forecasts_script_scores_saved_runs(tmp_path) -> None:
+    artifact_root = tmp_path / "forecast_runs"
+    run_dir = artifact_root / "forecast_20240102T100000Z"
+    run_dir.mkdir(parents=True)
+    predictions = add_copenhagen_calendar(
+        pd.DataFrame(
+            {
+                "unique_id": ["day_ahead_price_DK1", "day_ahead_price_DK1"],
+                "forecast_origin_utc": [pd.Timestamp("2024-01-02T10:00:00Z")] * 2,
+                "ds_utc": pd.date_range("2024-01-03T00:00:00Z", periods=2, freq="h"),
+                "area": ["DK1", "DK1"],
+                "model_label": ["same_hour_last_week", "same_hour_last_week"],
+                "y_pred": [9.0, 22.0],
+                "horizon": [1, 2],
+                "dataset_version": ["v1", "v1"],
+            }
+        )
+    )
+    normalize_published_predictions(predictions).to_parquet(run_dir / "predictions.parquet", index=False)
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "forecast_20240102T100000Z",
+                "created_at_utc": "2024-01-02T10:00:00Z",
+                "forecast_origin_utc": "2024-01-02T10:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    panel = add_copenhagen_calendar(
+        pd.DataFrame(
+            {
+                "unique_id": ["day_ahead_price_DK1", "day_ahead_price_DK1"],
+                "ds_utc": pd.date_range("2024-01-03T00:00:00Z", periods=2, freq="h"),
+                "area": ["DK1", "DK1"],
+                "y": [10.0, 20.0],
+                "dataset_version": ["v1", "v1"],
+            }
+        )
+    )
+    panel_path = tmp_path / "price_panel.parquet"
+    qa_path = tmp_path / "price_panel.qa.json"
+    output_dir = tmp_path / "published_forecast_history"
+    panel.to_parquet(panel_path, index=False)
+    qa_path.write_text(json.dumps({"artifact_status": "final_historical"}), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/score_published_forecasts.py",
+            "--artifact-root",
+            str(artifact_root),
+            "--panel-path",
+            str(panel_path),
+            "--qa-path",
+            str(qa_path),
+            "--output-dir",
+            str(output_dir),
+        ],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    history = pd.read_parquet(output_dir / "predictions.parquet")
+    scores = pd.read_parquet(output_dir / "model_scores.parquet")
+    manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert "Evaluated prediction rows: 2" in result.stdout
+    assert history["y"].tolist() == pytest.approx([10.0, 20.0])
+    assert scores.loc[scores["area"] == "ALL", "mae"].iloc[0] == pytest.approx(1.5)
+    assert scores["score_source"].eq("published_forecast_history").all()
+    assert manifest["prediction_row_count"] == 2
+    assert manifest["evaluated_forecast_run_count"] == 1
+
+
 def test_production_registry_contains_only_deployed_models(monkeypatch, tmp_path) -> None:
     specs = production_model_specs()
 

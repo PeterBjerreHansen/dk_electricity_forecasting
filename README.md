@@ -68,7 +68,7 @@ src/dkenergy_forecast/
 
 scripts/
   fetch_*.py, build_*.py, run_*_backtest.py, run_publish_forecast.py
-  run_daily_pipeline.py
+  score_published_forecasts.py, run_daily_pipeline.py
 
 app/
   streamlit_app.py
@@ -95,6 +95,13 @@ Run baseline diagnostics and publish the default production forecast artifacts:
 ```bash
 python scripts/run_baseline_backtest.py --allow-incomplete-panel
 python scripts/run_publish_forecast.py --allow-incomplete-panel
+```
+
+Score saved forecasts that were actually published earlier, without
+recomputing any model predictions:
+
+```bash
+python scripts/score_published_forecasts.py --allow-incomplete-panel
 ```
 
 The default latest-forecast set is deliberately small:

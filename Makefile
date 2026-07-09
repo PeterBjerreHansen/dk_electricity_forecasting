@@ -34,7 +34,7 @@ EDS_END_ARG := $(if $(EDS_END),--end $(EDS_END),)
 PUBLISH_MODELS_ARG := $(if $(PUBLISH_MODELS),--models $(PUBLISH_MODELS),)
 FORECAST_AT_HOUR_UTC_ARG := $(if $(FORECAST_AT_HOUR_UTC),--at-hour-utc $(FORECAST_AT_HOUR_UTC),)
 
-.PHONY: install install-app install-production test data-prices data-weather backtest-baseline publish daily daily-weather dashboard docker-build docker-dashboard docker-pipeline dry-run dry-run-weather aws-terraform-init aws-ensure-ecr aws-ecr-login aws-image aws-push aws-bootstrap-model aws-deploy clean
+.PHONY: install install-app install-production test data-prices data-weather backtest-baseline publish score-published daily daily-weather dashboard docker-build docker-dashboard docker-pipeline dry-run dry-run-weather aws-terraform-init aws-ensure-ecr aws-ecr-login aws-image aws-push aws-bootstrap-model aws-deploy clean
 
 install:
 	$(PYTHON) -m pip install -e ".[dev]"
@@ -61,6 +61,9 @@ backtest-baseline:
 
 publish:
 	$(PYTHON) scripts/run_publish_forecast.py --allow-incomplete-panel --forecast-local-time $(FORECAST_LOCAL_TIME) $(FORECAST_AT_HOUR_UTC_ARG) --min-train-days $(MIN_TRAIN_DAYS) --score-days $(SCORE_DAYS) --score-max-origins $(SCORE_MAX_ORIGINS) --score-holdout-days $(SCORE_HOLDOUT_DAYS) $(PUBLISH_MODELS_ARG)
+
+score-published:
+	$(PYTHON) scripts/score_published_forecasts.py --allow-incomplete-panel
 
 daily:
 	$(PYTHON) scripts/run_daily_pipeline.py
