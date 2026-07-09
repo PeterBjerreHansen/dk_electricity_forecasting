@@ -18,6 +18,8 @@ DEFAULT_DASHBOARD_JSON = ROOT / "app_data" / "forecast_dashboard.json"
 DEFAULT_LATEST_PREDICTIONS = ROOT / "results" / "latest_forecast" / "predictions.parquet"
 DEFAULT_RECENT_PREDICTIONS = ROOT / "results" / "recent_scores" / "predictions.parquet"
 DEFAULT_RECENT_SCORES = ROOT / "results" / "recent_scores" / "model_scores.parquet"
+DEFAULT_PUBLISHED_HISTORY_PREDICTIONS = ROOT / "results" / "published_forecast_history" / "predictions.parquet"
+DEFAULT_PUBLISHED_HISTORY_SCORES = ROOT / "results" / "published_forecast_history" / "model_scores.parquet"
 DEFAULT_BACKTEST_DIRS = [
     ROOT / "results" / "notebook_chronos2_experimental_v1",
     ROOT / "results" / "baseline_v1",
@@ -55,6 +57,14 @@ def main() -> None:
         DEFAULT_RECENT_PREDICTIONS,
     )
     recent_scores_path = _resource_from_env("DKENERGY_RECENT_SCORES_PATH", DEFAULT_RECENT_SCORES)
+    published_history_predictions_path = _resource_from_env(
+        "DKENERGY_PUBLISHED_HISTORY_PREDICTIONS_PATH",
+        DEFAULT_PUBLISHED_HISTORY_PREDICTIONS,
+    )
+    published_history_scores_path = _resource_from_env(
+        "DKENERGY_PUBLISHED_HISTORY_SCORES_PATH",
+        DEFAULT_PUBLISHED_HISTORY_SCORES,
+    )
     enable_legacy_backtests = _env_bool(
         "DKENERGY_ENABLE_LEGACY_BACKTESTS",
         default=False,
@@ -68,6 +78,15 @@ def main() -> None:
     panel = _load_parquet(panel_path)
     predictions = _load_predictions(payload, latest_predictions_path)
     scores = _load_scores(payload, recent_scores_path)
+    recent_predictions = _load_recent_predictions(payload, recent_predictions_path, [])
+    published_history_predictions = _load_published_history_predictions(
+        payload,
+        published_history_predictions_path,
+    )
+    published_history_scores = _load_published_history_scores(
+        payload,
+        published_history_scores_path,
+    )
     backtest_predictions = _load_backtest_tab_predictions(
         payload,
         recent_predictions_path,
@@ -76,17 +95,23 @@ def main() -> None:
     run = payload.get("run", {}) if payload else {}
 
     st.title("Danish Electricity Forecasts")
-    _render_run_summary(run, predictions, scores)
+    _render_run_summary(run, predictions, published_history_scores if not published_history_scores.empty else scores)
 
     backtests_tab, forecast_tab, prices_tab, run_tab = st.tabs(
-        ["Backtests", "Next Forecast", "Prices", "Run"]
+        ["Backtests", "Forecasts", "Prices", "Run"]
     )
 
     with backtests_tab:
         _render_backtests(backtest_predictions, scores)
 
     with forecast_tab:
-        _render_forecasts(predictions)
+        _render_forecasts(
+            predictions,
+            published_history_predictions=published_history_predictions,
+            published_history_scores=published_history_scores,
+            diagnostic_predictions=recent_predictions,
+            diagnostic_scores=scores,
+        )
 
     with prices_tab:
         _render_actual_prices(panel)
@@ -99,6 +124,8 @@ def main() -> None:
             latest_predictions_path,
             recent_predictions_path,
             recent_scores_path,
+            published_history_predictions_path,
+            published_history_scores_path,
             backtest_dirs,
         )
 
@@ -158,17 +185,46 @@ def _render_actual_prices(panel: pd.DataFrame) -> None:
     )
 
 
-def _render_forecasts(predictions: pd.DataFrame) -> None:
+def _render_forecasts(
+    predictions: pd.DataFrame,
+    *,
+    published_history_predictions: pd.DataFrame,
+    published_history_scores: pd.DataFrame,
+    diagnostic_predictions: pd.DataFrame,
+    diagnostic_scores: pd.DataFrame,
+) -> None:
+    st.subheader("Latest Published Forecast")
     if predictions.empty:
         st.warning("No latest forecast artifact found.")
-        return
+    else:
+        _render_latest_forecast(predictions)
 
+    st.divider()
+    if published_history_predictions.empty:
+        st.subheader("Rolling-Origin Diagnostic")
+        _render_evaluated_prediction_performance(
+            diagnostic_predictions,
+            diagnostic_scores,
+            key_prefix="forecast_diagnostic",
+            visible_days_label="Diagnostic visible days",
+        )
+    else:
+        st.subheader("Published Forecast Performance")
+        _render_evaluated_prediction_performance(
+            published_history_predictions,
+            published_history_scores,
+            key_prefix="published_history",
+            visible_days_label="Published performance visible days",
+        )
+
+
+def _render_latest_forecast(predictions: pd.DataFrame) -> None:
     frame = predictions.copy()
     frame["ds_utc"] = pd.to_datetime(frame["ds_utc"], utc=True)
     frame["forecast_origin_utc"] = pd.to_datetime(frame["forecast_origin_utc"], utc=True)
     frame = _with_model_display_names(frame)
     labels = sorted(frame["model"].dropna().astype(str).unique().tolist())
-    selected = st.multiselect("Models", labels, default=labels)
+    selected = st.multiselect("Models", labels, default=labels, key="latest_forecast_models")
     if selected:
         frame = frame[frame["model"].isin(selected)]
 
@@ -236,7 +292,7 @@ def _render_backtests(predictions: pd.DataFrame, scores: pd.DataFrame) -> None:
         visible_frame = _filter_recent_backtest_rows(run_frame, visible_days)
         st.caption(_backtest_window_caption(visible_frame, total_rows=len(run_frame)))
 
-        _render_predicted_vs_actual(visible_frame)
+        _render_predicted_vs_actual(visible_frame, key_prefix=f"backtest_{run_id}")
         score_frame = _score_table_for_predictions(visible_frame)
 
     st.divider()
@@ -244,7 +300,39 @@ def _render_backtests(predictions: pd.DataFrame, scores: pd.DataFrame) -> None:
     _render_scores(score_frame)
 
 
-def _render_predicted_vs_actual(predictions: pd.DataFrame) -> None:
+def _render_evaluated_prediction_performance(
+    predictions: pd.DataFrame,
+    scores: pd.DataFrame,
+    *,
+    key_prefix: str,
+    visible_days_label: str,
+) -> None:
+    if predictions.empty:
+        if scores.empty:
+            st.warning("No evaluated prediction artifacts found.")
+        else:
+            _render_scores(scores)
+        return
+
+    frame = _prepare_backtest_predictions(predictions)
+    visible_days = st.slider(
+        visible_days_label,
+        min_value=1,
+        max_value=90,
+        value=30,
+        key=f"{key_prefix}_visible_days",
+    )
+    visible_frame = _filter_recent_backtest_rows(frame, visible_days)
+    st.caption(_backtest_window_caption(visible_frame, total_rows=len(frame)))
+    _render_predicted_vs_actual(visible_frame, key_prefix=key_prefix)
+
+    st.divider()
+    st.subheader("Metrics")
+    score_frame = _score_table_for_predictions(visible_frame)
+    _render_scores(score_frame if not score_frame.empty else scores)
+
+
+def _render_predicted_vs_actual(predictions: pd.DataFrame, *, key_prefix: str) -> None:
     if predictions.empty:
         st.warning("No evaluated prediction artifacts found.")
         return
@@ -256,11 +344,11 @@ def _render_predicted_vs_actual(predictions: pd.DataFrame) -> None:
     frame = _with_model_display_names(frame)
 
     areas = sorted(frame["area"].dropna().astype(str).unique().tolist())
-    area = st.selectbox("Price area", areas, index=0)
+    area = st.selectbox("Price area", areas, index=0, key=f"{key_prefix}_price_area")
     area_frame = frame[frame["area"] == area].copy()
 
     models = sorted(area_frame["model"].dropna().astype(str).unique().tolist())
-    model = st.selectbox("Model", models, index=0)
+    model = st.selectbox("Model", models, index=0, key=f"{key_prefix}_model")
     selected = area_frame[area_frame["model"] == model].sort_values("ds_utc").copy()
 
     cols = st.columns(4)
@@ -337,6 +425,8 @@ def _render_run_details(
     latest_predictions_path: str,
     recent_predictions_path: str,
     recent_scores_path: str,
+    published_history_predictions_path: str,
+    published_history_scores_path: str,
     backtest_dirs: list[str],
 ) -> None:
     paths = pd.DataFrame(
@@ -354,6 +444,16 @@ def _render_run_details(
                 "exists": _resource_exists(recent_predictions_path),
             },
             {"artifact": "recent_scores", "path": str(recent_scores_path), "exists": _resource_exists(recent_scores_path)},
+            {
+                "artifact": "published_history_predictions",
+                "path": str(published_history_predictions_path),
+                "exists": _resource_exists(published_history_predictions_path),
+            },
+            {
+                "artifact": "published_history_scores",
+                "path": str(published_history_scores_path),
+                "exists": _resource_exists(published_history_scores_path),
+            },
             *[
                 {
                     "artifact": f"backtest_predictions:{Path(path).name}",
@@ -386,6 +486,29 @@ def _load_predictions(payload: dict[str, Any], fallback_path: str) -> pd.DataFra
 def _load_scores(payload: dict[str, Any], fallback_path: str) -> pd.DataFrame:
     if payload.get("model_scores"):
         return pd.DataFrame(payload["model_scores"])
+    return _load_parquet(fallback_path)
+
+
+def _load_published_history_predictions(payload: dict[str, Any], fallback_path: str) -> pd.DataFrame:
+    if payload.get("published_history_predictions"):
+        frame = pd.DataFrame(payload["published_history_predictions"])
+    else:
+        frame = _load_parquet(fallback_path)
+    return _parse_time_columns(
+        frame,
+        [
+            "forecast_origin_utc",
+            "ds_utc",
+            "ds_local",
+            "published_at_utc",
+            "published_forecast_origin_utc",
+        ],
+    )
+
+
+def _load_published_history_scores(payload: dict[str, Any], fallback_path: str) -> pd.DataFrame:
+    if payload.get("published_history_scores"):
+        return pd.DataFrame(payload["published_history_scores"])
     return _load_parquet(fallback_path)
 
 

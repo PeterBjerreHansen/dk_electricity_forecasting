@@ -14,6 +14,8 @@ services:
       DKENERGY_LATEST_PREDICTIONS_PATH: ${DKENERGY_LATEST_PREDICTIONS_PATH:-file:///app/cloud_store/latest/predictions.parquet}
       DKENERGY_RECENT_PREDICTIONS_PATH: ${DKENERGY_RECENT_PREDICTIONS_PATH:-file:///app/cloud_store/recent_scores/predictions.parquet}
       DKENERGY_RECENT_SCORES_PATH: ${DKENERGY_RECENT_SCORES_PATH:-file:///app/cloud_store/recent_scores/model_scores.parquet}
+      DKENERGY_PUBLISHED_HISTORY_PREDICTIONS_PATH: ${DKENERGY_PUBLISHED_HISTORY_PREDICTIONS_PATH:-file:///app/cloud_store/published_forecast_history/predictions.parquet}
+      DKENERGY_PUBLISHED_HISTORY_SCORES_PATH: ${DKENERGY_PUBLISHED_HISTORY_SCORES_PATH:-file:///app/cloud_store/published_forecast_history/model_scores.parquet}
       DKENERGY_ENABLE_LEGACY_BACKTESTS: ${DKENERGY_ENABLE_LEGACY_BACKTESTS:-0}
     volumes:
       - ./cloud_store:/app/cloud_store
@@ -41,7 +43,8 @@ services:
       EDS_END: ${EDS_END:-}
       OPEN_METEO_START: ${OPEN_METEO_START:-}
       OPEN_METEO_END: ${OPEN_METEO_END:-}
-      FORECAST_AT_HOUR_UTC: ${FORECAST_AT_HOUR_UTC:-10}
+      FORECAST_AT_HOUR_UTC: ${FORECAST_AT_HOUR_UTC:-}
+      FORECAST_LOCAL_TIME: ${FORECAST_LOCAL_TIME:-12:00}
       MIN_TRAIN_DAYS: ${MIN_TRAIN_DAYS:-60}
       SCORE_DAYS: ${SCORE_DAYS:-14}
       SCORE_MAX_ORIGINS: ${SCORE_MAX_ORIGINS:-7}

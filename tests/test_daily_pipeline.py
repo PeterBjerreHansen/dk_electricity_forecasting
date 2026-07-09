@@ -104,8 +104,23 @@ def test_daily_pipeline_runtime_root_rewrites_runtime_artifact_paths(tmp_path) -
 
     assert f"--raw-dir {tmp_path}/data/raw/energi_data_service" in result.stdout
     assert f"--panel-path {tmp_path}/data/model_ready/price_panel_hourly_v1.parquet" in result.stdout
+    assert f"--published-history-dir {tmp_path}/results/published_forecast_history" in result.stdout
     assert f"--dashboard-path {tmp_path}/app_data/forecast_dashboard.json" in result.stdout
     assert (
         f"--chronos-model-artifact-path {tmp_path}/artifacts/models/"
         "chronos2_lora_calendar_weather_ctx1024_v1"
     ) in result.stdout
+
+
+def test_daily_pipeline_defaults_to_local_forecast_time(monkeypatch) -> None:
+    monkeypatch.delenv("FORECAST_AT_HOUR_UTC", raising=False)
+    result = subprocess.run(
+        [sys.executable, "scripts/run_daily_pipeline.py", "--dry-run"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "--forecast-local-time 12:00" in result.stdout
+    assert "--at-hour-utc" not in result.stdout

@@ -72,5 +72,6 @@ publishes immutable forecast runs, and updates `latest/forecast_dashboard.json`
 last. Historical raw data remains in S3; the container runtime only hydrates the
 small slice it needs for inference and recent scoring.
 
-The dashboard reads only latest S3 artifacts. Notebook/backtest artifact folders
-are disabled in ECS via `DKENERGY_ENABLE_LEGACY_BACKTESTS=0`.
+The dashboard reads latest S3 artifacts plus published forecast performance
+history. Notebook/backtest artifact folders are disabled in ECS via
+`DKENERGY_ENABLE_LEGACY_BACKTESTS=0`.

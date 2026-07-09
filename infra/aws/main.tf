@@ -375,6 +375,8 @@ resource "aws_ecs_task_definition" "web" {
         { name = "DKENERGY_ARTIFACT_STORE_URI", value = local.artifact_store_uri },
         { name = "DKENERGY_DASHBOARD_JSON", value = "${local.artifact_store_uri}/latest/forecast_dashboard.json" },
         { name = "DKENERGY_PANEL_PATH", value = "${local.artifact_store_uri}/latest/price_panel_hourly_v1.parquet" },
+        { name = "DKENERGY_PUBLISHED_HISTORY_PREDICTIONS_PATH", value = "${local.artifact_store_uri}/published_forecast_history/predictions.parquet" },
+        { name = "DKENERGY_PUBLISHED_HISTORY_SCORES_PATH", value = "${local.artifact_store_uri}/published_forecast_history/model_scores.parquet" },
         { name = "DKENERGY_ENABLE_LEGACY_BACKTESTS", value = "0" },
         { name = "DKENERGY_CACHE_DIR", value = "/tmp/dkenergy-dashboard-cache" }
       ]

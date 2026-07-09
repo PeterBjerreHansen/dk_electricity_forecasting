@@ -212,7 +212,8 @@ or its covariate schema is missing.
 
 In production, run the cloud wrapper in a scheduled pipeline container. It
 hydrates the small runtime state it needs from S3, runs the daily command, writes
-immutable run artifacts, then updates the `latest/` dashboard artifacts last.
+immutable run artifacts, refreshes published-forecast performance history, then
+updates the `latest/` dashboard artifacts last.
 
 ## Dashboard
 
@@ -229,11 +230,14 @@ The dashboard reads:
 data/model_ready/price_panel_hourly_v1.parquet
 results/latest_forecast/predictions.parquet
 results/recent_scores/model_scores.parquet
+results/published_forecast_history/predictions.parquet
+results/published_forecast_history/model_scores.parquet
 app_data/forecast_dashboard.json
 ```
 
 It shows DK1/DK2 actual day-ahead prices, the next available forecast,
-point/quantile forecast rows when present, and recent backtest metrics.
+point/quantile forecast rows when present, published forecast performance when
+available, and recent rolling-origin diagnostics as a fallback.
 
 ## Docker
 

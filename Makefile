@@ -8,7 +8,8 @@ WEATHER_START_COPENHAGEN := $(shell $(PYTHON) -c 'from datetime import datetime,
 EDS_START ?= $(PRICE_START_COPENHAGEN)
 OPEN_METEO_START ?= $(WEATHER_START_COPENHAGEN)
 OPEN_METEO_END ?= $(TOMORROW_COPENHAGEN)
-FORECAST_AT_HOUR_UTC ?= 10
+FORECAST_AT_HOUR_UTC ?=
+FORECAST_LOCAL_TIME ?= 12:00
 MIN_TRAIN_DAYS ?= 60
 SCORE_DAYS ?= 14
 SCORE_MAX_ORIGINS ?= 7
@@ -31,6 +32,7 @@ TF_STATE_REGION ?= $(AWS_REGION)
 
 EDS_END_ARG := $(if $(EDS_END),--end $(EDS_END),)
 PUBLISH_MODELS_ARG := $(if $(PUBLISH_MODELS),--models $(PUBLISH_MODELS),)
+FORECAST_AT_HOUR_UTC_ARG := $(if $(FORECAST_AT_HOUR_UTC),--at-hour-utc $(FORECAST_AT_HOUR_UTC),)
 
 .PHONY: install install-app install-production test data-prices data-weather backtest-baseline publish daily daily-weather dashboard docker-build docker-dashboard docker-pipeline dry-run dry-run-weather aws-terraform-init aws-ensure-ecr aws-ecr-login aws-image aws-push aws-bootstrap-model aws-deploy clean
 
@@ -55,10 +57,10 @@ data-weather:
 	$(PYTHON) scripts/build_open_meteo_weather_features.py --start $(OPEN_METEO_START) --end $(OPEN_METEO_END)
 
 backtest-baseline:
-	$(PYTHON) scripts/run_baseline_backtest.py --allow-incomplete-panel --at-hour-utc $(FORECAST_AT_HOUR_UTC) --min-train-days $(MIN_TRAIN_DAYS)
+	$(PYTHON) scripts/run_baseline_backtest.py --allow-incomplete-panel --forecast-local-time $(FORECAST_LOCAL_TIME) $(FORECAST_AT_HOUR_UTC_ARG) --min-train-days $(MIN_TRAIN_DAYS)
 
 publish:
-	$(PYTHON) scripts/run_publish_forecast.py --allow-incomplete-panel --at-hour-utc $(FORECAST_AT_HOUR_UTC) --min-train-days $(MIN_TRAIN_DAYS) --score-days $(SCORE_DAYS) --score-max-origins $(SCORE_MAX_ORIGINS) --score-holdout-days $(SCORE_HOLDOUT_DAYS) $(PUBLISH_MODELS_ARG)
+	$(PYTHON) scripts/run_publish_forecast.py --allow-incomplete-panel --forecast-local-time $(FORECAST_LOCAL_TIME) $(FORECAST_AT_HOUR_UTC_ARG) --min-train-days $(MIN_TRAIN_DAYS) --score-days $(SCORE_DAYS) --score-max-origins $(SCORE_MAX_ORIGINS) --score-holdout-days $(SCORE_HOLDOUT_DAYS) $(PUBLISH_MODELS_ARG)
 
 daily:
 	$(PYTHON) scripts/run_daily_pipeline.py

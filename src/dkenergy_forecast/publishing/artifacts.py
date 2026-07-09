@@ -10,7 +10,13 @@ from typing import Any
 
 import pandas as pd
 
-from dkenergy_forecast.types import normalize_utc_column, require_columns, to_utc_timestamp
+from dkenergy_forecast.types import (
+    PRICE_AVAILABILITY_COLUMN,
+    ensure_price_availability,
+    normalize_utc_column,
+    require_columns,
+    to_utc_timestamp,
+)
 
 
 PUBLISHED_PREDICTION_REQUIRED_COLUMNS = [
@@ -35,6 +41,19 @@ MODEL_SCORE_REQUIRED_COLUMNS = [
     "bias",
     "coverage",
     "interval_width",
+]
+
+MODEL_SCORE_COLUMNS = [
+    "model_label",
+    "area",
+    "rows",
+    "evaluated_rows",
+    "mae",
+    "rmse",
+    "bias",
+    "coverage",
+    "interval_width",
+    "missing_rate",
 ]
 
 
@@ -98,6 +117,133 @@ def validate_model_scores_schema(scores: pd.DataFrame) -> None:
     for column in ["mae", "rmse", "bias", "coverage", "interval_width"]:
         if column in scores.columns:
             pd.to_numeric(scores[column], errors="raise")
+
+
+def build_published_forecast_history(
+    artifact_root: str | Path,
+    panel: pd.DataFrame,
+) -> pd.DataFrame:
+    """Score only immutable forecast-run predictions that now have actuals."""
+
+    published = _load_forecast_run_predictions(artifact_root)
+    if published.empty:
+        return _empty_published_history_frame()
+
+    actuals = _panel_actuals(panel)
+    merged = published.merge(actuals, on=["unique_id", "ds_utc"], how="left")
+    merged["y"] = merged["_actual_y"]
+    merged["actual_price"] = merged["_actual_y"]
+    if PRICE_AVAILABILITY_COLUMN in merged:
+        merged[PRICE_AVAILABILITY_COLUMN] = merged[f"{PRICE_AVAILABILITY_COLUMN}_panel"].combine_first(
+            merged[PRICE_AVAILABILITY_COLUMN]
+        )
+    elif f"{PRICE_AVAILABILITY_COLUMN}_panel" in merged:
+        merged[PRICE_AVAILABILITY_COLUMN] = merged[f"{PRICE_AVAILABILITY_COLUMN}_panel"]
+    merged = merged.drop(
+        columns=[column for column in ["_actual_y", f"{PRICE_AVAILABILITY_COLUMN}_panel"] if column in merged],
+    )
+    evaluated = merged.loc[merged["y"].notna() & merged["y_pred"].notna()].copy()
+    if evaluated.empty:
+        return _empty_published_history_frame()
+    return evaluated.sort_values(["forecast_origin_utc", "run_id", "model_label", "unique_id", "ds_utc"]).reset_index(
+        drop=True
+    )
+
+
+def build_published_forecast_scores(history: pd.DataFrame) -> pd.DataFrame:
+    if history.empty:
+        return _empty_model_score_frame(score_source="published_forecast_history")
+
+    from dkenergy_forecast.evaluation.summary import add_prediction_diagnostics, model_score_table
+
+    scores = model_score_table(add_prediction_diagnostics(history))
+    scores["score_source"] = "published_forecast_history"
+    return scores
+
+
+def write_published_forecast_history(
+    history_dir: str | Path,
+    *,
+    predictions: pd.DataFrame,
+    scores: pd.DataFrame,
+) -> dict[str, Path]:
+    history_path = Path(history_dir)
+    history_path.mkdir(parents=True, exist_ok=True)
+    paths = {
+        "published_history_predictions": history_path / "predictions.parquet",
+        "published_history_scores": history_path / "model_scores.parquet",
+    }
+    predictions.to_parquet(paths["published_history_predictions"], index=False)
+    scores.to_parquet(paths["published_history_scores"], index=False)
+    return paths
+
+
+def _load_forecast_run_predictions(artifact_root: str | Path) -> pd.DataFrame:
+    root = Path(artifact_root)
+    if not root.exists():
+        return _empty_published_prediction_frame()
+
+    frames: list[pd.DataFrame] = []
+    for run_dir in sorted(path for path in root.iterdir() if path.is_dir()):
+        predictions_path = run_dir / "predictions.parquet"
+        if not predictions_path.exists():
+            continue
+        frame = normalize_published_predictions(pd.read_parquet(predictions_path))
+        require_columns(frame, ["unique_id"], f"{predictions_path}")
+        manifest = _read_optional_manifest(run_dir / "manifest.json")
+        frame["run_id"] = frame.get("run_id", manifest.get("run_id") or run_dir.name)
+        frame["run_id"] = frame["run_id"].fillna(manifest.get("run_id") or run_dir.name).astype(str)
+        frame["published_at_utc"] = manifest.get("created_at_utc")
+        frame["published_forecast_origin_utc"] = manifest.get("forecast_origin_utc")
+        frames.append(frame)
+
+    if not frames:
+        return _empty_published_prediction_frame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def _read_optional_manifest(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _panel_actuals(panel: pd.DataFrame) -> pd.DataFrame:
+    require_columns(panel, ["unique_id", "ds_utc", "y"], "price panel")
+    actuals = ensure_price_availability(normalize_utc_column(panel, "ds_utc"))
+    columns = ["unique_id", "ds_utc", "y"]
+    if PRICE_AVAILABILITY_COLUMN in actuals:
+        columns.append(PRICE_AVAILABILITY_COLUMN)
+    output = actuals[columns].drop_duplicates(["unique_id", "ds_utc"]).copy()
+    rename = {"y": "_actual_y"}
+    if PRICE_AVAILABILITY_COLUMN in output:
+        rename[PRICE_AVAILABILITY_COLUMN] = f"{PRICE_AVAILABILITY_COLUMN}_panel"
+    return output.rename(columns=rename)
+
+
+def _empty_published_prediction_frame() -> pd.DataFrame:
+    return pd.DataFrame(columns=[*PUBLISHED_PREDICTION_REQUIRED_COLUMNS, "unique_id", "run_id"])
+
+
+def _empty_published_history_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            *PUBLISHED_PREDICTION_REQUIRED_COLUMNS,
+            "unique_id",
+            "run_id",
+            "published_at_utc",
+            "published_forecast_origin_utc",
+            "y",
+            "actual_price",
+        ]
+    )
+
+
+def _empty_model_score_frame(*, score_source: str | None = None) -> pd.DataFrame:
+    frame = pd.DataFrame(columns=[*MODEL_SCORE_COLUMNS, "score_source"])
+    if score_source is not None:
+        frame["score_source"] = frame["score_source"].astype("object")
+    return frame
 
 
 def make_forecast_run_manifest(
@@ -209,6 +355,8 @@ def build_dashboard_payload(
     scores: pd.DataFrame,
     manifest: dict[str, Any],
     score_predictions: pd.DataFrame | None = None,
+    published_history_predictions: pd.DataFrame | None = None,
+    published_history_scores: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     prediction_rows = normalize_published_predictions(predictions).to_dict(orient="records")
     score_rows = scores.to_dict(orient="records")
@@ -222,6 +370,10 @@ def build_dashboard_payload(
         payload["recent_predictions"] = normalize_published_predictions(score_predictions).to_dict(
             orient="records"
         )
+    if published_history_predictions is not None:
+        payload["published_history_predictions"] = published_history_predictions.to_dict(orient="records")
+    if published_history_scores is not None:
+        payload["published_history_scores"] = published_history_scores.to_dict(orient="records")
     return payload
 
 

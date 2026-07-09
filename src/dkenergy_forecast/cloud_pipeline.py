@@ -100,6 +100,7 @@ def _download_runtime_state(store: ArtifactStore, workdir: Path) -> None:
     for prefix in STATE_DOWNLOAD_PREFIXES:
         relative = prefix.removeprefix("state/")
         store.download_prefix(prefix, workdir / relative, required=False)
+    store.download_prefix("forecast_runs", workdir / "artifacts" / "forecast_runs", required=False)
 
 
 def _download_model_artifact(model_artifact_uri: str, workdir: Path) -> None:
@@ -123,6 +124,7 @@ def _upload_runtime_outputs(store: ArtifactStore, workdir: Path) -> list[str]:
         uploaded.extend(store.upload_prefix(workdir / source_relative, destination_prefix))
     uploaded.extend(store.upload_prefix(workdir / "artifacts" / "forecast_runs", "forecast_runs"))
     uploaded.extend(store.upload_prefix(workdir / "results" / "recent_scores", "recent_scores"))
+    uploaded.extend(store.upload_prefix(workdir / "results" / "published_forecast_history", "published_forecast_history"))
 
     for source, key in _latest_artifacts(workdir):
         _require_output(source)

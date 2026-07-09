@@ -3,6 +3,8 @@ from dkenergy_forecast.publishing.artifacts import (
     MODEL_SCORE_REQUIRED_COLUMNS,
     PUBLISHED_PREDICTION_REQUIRED_COLUMNS,
     build_dashboard_payload,
+    build_published_forecast_history,
+    build_published_forecast_scores,
     git_commit,
     json_safe,
     make_forecast_run_manifest,
@@ -14,6 +16,7 @@ from dkenergy_forecast.publishing.artifacts import (
     validate_prediction_artifact_schema,
     write_forecast_run_artifacts,
     write_json,
+    write_published_forecast_history,
 )
 
 __all__ = [
@@ -21,6 +24,8 @@ __all__ = [
     "PUBLISHED_PREDICTION_REQUIRED_COLUMNS",
     "EVALUATED_PREDICTION_REQUIRED_COLUMNS",
     "build_dashboard_payload",
+    "build_published_forecast_history",
+    "build_published_forecast_scores",
     "git_commit",
     "json_safe",
     "make_forecast_run_manifest",
@@ -31,5 +36,6 @@ __all__ = [
     "validate_model_scores_schema",
     "validate_prediction_artifact_schema",
     "write_forecast_run_artifacts",
+    "write_published_forecast_history",
     "write_json",
 ]

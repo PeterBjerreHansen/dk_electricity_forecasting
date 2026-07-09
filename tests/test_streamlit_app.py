@@ -60,6 +60,23 @@ def test_backtest_predictions_get_default_run_id() -> None:
     assert str(prepared["ds_utc"].dtype) == "datetime64[ns, UTC]"
 
 
+def test_published_history_loader_parses_payload_timestamps() -> None:
+    payload = {
+        "published_history_predictions": [
+            {
+                **_prediction_row("published-run", "2026-07-01T00:00:00Z", "DK1", "model_a", 10.0, 11.0),
+                "published_at_utc": "2026-06-30T10:00:00Z",
+            }
+        ]
+    }
+
+    loaded = streamlit_app._load_published_history_predictions(payload, "missing.parquet")
+
+    assert loaded["run_id"].tolist() == ["published-run"]
+    assert str(loaded["ds_utc"].dtype) == "datetime64[ns, UTC]"
+    assert str(loaded["published_at_utc"].dtype) == "datetime64[ns, UTC]"
+
+
 def test_backtest_tab_loader_prefers_backtest_artifacts(tmp_path) -> None:
     backtest_dir = tmp_path / "baseline_v1"
     backtest_dir.mkdir()

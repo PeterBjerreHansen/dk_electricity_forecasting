@@ -32,12 +32,15 @@ from dkenergy_forecast.models.chronos_production import (  # noqa: E402
     weather_artifact_summary,
 )
 from dkenergy_forecast.publishing import (  # noqa: E402
+    build_published_forecast_history,
+    build_published_forecast_scores,
     build_dashboard_payload,
     git_commit,
     make_forecast_run_manifest,
     unique_run_id,
     update_latest_exports,
     write_forecast_run_artifacts,
+    write_published_forecast_history,
 )
 from dkenergy_forecast.types import (  # noqa: E402
     COPENHAGEN_TZ,
@@ -105,6 +108,8 @@ def main() -> None:
     score_predictions = add_prediction_diagnostics(score_predictions)
     score_predictions["run_id"] = run_id
     scores = model_score_table(score_predictions)
+    published_history_predictions = build_published_forecast_history(args.artifact_root, panel)
+    published_history_scores = build_published_forecast_scores(published_history_predictions)
     run_dir = Path(args.artifact_root) / run_id
     artifact_paths = {
         "predictions": str(run_dir / "predictions.parquet"),
@@ -112,6 +117,8 @@ def main() -> None:
         "model_scores": str(run_dir / "model_scores.parquet"),
         "manifest": str(run_dir / "manifest.json"),
         "dashboard": str(run_dir / "forecast_dashboard.json"),
+        "published_history_predictions": str(Path(args.published_history_dir) / "predictions.parquet"),
+        "published_history_scores": str(Path(args.published_history_dir) / "model_scores.parquet"),
     }
     manifest = make_forecast_run_manifest(
         run_id=run_id,
@@ -137,9 +144,12 @@ def main() -> None:
             "score_origin_max_utc": score_origins["forecast_origin_utc"].max(),
             "score_origin_count": int(len(score_origins)),
             "score_prediction_row_count": int(len(score_predictions)),
+            "published_history_prediction_row_count": int(len(published_history_predictions)),
+            "published_history_score_row_count": int(len(published_history_scores)),
             "score_days": int(args.score_days),
             "score_max_origins": int(args.score_max_origins),
             "score_holdout_days": int(args.score_holdout_days),
+            "published_history_score_source": "published_forecast_history",
             "model_registry_labels": model_labels,
             "model_registry": selected_model_registry_metadata(model_labels),
             **selected_chronos_metadata(model_labels, args.chronos_model_artifact_path),
@@ -151,6 +161,8 @@ def main() -> None:
         scores=scores,
         manifest=manifest,
         score_predictions=score_predictions,
+        published_history_predictions=published_history_predictions,
+        published_history_scores=published_history_scores,
     )
 
     written = write_forecast_run_artifacts(
@@ -171,10 +183,15 @@ def main() -> None:
         dashboard=dashboard,
         score_predictions=score_predictions,
     )
+    published_history = write_published_forecast_history(
+        args.published_history_dir,
+        predictions=published_history_predictions,
+        scores=published_history_scores,
+    )
 
     print(f"Published forecast run: {run_id}")
     print(f"Forecast origin UTC: {forecast_origin.isoformat()}")
-    for label, path in {**written, **latest}.items():
+    for label, path in {**written, **latest, **published_history}.items():
         print(f"Wrote {label}: {path}")
 
 
@@ -251,6 +268,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--recent-scores-dir",
         default=str(ROOT / "results" / "recent_scores"),
+    )
+    parser.add_argument(
+        "--published-history-dir",
+        default=str(ROOT / "results" / "published_forecast_history"),
     )
     parser.add_argument(
         "--dashboard-path",

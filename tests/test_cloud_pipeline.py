@@ -23,6 +23,8 @@ def test_cloud_pipeline_syncs_state_runs_daily_and_uploads_latest_last(tmp_path)
     )
     (store / "state" / "data" / "raw").mkdir(parents=True, exist_ok=True)
     (store / "state" / "data" / "raw" / "old.json").write_text("old", encoding="utf-8")
+    (store / "forecast_runs" / "previous_run").mkdir(parents=True)
+    (store / "forecast_runs" / "previous_run" / "predictions.parquet").write_text("old-predictions", encoding="utf-8")
     workdir = tmp_path / "workdir"
     calls = []
 
@@ -51,8 +53,10 @@ def test_cloud_pipeline_syncs_state_runs_daily_and_uploads_latest_last(tmp_path)
     assert calls
     assert (workdir / "data" / "model_ready" / "seed.json").exists()
     assert (workdir / "data" / "raw" / "energi_data_service" / "seed" / "batch.json").exists()
+    assert (workdir / "artifacts" / "forecast_runs" / "previous_run" / "predictions.parquet").exists()
     assert not (workdir / "data" / "raw" / "old.json").exists()
     assert "forecast_runs/run_1/manifest.json" in uploaded
+    assert "published_forecast_history/model_scores.parquet" in uploaded
     assert uploaded[-1] == "latest/forecast_dashboard.json"
     assert (store / "latest" / "forecast_dashboard.json").exists()
     assert (store / "latest" / "price_panel_hourly_v1.parquet").exists()
@@ -155,6 +159,7 @@ def _write_pipeline_outputs(
         workdir / "data" / "features",
         workdir / "results" / "latest_forecast",
         workdir / "results" / "recent_scores",
+        workdir / "results" / "published_forecast_history",
         workdir / "artifacts" / "forecast_runs" / "run_1",
         workdir / "app_data",
     ]:
@@ -164,6 +169,14 @@ def _write_pipeline_outputs(
     (workdir / "results" / "latest_forecast" / "predictions.parquet").write_text("predictions", encoding="utf-8")
     (workdir / "results" / "latest_forecast" / "manifest.json").write_text("{}", encoding="utf-8")
     (workdir / "results" / "recent_scores" / "model_scores.parquet").write_text("scores", encoding="utf-8")
+    (workdir / "results" / "published_forecast_history" / "predictions.parquet").write_text(
+        "published predictions",
+        encoding="utf-8",
+    )
+    (workdir / "results" / "published_forecast_history" / "model_scores.parquet").write_text(
+        "published scores",
+        encoding="utf-8",
+    )
     (workdir / "artifacts" / "forecast_runs" / "run_1" / "manifest.json").write_text("{}", encoding="utf-8")
     (workdir / "app_data" / "forecast_dashboard.json").write_text("{}", encoding="utf-8")
     if include_weather:

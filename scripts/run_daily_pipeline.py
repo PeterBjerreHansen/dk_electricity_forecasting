@@ -203,6 +203,8 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
             str(paths["latest_forecast"]),
             "--recent-scores-dir",
             str(paths["recent_scores"]),
+            "--published-history-dir",
+            str(paths["published_history"]),
             "--dashboard-path",
             str(paths["dashboard_json"]),
             "--forecast-local-time",
@@ -247,6 +249,7 @@ def runtime_paths(runtime_root: Path) -> dict[str, Path]:
         "forecast_runs": runtime_root / "artifacts" / "forecast_runs",
         "latest_forecast": runtime_root / "results" / "latest_forecast",
         "recent_scores": runtime_root / "results" / "recent_scores",
+        "published_history": runtime_root / "results" / "published_forecast_history",
         "dashboard_json": runtime_root / "app_data" / "forecast_dashboard.json",
     }
 

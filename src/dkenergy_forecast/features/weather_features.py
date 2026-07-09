@@ -81,6 +81,11 @@ def _join_prepared_weather_features(
 
     output = base.copy()
     if not eligible.empty:
+        eligible = (
+            eligible.sort_values(["_weather_row_id", "feature_name", "forecast_available_at_utc"])
+            .drop_duplicates(["_weather_row_id", "feature_name"], keep="last")
+            .reset_index(drop=True)
+        )
         value_wide = eligible.pivot_table(
             index="_weather_row_id",
             columns="feature_name",

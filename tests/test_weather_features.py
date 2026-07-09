@@ -56,6 +56,38 @@ def test_join_weather_features_masks_values_unavailable_at_forecast_origin() -> 
     assert joined.loc[0, f"{feature}_available_at_utc"] == pd.Timestamp("2025-01-01T00:00:00Z")
 
 
+def test_join_weather_features_uses_latest_eligible_forecast_vintage() -> None:
+    frame = pd.DataFrame(
+        {
+            "area": ["DK1"],
+            "ds_utc": [pd.Timestamp("2025-01-02T00:00:00Z")],
+            "forecast_origin_utc": [pd.Timestamp("2025-01-01T10:00:00Z")],
+        }
+    )
+    feature = "weather_gfs_global_lead1d_temperature_2m"
+    area_features_long = pd.DataFrame(
+        {
+            "area": ["DK1", "DK1", "DK1"],
+            "ds_utc": [pd.Timestamp("2025-01-02T00:00:00Z")] * 3,
+            "feature_name": [feature, feature, feature],
+            "value": [9.0, 1.0, 99.0],
+            "location_coverage_ratio": [1.0, 1.0, 1.0],
+            "location_coverage_pass": [True, True, True],
+            "feature_group_pass": [True, True, True],
+            "forecast_available_at_utc": [
+                pd.Timestamp("2025-01-01T09:00:00Z"),
+                pd.Timestamp("2025-01-01T00:00:00Z"),
+                pd.Timestamp("2025-01-01T12:00:00Z"),
+            ],
+        }
+    )
+
+    joined = join_weather_features(frame, area_features_long)
+
+    assert joined.loc[0, feature] == pytest.approx(9.0)
+    assert joined.loc[0, f"{feature}_available_at_utc"] == pd.Timestamp("2025-01-01T09:00:00Z")
+
+
 def test_join_weather_features_filters_failing_coverage_groups_by_default() -> None:
     frame = pd.DataFrame(
         {
