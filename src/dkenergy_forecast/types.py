@@ -81,7 +81,7 @@ def to_utc_timestamp(value: object) -> pd.Timestamp:
 
 def normalize_utc_column(frame: pd.DataFrame, column: str) -> pd.DataFrame:
     output = frame.copy()
-    output[column] = pd.to_datetime(output[column], utc=True)
+    output[column] = pd.to_datetime(output[column], utc=True).astype("datetime64[ns, UTC]")
     return output
 
 

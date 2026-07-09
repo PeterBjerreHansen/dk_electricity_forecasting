@@ -11,6 +11,7 @@ import streamlit as st
 from dkenergy_forecast.evaluation.summary import add_prediction_diagnostics, model_score_table
 from dkenergy_forecast.layout import CHRONOS_LORA_WEATHER_MODEL_LABEL, PROJECT_ROOT, runtime_layout
 from dkenergy_forecast.storage import materialize_uri, resource_exists
+from dkenergy_forecast.types import normalize_utc_column
 
 
 ROOT = PROJECT_ROOT
@@ -581,7 +582,7 @@ def _parse_time_columns(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame
     output = frame.copy()
     for column in columns:
         if column in output.columns:
-            output[column] = pd.to_datetime(output[column], utc=True)
+            output = normalize_utc_column(output, column)
     return output
 
 

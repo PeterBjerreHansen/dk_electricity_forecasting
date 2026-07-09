@@ -23,6 +23,7 @@ from dkenergy_forecast.tuning.catboost_common import (
 from dkenergy_forecast.types import (
     PRICE_AVAILABILITY_COLUMN,
     ensure_price_availability,
+    normalize_utc_column,
     price_available_before_mask,
     require_columns,
 )
@@ -959,8 +960,8 @@ def prepare_nested_frame(frame: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise ValueError(f"CatBoost validation frame is missing required columns: {missing}")
     prepared = frame.copy()
-    prepared["forecast_origin_utc"] = pd.to_datetime(prepared["forecast_origin_utc"], utc=True)
-    prepared["ds_utc"] = pd.to_datetime(prepared["ds_utc"], utc=True)
+    prepared = normalize_utc_column(prepared, "forecast_origin_utc")
+    prepared = normalize_utc_column(prepared, "ds_utc")
     prepared = ensure_price_availability(prepared)
     prepared["outer_month"] = origin_month_labels(prepared["forecast_origin_utc"])
     return prepared.sort_values(["forecast_origin_utc", "unique_id", "ds_utc"]).reset_index(drop=True)

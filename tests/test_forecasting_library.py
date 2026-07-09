@@ -27,6 +27,7 @@ from dkenergy_forecast.models.baselines import (
 )
 from dkenergy_forecast.types import add_copenhagen_calendar
 from dkenergy_forecast.types import add_price_availability
+from dkenergy_forecast.types import normalize_utc_column
 
 
 def test_load_price_panel_normalizes_utc_and_validates_qa(tmp_path) -> None:
@@ -41,6 +42,18 @@ def test_load_price_panel_normalizes_utc_and_validates_qa(tmp_path) -> None:
 
     assert str(loaded["ds_utc"].dtype) == "datetime64[ns, UTC]"
     assert loaded["unique_id"].tolist() == ["day_ahead_price_DK1", "day_ahead_price_DK1"]
+
+
+def test_normalize_utc_column_forces_nanosecond_utc_dtype() -> None:
+    frame = pd.DataFrame(
+        {
+            "ds_utc": pd.Series(["2024-01-01T00:00:00Z"]).astype("datetime64[us, UTC]"),
+        }
+    )
+
+    normalized = normalize_utc_column(frame, "ds_utc")
+
+    assert str(normalized["ds_utc"].dtype) == "datetime64[ns, UTC]"
 
 
 def test_load_price_panel_rejects_missing_columns_duplicates_and_incomplete_qa(tmp_path) -> None:
