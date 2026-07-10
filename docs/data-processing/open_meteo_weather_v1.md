@@ -8,7 +8,9 @@ Service prices. The canonical price panel remains:
 data/model_ready/price_panel_hourly_v1.parquet
 ```
 
-Weather joins are experiment artifacts only.
+The canonical price panel remains weather-free. Availability-safe joins are
+used both for experiment frames and by the production Chronos adapter directly
+from the canonical long weather table.
 
 ## Source
 
@@ -87,8 +89,10 @@ data/raw/open_meteo/manifest.jsonl
 
 Each manifest row includes request parameters, retrieval time, HTTP status,
 response hash, saved-file hash, row count, model id, location id, and raw path.
-Repeated raw batches for the same logical forecast row are deduplicated during
-normalization when values match; conflicting repeats fail the build.
+Duplicate logical rows inside one immutable raw batch must agree. Across
+separate retrieval batches, the latest `retrieved_at_utc` row wins
+deterministically so upstream revisions are represented while `raw_batch_id`
+preserves provenance.
 
 ## Coordinate Basket
 
@@ -186,7 +190,7 @@ per-hour coverage passed. `feature_group_pass` is true only when the feature
 window coverage is at least 95 percent. Missing values stay missing. V1 does not
 impute weather features.
 
-## Experiment Joins
+## Availability-Safe Joins
 
 Weather is joined through:
 
@@ -208,9 +212,12 @@ forecast_available_at_utc <= forecast_origin_utc
 ```
 
 Rows failing that rule are left null. Coverage-failing feature groups and
-individual low-coverage hours are excluded by default. Joined frames are
-experiment-specific and live under `data/features/`; they must not overwrite the
-canonical EDS price panel.
+individual low-coverage hours are excluded by default. Materialized joined
+experiment frames live under `data/features/` and must not overwrite the
+canonical EDS price panel. Production Chronos applies the same join in memory
+for each historical context row and future delivery row, then applies its
+artifact-versioned per-series fill policy without changing the source weather
+artifact.
 
 ## First Commands
 

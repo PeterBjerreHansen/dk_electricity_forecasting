@@ -99,6 +99,24 @@ def parse_local_time(value: str | time = DEFAULT_PRICE_PUBLICATION_LOCAL_TIME) -
     return time(hour=hour, minute=minute, second=second)
 
 
+def copenhagen_timestamp(
+    local_date: object,
+    local_time: str | time = DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
+) -> pd.Timestamp:
+    """Combine a local calendar date and wall-clock time without DST drift."""
+
+    clock = parse_local_time(local_time)
+    date_value = pd.Timestamp(local_date)
+    if date_value.tzinfo is not None:
+        date_value = date_value.tz_convert(COPENHAGEN_TZ).tz_localize(None)
+    naive = date_value.normalize() + pd.Timedelta(
+        hours=clock.hour,
+        minutes=clock.minute,
+        seconds=clock.second,
+    )
+    return naive.tz_localize(COPENHAGEN_TZ)
+
+
 def add_price_availability(
     frame: pd.DataFrame,
     *,

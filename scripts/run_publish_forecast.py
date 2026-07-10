@@ -53,7 +53,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--forecast-origin-utc",
-        help="Forecast origin timestamp. Defaults to the latest panel UTC date at --at-hour-utc.",
+        help=(
+            "Forecast origin timestamp. Defaults to local market noon on the latest "
+            "panel delivery date, or the legacy --at-hour-utc when supplied."
+        ),
     )
     parser.add_argument(
         "--at-hour-utc",

@@ -16,6 +16,7 @@ from dkenergy_forecast.features.weather_features import (
 )
 from dkenergy_forecast.layout import runtime_layout
 from dkenergy_forecast.types import (
+    PRICE_AVAILABILITY_COLUMN,
     add_copenhagen_calendar,
     ensure_price_availability,
     filter_price_history_available_before,
@@ -28,7 +29,7 @@ from dkenergy_forecast.types import (
 DEFAULT_RUNTIME_LAYOUT = runtime_layout()
 DEFAULT_CHRONOS_LORA_ARTIFACT_PATH = DEFAULT_RUNTIME_LAYOUT.chronos_model_artifact
 DEFAULT_WEATHER_FEATURES_LONG_PATH = DEFAULT_RUNTIME_LAYOUT.weather_features_long
-CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION = 1
+CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION = 2
 
 CALENDAR_COVARIATES = [
     "local_hour",
@@ -219,18 +220,18 @@ def build_lora_weather_prediction_frames(
     full_future = add_copenhagen_calendar(full_future)
 
     context_full = context.copy()
-    context_full["forecast_origin_utc"] = origin
+    context_full["forecast_origin_utc"] = context_full[PRICE_AVAILABILITY_COLUMN]
     context_full = add_copenhagen_calendar(context_full)
     context_full = add_weather_covariates(context_full, weather, config=config, expected_covariates=covariates)
     full_future = add_weather_covariates(full_future, weather, config=config, expected_covariates=covariates)
 
     _require_covariate_columns(context_full, covariates, "Chronos context frame")
     _require_covariate_columns(full_future, covariates, "Chronos future frame")
-    _require_weather_signal(context_full, covariates, "Chronos context frame")
-    _require_weather_signal(full_future, covariates, "Chronos future frame")
+    require_lora_weather_signal(context_full, covariates, "Chronos context frame")
+    require_lora_weather_signal(full_future, covariates, "Chronos future frame")
 
-    context_full = normalize_covariate_dtypes(context_full, covariates)
-    full_future = normalize_covariate_dtypes(full_future, covariates)
+    context_full = fill_lora_covariates(context_full, covariates)
+    full_future = fill_lora_covariates(full_future, covariates)
     context_full["item_id"] = context_full["unique_id"]
     context_full["timestamp"] = to_chronos_timestamp(context_full["ds_utc"])
     full_future["item_id"] = full_future["unique_id"]
@@ -370,11 +371,21 @@ def selected_weather_columns(frame: pd.DataFrame, mode: str) -> list[str]:
     raise ValueError(f"Unknown weather covariate mode: {mode!r}")
 
 
-def normalize_covariate_dtypes(frame: pd.DataFrame, covariates: list[str]) -> pd.DataFrame:
-    output = frame.copy()
+def fill_lora_covariates(frame: pd.DataFrame, covariates: list[str]) -> pd.DataFrame:
+    """Apply the shared train/serve covariate fill policy per time series."""
+
+    output = frame.sort_values(["unique_id", "ds_utc"]).copy()
+    missing_columns = [column for column in covariates if column not in output.columns]
+    if missing_columns:
+        output = output.assign(**dict.fromkeys(missing_columns, np.nan))
     for column in covariates:
         if pd.api.types.is_bool_dtype(output[column]):
             output[column] = output[column].astype("int8")
+    output[covariates] = (
+        output.groupby("unique_id", observed=True)[covariates]
+        .transform(lambda values: values.ffill().bfill())
+        .fillna(0.0)
+    )
     return output
 
 
@@ -450,15 +461,17 @@ def _require_covariate_columns(frame: pd.DataFrame, covariates: list[str], frame
         raise ValueError(f"{frame_name} is missing Chronos artifact covariates: {missing[:20]}")
 
 
-def _require_weather_signal(frame: pd.DataFrame, covariates: list[str], frame_name: str) -> None:
+def require_lora_weather_signal(frame: pd.DataFrame, covariates: list[str], frame_name: str) -> None:
     weather_columns = [column for column in covariates if column.startswith("weather_")]
     if not weather_columns:
         return
     has_signal = frame[weather_columns].notna().any(axis=1)
-    if bool((~has_signal).any()):
+    signal_by_series = has_signal.groupby(frame["unique_id"]).any()
+    missing_series = signal_by_series.index[~signal_by_series].tolist()
+    if missing_series:
         sample_columns = [column for column in ["unique_id", "area", "ds_utc", "forecast_origin_utc"] if column in frame]
-        sample = frame.loc[~has_signal, sample_columns].head(5).to_dict(orient="records")
-        raise ValueError(f"{frame_name} has rows with no availability-safe weather signal: {sample}")
+        sample = frame.loc[frame["unique_id"].isin(missing_series), sample_columns].head(5).to_dict(orient="records")
+        raise ValueError(f"{frame_name} has series with no availability-safe weather signal: {sample}")
 
 
 def ensure_chronos_available() -> None:

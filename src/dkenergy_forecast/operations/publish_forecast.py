@@ -36,6 +36,7 @@ from dkenergy_forecast.types import (
     COPENHAGEN_TZ,
     DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
     PRICE_AVAILABILITY_COLUMN,
+    copenhagen_timestamp,
     parse_local_time,
     to_utc_timestamp,
 )
@@ -289,9 +290,5 @@ def resolve_forecast_origin(
 
     local_time = parse_local_time(forecast_local_time)
     latest_local_date = panel["ds_utc"].max().tz_convert(COPENHAGEN_TZ).date()
-    origin_local = pd.Timestamp(latest_local_date).tz_localize(COPENHAGEN_TZ) + pd.Timedelta(
-        hours=local_time.hour,
-        minutes=local_time.minute,
-        seconds=local_time.second,
-    )
+    origin_local = copenhagen_timestamp(latest_local_date, local_time)
     return origin_local.tz_convert("UTC")

@@ -21,6 +21,7 @@ from dkenergy_forecast.models.comparison_registry import (
     comparison_model_factories,
     comparison_model_specs,
 )
+from dkenergy_forecast.operations.publish_forecast import resolve_forecast_origin
 from dkenergy_forecast.publishing import (
     build_published_forecast_history,
     build_published_forecast_scores,
@@ -123,6 +124,34 @@ def test_published_artifacts_validate_and_write(tmp_path) -> None:
     saved_dashboard = json.loads(written["dashboard"].read_text(encoding="utf-8"))
     assert len(saved_dashboard["recent_predictions"]) == len(predictions)
 
+    with pytest.raises(FileExistsError, match="Immutable forecast run already exists"):
+        write_forecast_run_artifacts(
+            tmp_path / "run",
+            predictions=predictions,
+            scores=scores,
+            manifest=manifest,
+            score_predictions=predictions,
+            dashboard=dashboard,
+        )
+
+
+@pytest.mark.parametrize(
+    ("latest_panel_timestamp", "expected_origin"),
+    [
+        ("2026-03-29T20:00:00Z", "2026-03-29T10:00:00Z"),
+        ("2026-10-25T20:00:00Z", "2026-10-25T11:00:00Z"),
+    ],
+)
+def test_publish_origin_keeps_local_noon_across_dst(
+    latest_panel_timestamp: str,
+    expected_origin: str,
+) -> None:
+    panel = pd.DataFrame({"ds_utc": [pd.Timestamp(latest_panel_timestamp)]})
+
+    origin = resolve_forecast_origin(panel, None, None, "12:00")
+
+    assert origin == pd.Timestamp(expected_origin)
+
 
 def test_published_prediction_validation_rejects_duplicate_keys() -> None:
     predictions = normalize_published_predictions(_predictions())
@@ -130,6 +159,21 @@ def test_published_prediction_validation_rejects_duplicate_keys() -> None:
 
     with pytest.raises(ValueError, match="duplicate key rows"):
         validate_prediction_artifact_schema(duplicated)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda frame: frame.assign(y_pred=float("nan")), "missing point forecast"),
+        (lambda frame: frame.assign(q50=float("nan")), "partially populated"),
+        (lambda frame: frame.assign(q10=30.0, q50=20.0, q90=10.0), "crossed quantiles"),
+    ],
+)
+def test_published_prediction_validation_rejects_incomplete_forecasts(mutate, message) -> None:
+    predictions = normalize_published_predictions(_predictions())
+
+    with pytest.raises(ValueError, match=message):
+        validate_prediction_artifact_schema(mutate(predictions))
 
 
 def test_evaluated_prediction_validation_requires_actuals() -> None:

@@ -301,9 +301,11 @@ explicit experiments by overriding the required areas in the build command.
 Duplicate handling:
 
 1. Raw duplicates are preserved.
-2. Exact duplicate normalized rows are dropped after raw audit metadata is kept.
-3. Conflicting duplicates for the same `(source_dataset, source_time_utc, area)`
-   fail the build.
+2. Duplicate logical rows inside one immutable raw batch must agree; conflicting
+   values fail the build.
+3. Overlapping batches may contain source revisions. The latest
+   `retrieved_at_utc` row wins deterministically while `raw_batch_id` preserves
+   its provenance.
 4. Conflicting stitched rows for the same `(ds_utc, area)` fail the build.
 
 Missing values:

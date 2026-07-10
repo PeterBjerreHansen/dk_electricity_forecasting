@@ -94,6 +94,34 @@ def validate_prediction_artifact_schema(predictions: pd.DataFrame) -> None:
         raise ValueError("Published predictions contain missing model_label values")
     if frame["area"].isna().any():
         raise ValueError("Published predictions contain missing area values")
+    if frame["y_pred"].isna().any():
+        raise ValueError("Published predictions contain missing point forecast values")
+
+    quantile_columns = ["q10", "q50", "q90"]
+    present_quantiles = [column for column in quantile_columns if column in frame.columns]
+    if present_quantiles:
+        missing_quantile_columns = sorted(set(quantile_columns) - set(present_quantiles))
+        if missing_quantile_columns:
+            raise ValueError(
+                "Published predictions have an incomplete quantile schema; "
+                f"missing columns: {missing_quantile_columns}"
+            )
+        has_any_quantile = frame[quantile_columns].notna().any(axis=1)
+        has_all_quantiles = frame[quantile_columns].notna().all(axis=1)
+        partial_count = int((has_any_quantile & ~has_all_quantiles).sum())
+        if partial_count:
+            raise ValueError(
+                "Published predictions contain partially populated q10/q50/q90 rows: "
+                f"{partial_count}"
+            )
+        crossed_count = int(
+            (
+                has_all_quantiles
+                & ((frame["q10"] > frame["q50"]) | (frame["q50"] > frame["q90"]))
+            ).sum()
+        )
+        if crossed_count:
+            raise ValueError(f"Published predictions contain crossed quantiles: {crossed_count}")
 
 
 def validate_evaluated_prediction_artifact_schema(predictions: pd.DataFrame) -> None:
@@ -190,6 +218,7 @@ def _load_forecast_run_predictions(artifact_root: str | Path) -> pd.DataFrame:
             continue
         frame = normalize_published_predictions(pd.read_parquet(predictions_path))
         require_columns(frame, ["unique_id"], f"{predictions_path}")
+        validate_prediction_artifact_schema(frame)
         manifest = _read_optional_manifest(run_dir / "manifest.json")
         frame["run_id"] = frame.get("run_id", manifest.get("run_id") or run_dir.name)
         frame["run_id"] = frame["run_id"].fillna(manifest.get("run_id") or run_dir.name).astype(str)
@@ -289,10 +318,17 @@ def write_forecast_run_artifacts(
     dashboard: dict[str, Any] | None = None,
 ) -> dict[str, Path]:
     run_path = Path(run_dir)
-    run_path.mkdir(parents=True, exist_ok=True)
     predictions_out = normalize_published_predictions(predictions)
     validate_prediction_artifact_schema(predictions_out)
     validate_model_scores_schema(scores)
+    score_predictions_out = None
+    if score_predictions is not None:
+        score_predictions_out = normalize_published_predictions(score_predictions)
+        validate_evaluated_prediction_artifact_schema(score_predictions_out)
+
+    if run_path.exists():
+        raise FileExistsError(f"Immutable forecast run already exists: {run_path}")
+    run_path.mkdir(parents=True)
 
     paths = {
         "predictions": run_path / "predictions.parquet",
@@ -301,9 +337,7 @@ def write_forecast_run_artifacts(
     }
     predictions_out.to_parquet(paths["predictions"], index=False)
     scores.to_parquet(paths["model_scores"], index=False)
-    if score_predictions is not None:
-        score_predictions_out = normalize_published_predictions(score_predictions)
-        validate_evaluated_prediction_artifact_schema(score_predictions_out)
+    if score_predictions_out is not None:
         paths["score_predictions"] = run_path / "score_predictions.parquet"
         score_predictions_out.to_parquet(paths["score_predictions"], index=False)
     write_json(paths["manifest"], manifest)

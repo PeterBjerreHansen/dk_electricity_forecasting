@@ -10,6 +10,7 @@ from dkenergy_forecast.types import (
     TARGET_LEAKAGE_COLUMNS,
     add_copenhagen_calendar,
     add_horizon_column,
+    copenhagen_timestamp,
     ensure_price_availability,
     normalize_utc_column,
     parse_local_time,
@@ -61,10 +62,8 @@ def make_local_daily_origins(
         freq="D",
         tz=COPENHAGEN_TZ,
     )
-    origins = dates + pd.Timedelta(
-        hours=local_time.hour,
-        minutes=local_time.minute,
-        seconds=local_time.second,
+    origins = pd.DatetimeIndex(
+        [copenhagen_timestamp(date.date(), local_time) for date in dates]
     )
     return pd.DataFrame({"forecast_origin_utc": origins.tz_convert("UTC")})
 

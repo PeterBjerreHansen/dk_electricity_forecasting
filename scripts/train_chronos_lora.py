@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 
@@ -22,12 +21,15 @@ from dkenergy_forecast.layout import PROJECT_ROOT, runtime_layout  # noqa: E402
 from dkenergy_forecast.models.chronos_production import (  # noqa: E402
     CALENDAR_COVARIATES,
     CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION,
+    Chronos2LoRAWeatherConfig,
     DEFAULT_CHRONOS_LORA_ARTIFACT_PATH,
     DEFAULT_WEATHER_FEATURES_LONG_PATH,
+    add_weather_covariates,
+    fill_lora_covariates,
+    require_lora_weather_signal,
     selected_weather_columns,
     to_chronos_timestamp,
 )
-from dkenergy_forecast.features.weather_features import add_weather_ensemble_features  # noqa: E402
 from dkenergy_forecast.publishing import git_commit, json_safe  # noqa: E402
 from dkenergy_forecast.types import (  # noqa: E402
     DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
@@ -36,6 +38,7 @@ from dkenergy_forecast.types import (  # noqa: E402
     ensure_price_availability,
     filter_price_history_available_before,
     normalize_utc_column,
+    require_columns,
     to_utc_timestamp,
 )
 
@@ -161,24 +164,41 @@ def make_lora_training_frame(
     panel_utc = ensure_price_availability(
         normalize_utc_column(panel, "ds_utc")
     ).sort_values(["unique_id", "ds_utc"])
-    weather_covariates = weather_valid_time_covariate_frame(weather)
-    weather_columns = selected_weather_columns(weather_covariates, mode=weather_covariate_mode)
-    if not weather_columns:
-        raise ValueError("No weather covariates are available for Chronos LoRA training.")
-
-    start = max(panel_utc["ds_utc"].min(), weather_covariates["ds_utc"].min())
+    require_columns(
+        weather,
+        [
+            "area",
+            "ds_utc",
+            "feature_name",
+            "value",
+            "location_coverage_ratio",
+            "location_coverage_pass",
+            "feature_group_pass",
+            "forecast_available_at_utc",
+        ],
+        "weather table",
+    )
+    if weather.empty:
+        raise ValueError("Weather table is empty; cannot train Chronos LoRA weather covariates.")
+    weather_utc = normalize_utc_column(weather, "ds_utc")
+    start = max(panel_utc["ds_utc"].min(), weather_utc["ds_utc"].min())
     available = filter_price_history_available_before(panel_utc, first_eval_origin)
     train = available[available["ds_utc"] >= start].copy()
     if train.empty:
         raise ValueError(f"No Chronos LoRA training rows before {first_eval_origin.isoformat()}")
     assert_regular_hourly_training_series(train)
-    train = train.merge(
-        weather_covariates[["area", "ds_utc", *weather_columns]],
-        on=["area", "ds_utc"],
-        how="left",
+    train["forecast_origin_utc"] = train[PRICE_AVAILABILITY_COLUMN]
+    train = add_weather_covariates(
+        train,
+        weather_utc,
+        config=Chronos2LoRAWeatherConfig(weather_covariate_mode=weather_covariate_mode),
     )
+    weather_columns = selected_weather_columns(train, mode=weather_covariate_mode)
+    if not weather_columns:
+        raise ValueError("No availability-safe weather covariates are available for Chronos LoRA training.")
     covariates = [column for column in CALENDAR_COVARIATES if column in train.columns] + weather_columns
     covariates = list(dict.fromkeys(covariates))
+    require_lora_weather_signal(train, covariates, "Chronos LoRA training frame")
     train = fill_lora_covariates(train, covariates)
     if train["y"].isna().any():
         raise ValueError(f"Chronos LoRA training target has missing rows: {int(train['y'].isna().sum())}")
@@ -204,6 +224,8 @@ def make_lora_training_frame(
         "available_random_windows_lower_bound": int((lengths - min_required + 1).clip(lower=0).sum()),
         "covariate_count": int(len(covariates)),
         "weather_covariate_count": int(sum(column.startswith("weather_") for column in covariates)),
+        "weather_origin_policy": "price_available_at_utc for each historical target row",
+        "covariate_fill_policy": "per-series forward-fill, backward-fill, then zero-fill",
         "price_availability_policy": {
             "column": PRICE_AVAILABILITY_COLUMN,
             "publication_local_time": DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
@@ -212,50 +234,6 @@ def make_lora_training_frame(
         },
     }
     return train_df.sort_values(["item_id", "timestamp"]).reset_index(drop=True), covariates, diagnostics
-
-
-def weather_valid_time_covariate_frame(weather: pd.DataFrame) -> pd.DataFrame:
-    required = {
-        "area",
-        "ds_utc",
-        "feature_name",
-        "value",
-        "location_coverage_pass",
-        "feature_group_pass",
-    }
-    missing = required - set(weather.columns)
-    if missing:
-        raise ValueError(f"weather table is missing required columns: {sorted(missing)}")
-    filtered = normalize_utc_column(weather, "ds_utc")
-    filtered = filtered[filtered["feature_group_pass"] & filtered["location_coverage_pass"]].copy()
-    wide = (
-        filtered.pivot_table(
-            index=["area", "ds_utc"],
-            columns="feature_name",
-            values="value",
-            aggfunc="last",
-        )
-        .reset_index()
-        .sort_values(["area", "ds_utc"])
-    )
-    wide.columns.name = None
-    return add_weather_ensemble_features(wide).reset_index(drop=True)
-
-
-def fill_lora_covariates(frame: pd.DataFrame, covariates: list[str]) -> pd.DataFrame:
-    output = frame.sort_values(["unique_id", "ds_utc"]).copy()
-    missing_columns = [column for column in covariates if column not in output.columns]
-    if missing_columns:
-        output = output.assign(**{column: np.nan for column in missing_columns})
-    for column in covariates:
-        if pd.api.types.is_bool_dtype(output[column]):
-            output[column] = output[column].astype("int8")
-    filled = (
-        output.groupby("unique_id", observed=True)[covariates]
-        .transform(lambda values: values.ffill().bfill())
-        .fillna(0.0)
-    )
-    return pd.concat([output.drop(columns=covariates), filled], axis=1)
 
 
 def assert_regular_hourly_training_series(train: pd.DataFrame) -> None:
@@ -321,6 +299,13 @@ def make_manifest(
             "timezone": COPENHAGEN_TZ,
             "local_time": DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
         },
+        "weather_availability_policy": {
+            "training_origin": "price_available_at_utc for each historical target row",
+            "serving_context_origin": "price_available_at_utc for each historical context row",
+            "serving_future_origin": "forecast_origin_utc",
+            "eligibility_operator": "<= forecast_origin_utc",
+        },
+        "covariate_fill_policy": "per-series forward-fill, backward-fill, then zero-fill",
         "diagnostics": diagnostics,
         "validation_scores": scores,
         "panel_path": args.panel_path,

@@ -9,6 +9,7 @@ import pytest
 from dkenergy_forecast.backtesting.horizons import (
     make_daily_origins,
     make_danish_delivery_day_horizon,
+    make_local_daily_origins,
     make_next_utc_hours_horizon,
 )
 from dkenergy_forecast.backtesting.rolling_origin import rolling_origin_backtest
@@ -321,6 +322,38 @@ def test_next_utc_horizon_is_target_free_and_daily_origins_are_utc_bounded() -> 
     ]
     assert "y" not in horizon.columns
     assert "price_dkk_per_mwh" not in horizon.columns
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "expected_utc"),
+    [
+        (
+            "2026-03-28",
+            "2026-03-31",
+            ["2026-03-28T11:00:00+0000", "2026-03-29T10:00:00+0000", "2026-03-30T10:00:00+0000"],
+        ),
+        (
+            "2026-10-24",
+            "2026-10-27",
+            ["2026-10-24T10:00:00+0000", "2026-10-25T11:00:00+0000", "2026-10-26T11:00:00+0000"],
+        ),
+    ],
+)
+def test_local_daily_origins_keep_noon_wall_clock_across_dst(
+    start: str,
+    end: str,
+    expected_utc: list[str],
+) -> None:
+    origins = make_local_daily_origins(
+        pd.DataFrame(),
+        start=start,
+        end=end,
+        forecast_local_time="12:00",
+    )
+
+    local = origins["forecast_origin_utc"].dt.tz_convert("Europe/Copenhagen")
+    assert local.dt.hour.tolist() == [12, 12, 12]
+    assert origins["forecast_origin_utc"].dt.strftime("%Y-%m-%dT%H:%M:%S%z").tolist() == expected_utc
 
 
 def test_danish_delivery_day_horizon_preserves_dst_day_lengths() -> None:

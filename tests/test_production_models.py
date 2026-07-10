@@ -23,6 +23,8 @@ from dkenergy_forecast.models.chronos_production import (
     CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION,
     Chronos2LoRAWeatherConfig,
     Chronos2LoRAWeatherDayAhead,
+    build_lora_weather_prediction_frames,
+    load_lora_artifact_manifest,
     load_chronos_lora_pipeline,
 )
 from dkenergy_forecast.models.chronos_zero_shot import (
@@ -30,6 +32,7 @@ from dkenergy_forecast.models.chronos_zero_shot import (
     ChronosZeroShotDayAhead,
 )
 from dkenergy_forecast.types import add_copenhagen_calendar
+from scripts.train_chronos_lora import make_lora_training_frame
 
 
 def test_production_catboost_residual_adapter_returns_publishable_predictions(monkeypatch) -> None:
@@ -139,6 +142,51 @@ def test_chronos_lora_weather_adapter_emits_delivery_quantiles_and_uses_publishe
     assert pipeline.future_df["timestamp"].max() == future["ds_utc"].max().tz_localize(None)
 
 
+def test_chronos_training_and_serving_share_point_in_time_weather_covariates() -> None:
+    panel = _panel(periods=24 * 12)
+    origin = pd.Timestamp("2024-01-08T11:00:00Z")
+    future = make_danish_delivery_day_horizon(panel, origin)
+    weather = _weather_vintages(panel)
+    covariates = [
+        *CALENDAR_COVARIATES,
+        "weather_gfs_global_lead1d_temperature_2m",
+        "weather_gfs_global_lead2d_temperature_2m",
+    ]
+    config = Chronos2LoRAWeatherConfig(
+        context_length=24,
+        weather_covariate_mode="raw",
+    )
+
+    training, training_covariates, _diagnostics = make_lora_training_frame(
+        panel,
+        weather,
+        first_eval_origin=origin,
+        context_length=24,
+        prediction_length=24,
+        weather_covariate_mode="raw",
+    )
+    serving = build_lora_weather_prediction_frames(
+        panel,
+        future,
+        weather=weather,
+        covariates=covariates,
+        config=config,
+    )
+
+    feature = "weather_gfs_global_lead1d_temperature_2m"
+    target = pd.Timestamp("2024-01-08T20:00:00")
+    training_value = training.loc[training["timestamp"].eq(target), feature].iloc[0]
+    serving_value = serving.context_df.loc[serving.context_df["timestamp"].eq(target), feature].iloc[0]
+    raw_value = weather.loc[
+        weather["ds_utc"].eq(target.tz_localize("UTC")) & weather["feature_name"].eq(feature),
+        "value",
+    ].iloc[0]
+
+    assert set(training_covariates) == set(covariates)
+    assert training_value == serving_value
+    assert training_value != raw_value
+
+
 def test_chronos_lora_loader_uses_chronos2_pipeline_for_adapter_artifact(tmp_path, monkeypatch) -> None:
     artifact_path = _chronos_artifact(tmp_path, covariates=[*CALENDAR_COVARIATES])
     calls = []
@@ -173,6 +221,18 @@ def test_chronos_lora_loader_uses_chronos2_pipeline_for_adapter_artifact(tmp_pat
 
     assert pipeline == "loaded-lora"
     assert calls == [((str(artifact_path),), {"device_map": "cpu", "torch_dtype": "auto"})]
+
+
+def test_chronos_lora_loader_rejects_stale_feature_contract(tmp_path) -> None:
+    artifact_path = tmp_path / "stale_chronos_artifact"
+    artifact_path.mkdir()
+    (artifact_path / "manifest.json").write_text(
+        json.dumps({"artifact_schema_version": 1, "covariates": [*CALENDAR_COVARIATES]}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="expected 2"):
+        load_lora_artifact_manifest(artifact_path)
 
 
 @pytest.mark.parametrize(
@@ -370,6 +430,25 @@ def _panel(*, periods: int, start: str = "2024-01-01T00:00:00Z") -> pd.DataFrame
     return add_copenhagen_calendar(frame)
 
 
+def _weather_vintages(panel: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for row in panel[["area", "ds_utc"]].itertuples(index=False):
+        for lead_days in (1, 2):
+            rows.append(
+                {
+                    "area": row.area,
+                    "ds_utc": row.ds_utc,
+                    "feature_name": f"weather_gfs_global_lead{lead_days}d_temperature_2m",
+                    "value": float(lead_days * 10_000 + row.ds_utc.day * 100 + row.ds_utc.hour),
+                    "location_coverage_ratio": 1.0,
+                    "location_coverage_pass": True,
+                    "feature_group_pass": True,
+                    "forecast_available_at_utc": row.ds_utc - pd.Timedelta(days=lead_days),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def _chronos_artifact(tmp_path, *, covariates: list[str]) -> Path:
     artifact_path = tmp_path / "chronos_artifact"
     artifact_path.mkdir()
@@ -404,6 +483,7 @@ def _weather_path(
     rows = []
     for timestamp in timestamps:
         for feature_name in feature_names:
+            lead_days = 2 if "_lead2d_" in feature_name else 1
             rows.append(
                 {
                     "area": "DK1",
@@ -415,7 +495,7 @@ def _weather_path(
                     "feature_group_pass": True,
                     "forecast_available_at_utc": origin + pd.Timedelta(hours=1)
                     if feature_name in unavailable
-                    else origin - pd.Timedelta(hours=1),
+                    else timestamp - pd.Timedelta(days=lead_days),
                 }
             )
     path = tmp_path / "weather.parquet"

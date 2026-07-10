@@ -511,8 +511,8 @@ def _add_seasonal_features(
             )
         )
 
-    output["seasonal_median_local_hour"] = hour_values
-    output["seasonal_median_hour_weekend"] = hour_weekend_values
+    output["seasonal_median_local_hour"] = pd.Series(hour_values, dtype="float64")
+    output["seasonal_median_hour_weekend"] = pd.Series(hour_weekend_values, dtype="float64")
     return output
 
 
@@ -528,10 +528,9 @@ def _add_weighted_median_baseline_feature(
     require_columns(features, ["unique_id", "local_hour", "is_weekend"], "features")
     require_columns(history, ["unique_id", "local_hour", "is_weekend"], "history")
     output = features.copy()
-    output[config.weighted_median_baseline_column] = _weighted_median_baseline_predictions(
-        output,
-        history,
-        config,
+    output[config.weighted_median_baseline_column] = pd.Series(
+        _weighted_median_baseline_predictions(output, history, config),
+        dtype="float64",
     )
     return output
 

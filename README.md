@@ -121,6 +121,11 @@ when you want to retrain:
 python scripts/train_chronos_lora.py
 ```
 
+Chronos LoRA artifact schema v2 uses the same point-in-time weather selection
+and covariate fill policy in training and serving. Artifacts exported with the
+older schema are rejected and must be retrained rather than silently served
+with different feature semantics.
+
 `rolling_median_hour_weekend_56d`, `rolling_median_local_hour_28d`,
 `catboost_price_manual_v1`, and `chronos_zero_shot_v1` live in the comparison
 registry for notebooks and smoke diagnostics. They are intentionally not
@@ -274,9 +279,9 @@ fetching all historical data on every run. Override `EDS_START` or
 
 ## AWS MVP
 
-The `production` branch deploys a small AWS MVP from `infra/aws/`: separate web
-and pipeline images, private S3 artifacts, ECR, ECS/Fargate, EventBridge
-Scheduler, ALB, CloudFront HTTPS, and CloudWatch logs.
+The manual `Production Deploy` GitHub Actions workflow deploys a small AWS MVP
+from `infra/aws/`: separate web and pipeline images, private S3 artifacts, ECR,
+ECS/Fargate, EventBridge Scheduler, ALB, CloudFront HTTPS, and CloudWatch logs.
 
 Set the backend/deploy values, build the stack, and upload the one-time Chronos
 LoRA artifact before enabling scheduled runs:
@@ -303,6 +308,7 @@ python scripts/run_cloud_pipeline.py --artifact-store-uri file:///tmp/dkenergy-s
 
 GitHub Actions runs `python -m ruff check .` and `python -m pytest` on Python
 3.10, 3.11, and 3.12. The workflow lives in `.github/workflows/ci.yml`.
-Pushes to `production` also run `.github/workflows/production.yml`, which
-tests, builds/pushes the images, and applies Terraform using the
-`AWS_DEPLOY_ROLE_ARN` and `TF_STATE_BUCKET` repository secrets.
+Deployments are deliberately separate: start `.github/workflows/production.yml`
+manually after configuring the `production` GitHub environment and the
+`AWS_DEPLOY_ROLE_ARN` and `TF_STATE_BUCKET` repository secrets. The deployment
+reruns the tests before building/pushing images and applying Terraform.
