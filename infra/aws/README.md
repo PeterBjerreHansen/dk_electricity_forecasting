@@ -67,10 +67,17 @@ set it to `true` after the model artifact has been uploaded.
 ## Runtime Notes
 
 The scheduled task runs `scripts/run_cloud_pipeline.py` with `WITH_WEATHER=1`.
-It downloads the recent production inference state from S3, refreshes data,
-publishes immutable forecast runs, and updates `latest/forecast_dashboard.json`
-last. Historical raw data remains in S3; the container runtime only hydrates the
-small slice it needs for inference and recent scoring.
+The default schedule is 10:00 `Europe/Copenhagen`, leaving two hours before the
+repository's noon decision cutoff. It downloads the production inference state
+from S3, refreshes data, runs the live path with `--skip-backtest`, publishes a
+transactional immutable forecast run, and updates
+`latest/forecast_dashboard.json` last. Historical raw data remains in S3; the
+container runtime only hydrates the slice it needs for inference.
+
+Recent diagnostics and published-history scoring are separate jobs. Schedule
+`scripts/run_recent_diagnostics.py` and `scripts/score_published_forecasts.py`
+independently when those operational views should refresh; their failure must
+not delay or replace a valid live publication.
 
 The dashboard reads latest S3 artifacts plus published forecast performance
 history. Notebook/backtest artifact folders are disabled in ECS via

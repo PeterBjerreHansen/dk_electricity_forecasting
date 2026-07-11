@@ -78,6 +78,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-backtest", action="store_true")
     parser.add_argument("--skip-publish", action="store_true")
     parser.add_argument(
+        "--with-diagnostics",
+        action="store_true",
+        default=_env_bool("WITH_DIAGNOSTICS", False),
+        help="Run recent model diagnostics after live publication. Disabled by default.",
+    )
+    parser.add_argument(
         "--strict-panel",
         action="store_true",
         help="Require final_historical QA status instead of allowing incomplete live refreshes.",
@@ -205,12 +211,6 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
             str(args.forecast_local_time),
             "--min-train-days",
             str(args.min_train_days),
-            "--score-days",
-            str(args.score_days),
-            "--score-max-origins",
-            str(args.score_max_origins),
-            "--score-holdout-days",
-            str(args.score_holdout_days),
         ]
         if args.at_hour_utc is not None:
             publish.extend(["--at-hour-utc", str(args.at_hour_utc)])
@@ -221,6 +221,39 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
         if not args.strict_panel:
             publish.append("--allow-incomplete-panel")
         commands.append(publish)
+
+    if args.with_diagnostics:
+        diagnostics = [
+            python,
+            str(PROJECT_ROOT / "scripts" / "run_recent_diagnostics.py"),
+            "--panel-path",
+            str(paths.price_panel),
+            "--qa-path",
+            str(paths.price_panel_qa),
+            "--output-dir",
+            str(paths.recent_scores),
+            "--forecast-local-time",
+            str(args.forecast_local_time),
+            "--min-train-days",
+            str(args.min_train_days),
+            "--score-days",
+            str(args.score_days),
+            "--score-max-origins",
+            str(args.score_max_origins),
+            "--score-holdout-days",
+            str(args.score_holdout_days),
+            "--weather-features-long-path",
+            weather_features_long_path,
+            "--chronos-model-artifact-path",
+            chronos_model_artifact_path,
+        ]
+        if args.at_hour_utc is not None:
+            diagnostics.extend(["--at-hour-utc", str(args.at_hour_utc)])
+        if args.models:
+            diagnostics.extend(["--models", *args.models])
+        if not args.strict_panel:
+            diagnostics.append("--allow-incomplete-panel")
+        commands.append(diagnostics)
 
     return commands
 

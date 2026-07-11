@@ -12,13 +12,16 @@ import pandas as pd
 from dkenergy_forecast.types import (
     DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
     PRICE_AVAILABILITY_COLUMN,
+    TARGET_CONTRACT_COLUMNS,
+    TARGET_REGIME_BOUNDARY_LOCAL,
+    add_target_contract,
     add_price_availability,
 )
 
 
 COPENHAGEN_TZ = "Europe/Copenhagen"
 DATASET_VERSION = "v1"
-STITCH_BOUNDARY_LOCAL = pd.Timestamp("2025-10-01T00:00:00", tz=COPENHAGEN_TZ)
+STITCH_BOUNDARY_LOCAL = TARGET_REGIME_BOUNDARY_LOCAL
 STITCH_BOUNDARY_DATE = date(2025, 10, 1)
 ALLOWED_AREAS = ("DK1", "DK2")
 
@@ -107,6 +110,7 @@ PANEL_COLUMNS = [
     "utc_offset_hours",
     "area",
     "y",
+    *TARGET_CONTRACT_COLUMNS,
     "price_dkk_per_mwh",
     "price_eur_per_mwh",
     "source_dataset",
@@ -472,6 +476,16 @@ def make_qa_report(
             "delivery_day_offset_days": -1,
             "eligibility_operator": "< forecast_origin_utc",
         },
+        "target_contract": {
+            "columns": TARGET_CONTRACT_COLUMNS,
+            "target_definitions": sorted(panel["target_definition"].dropna().unique().tolist()),
+            "market_regimes": sorted(panel["market_regime"].dropna().unique().tolist()),
+            "native_resolution_minutes": sorted(
+                int(value) for value in panel["native_resolution_minutes"].dropna().unique()
+            ),
+            "target_aggregations": sorted(panel["target_aggregation"].dropna().unique().tolist()),
+            "regime_boundary_local": STITCH_BOUNDARY_LOCAL.isoformat(),
+        },
         "row_count": int(len(panel)),
         "min_ds_utc": panel["ds_utc"].min().isoformat(),
         "max_ds_utc": panel["ds_utc"].max().isoformat(),
@@ -711,6 +725,19 @@ def _add_model_ready_columns(panel: pd.DataFrame, *, dataset_version: str) -> pd
     )
     output["y"] = output["price_dkk_per_mwh"]
     output["dataset_version"] = dataset_version
+    output = add_target_contract(output)
+    resolution_mismatch = output["native_resolution_minutes"].ne(
+        output["source_resolution_minutes"]
+    )
+    if bool(resolution_mismatch.any()):
+        sample = output.loc[
+            resolution_mismatch,
+            ["area", "ds_utc", "source_dataset", "source_resolution_minutes", "native_resolution_minutes"],
+        ].head(5)
+        raise ValueError(
+            "Price target contract disagrees with native source resolution:\n"
+            + sample.to_string(index=False)
+        )
     output = add_price_availability(output)
     return output.sort_values(["area", "ds_utc"]).reset_index(drop=True)
 

@@ -26,6 +26,8 @@ BASE_VARIABLES = (
 )
 LEAD_TIME_DAYS = (1, 2)
 COVERAGE_THRESHOLD = 0.95
+FORECAST_REFERENCE_TIME_TYPE = "synthetic_valid_time_minus_lead"
+FORECAST_AVAILABILITY_TIME_TYPE = "synthetic_reference_time_proxy"
 
 
 @dataclass(frozen=True)
@@ -84,6 +86,10 @@ NORMALIZED_COLUMNS = [
     "valid_time",
     "forecast_available_at_utc",
     "forecast_reference_time",
+    "forecast_reference_time_type",
+    "forecast_reference_time_is_observed",
+    "forecast_availability_time_type",
+    "weather_vintage_id",
     "parameter_id",
     "variable",
     "value",
@@ -114,6 +120,10 @@ AREA_FEATURE_LONG_COLUMNS = [
     "feature_group_pass",
     "forecast_available_at_utc",
     "forecast_reference_time",
+    "forecast_reference_time_type",
+    "forecast_reference_time_is_observed",
+    "forecast_availability_time_type",
+    "weather_vintage_id",
     "dataset_version",
 ]
 
@@ -215,6 +225,8 @@ def normalize_batch(
             if len(values) != len(valid_time):
                 raise ValueError(f"Open-Meteo hourly field has wrong length: {raw_key}")
 
+            reference_time = valid_time - pd.Timedelta(days=int(lead_day))
+
             frame = pd.DataFrame(
                 {
                     "source_provider": SOURCE_PROVIDER,
@@ -230,8 +242,18 @@ def normalize_batch(
                     "longitude": location.longitude,
                     "valid_time_utc": valid_time.to_numpy(),
                     "valid_time": valid_time.to_numpy(),
-                    "forecast_available_at_utc": valid_time - pd.Timedelta(days=int(lead_day)),
-                    "forecast_reference_time": valid_time - pd.Timedelta(days=int(lead_day)),
+                    # Open-Meteo's previous-runs endpoint does not expose an observed
+                    # model initialization/publication timestamp. The reference time
+                    # and availability cutoff are therefore explicit synthetic proxies.
+                    "forecast_available_at_utc": reference_time,
+                    "forecast_reference_time": reference_time,
+                    "forecast_reference_time_type": FORECAST_REFERENCE_TIME_TYPE,
+                    "forecast_reference_time_is_observed": False,
+                    "forecast_availability_time_type": FORECAST_AVAILABILITY_TIME_TYPE,
+                    "weather_vintage_id": [
+                        _synthetic_vintage_id(batch.weather_model, timestamp)
+                        for timestamp in reference_time
+                    ],
                     "parameter_id": variable,
                     "variable": variable,
                     "value": pd.to_numeric(pd.Series(values, dtype="object"), errors="coerce"),
@@ -314,6 +336,26 @@ def build_area_feature_long(
     frame["valid_time_utc"] = pd.to_datetime(frame["valid_time_utc"], utc=True)
     frame["forecast_available_at_utc"] = pd.to_datetime(frame["forecast_available_at_utc"], utc=True)
     frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
+    provenance_group_columns = [
+        "area",
+        "valid_time_utc",
+        "weather_model",
+        "lead_time_days",
+        "parameter_id",
+    ]
+    for column in [
+        "forecast_reference_time",
+        "forecast_reference_time_type",
+        "forecast_reference_time_is_observed",
+        "forecast_availability_time_type",
+        "weather_vintage_id",
+    ]:
+        conflicts = frame.groupby(provenance_group_columns, dropna=False)[column].nunique(dropna=False)
+        if bool(conflicts.gt(1).any()):
+            raise ValueError(
+                "Open-Meteo area aggregation would mix weather vintages: "
+                f"column={column!r}"
+            )
     expected_hours = (
         frame.groupby(
             [
@@ -344,6 +386,11 @@ def build_area_feature_long(
             unit=("unit", "first"),
             location_count=("location_id", "nunique"),
             forecast_available_at_utc=("forecast_available_at_utc", "max"),
+            forecast_reference_time=("forecast_reference_time", "first"),
+            forecast_reference_time_type=("forecast_reference_time_type", "first"),
+            forecast_reference_time_is_observed=("forecast_reference_time_is_observed", "first"),
+            forecast_availability_time_type=("forecast_availability_time_type", "first"),
+            weather_vintage_id=("weather_vintage_id", "first"),
         )
         .rename(columns={"valid_time_utc": "ds_utc"})
     )
@@ -380,7 +427,6 @@ def build_area_feature_long(
     grouped["model"] = grouped["weather_model"]
     grouped["lead_time_hours"] = grouped["lead_time_days"].astype("int16") * 24
     grouped["variable"] = grouped["parameter_id"]
-    grouped["forecast_reference_time"] = grouped["forecast_available_at_utc"]
     grouped["dataset_version"] = dataset_version
     return grouped[AREA_FEATURE_LONG_COLUMNS].sort_values(
         ["area", "ds_utc", "weather_model", "lead_time_days", "parameter_id"]
@@ -423,8 +469,23 @@ def build_area_feature_wide(area_features_long: pd.DataFrame) -> pd.DataFrame:
         values="forecast_available_at_utc",
         aggfunc="last",
     ).rename(columns=lambda column: f"{column}_available_at_utc")
+    reference_time = frame.pivot_table(
+        index=["area", "ds_utc"],
+        columns="feature_name",
+        values="forecast_reference_time",
+        aggfunc="last",
+    ).rename(columns=lambda column: f"{column}_reference_time_utc")
+    vintage = frame.pivot_table(
+        index=["area", "ds_utc"],
+        columns="feature_name",
+        values="weather_vintage_id",
+        aggfunc="last",
+    ).rename(columns=lambda column: f"{column}_vintage_id")
 
-    wide = pd.concat([values, coverage, passes, location_passes, availability], axis=1).reset_index()
+    wide = pd.concat(
+        [values, coverage, passes, location_passes, availability, reference_time, vintage],
+        axis=1,
+    ).reset_index()
     wide.columns.name = None
     return wide.sort_values(["area", "ds_utc"]).reset_index(drop=True)
 
@@ -501,6 +562,18 @@ def make_qa_report(
         "normalized_row_count": int(len(normalized)),
         "area_feature_row_count": int(len(area_features_long)),
         "coverage_threshold": float(coverage_threshold),
+        "weather_vintage_policy": {
+            "vintage_id_column": "weather_vintage_id",
+            "reference_time_column": "forecast_reference_time",
+            "reference_time_type": FORECAST_REFERENCE_TIME_TYPE,
+            "reference_time_is_observed": False,
+            "availability_time_column": "forecast_available_at_utc",
+            "availability_time_type": FORECAST_AVAILABILITY_TIME_TYPE,
+            "limitation": (
+                "Open-Meteo previous-runs data does not expose observed model initialization "
+                "or publication timestamps; valid_time minus requested lead is used as a proxy."
+            ),
+        },
         "areas": sorted(area_features_long["area"].dropna().unique().tolist()) if not area_features_long.empty else [],
         "weather_models": sorted(normalized["weather_model"].dropna().unique().tolist()) if not normalized.empty else [],
         "lead_time_days": sorted([int(value) for value in normalized["lead_time_days"].dropna().unique().tolist()]) if not normalized.empty else [],
@@ -547,6 +620,16 @@ def make_qa_report(
 
 def weather_feature_name(weather_model: str, lead_time_days: int, parameter_id: str) -> str:
     return f"weather_{_slug(weather_model)}_lead{lead_time_days}d_{_slug(parameter_id)}"
+
+
+def _synthetic_vintage_id(weather_model: str, reference_time: pd.Timestamp) -> str:
+    timestamp = pd.Timestamp(reference_time)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.tz_localize("UTC")
+    else:
+        timestamp = timestamp.tz_convert("UTC")
+    compact = timestamp.strftime("%Y%m%dT%H%M%SZ")
+    return f"{SOURCE_PROVIDER}:{SOURCE_PRODUCT}:{weather_model}:synthetic:{compact}"
 
 
 def _read_manifest_entries(raw_root: Path) -> list[dict[str, Any]]:

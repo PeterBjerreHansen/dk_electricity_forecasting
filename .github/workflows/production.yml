@@ -79,6 +79,21 @@ jobs:
           echo "web_image_uri=$WEB_IMAGE_URI" >> "$GITHUB_OUTPUT"
           echo "pipeline_image_uri=$PIPELINE_IMAGE_URI" >> "$GITHUB_OUTPUT"
 
+      - name: Validate deployed Chronos artifact contract
+        if: env.ENABLE_PIPELINE_SCHEDULE == 'true'
+        env:
+          PIPELINE_IMAGE_URI: ${{ steps.images.outputs.pipeline_image_uri }}
+        run: |
+          MODEL_ARTIFACT_URI="$(terraform -chdir=infra/aws output -raw model_artifact_uri)"
+          rm -rf /tmp/dkenergy-production-model
+          mkdir -p /tmp/dkenergy-production-model
+          aws s3 sync "$MODEL_ARTIFACT_URI/" /tmp/dkenergy-production-model/
+          docker run --rm \
+            --entrypoint python \
+            -v /tmp/dkenergy-production-model:/model:ro \
+            "$PIPELINE_IMAGE_URI" \
+            -c "from dkenergy_forecast.models.chronos_production import load_lora_artifact_manifest; load_lora_artifact_manifest('/model'); print('production model artifact: valid')"
+
       - name: Terraform apply
         run: |
           terraform -chdir=infra/aws apply -auto-approve \

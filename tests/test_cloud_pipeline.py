@@ -37,6 +37,8 @@ def test_cloud_pipeline_syncs_state_runs_daily_and_uploads_latest_last(tmp_path)
             == str(workdir / "artifacts" / "models" / "chronos2_lora_calendar_weather_ctx1024_v1")
         )
         assert "--with-weather" in command
+        assert "--skip-backtest" in command
+        assert "--with-diagnostics" not in command
         _write_pipeline_outputs(workdir)
         return subprocess.CompletedProcess(command, 0)
 

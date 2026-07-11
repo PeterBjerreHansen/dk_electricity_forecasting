@@ -71,11 +71,10 @@ def run_cloud_pipeline(
     command = [
         config.python,
         str(PROJECT_ROOT / "scripts" / "run_daily_pipeline.py"),
+        "--skip-backtest",
     ]
     if config.with_weather:
         command.append("--with-weather")
-    if config.score_max_origins is not None:
-        command.extend(["--score-max-origins", str(config.score_max_origins)])
     if dry_run:
         command.append("--dry-run")
 

@@ -55,8 +55,25 @@ def parse_args() -> argparse.Namespace:
         "--forecast-origin-utc",
         help=(
             "Forecast origin timestamp. Defaults to local market noon on the latest "
-            "panel delivery date, or the legacy --at-hour-utc when supplied."
+            "panel delivery date, or the legacy --at-hour-utc when supplied. Supplying "
+            "an origin defaults the run to replay mode."
         ),
+    )
+    parser.add_argument(
+        "--run-kind",
+        choices=["live", "shadow", "replay"],
+        help=(
+            "Run provenance. Defaults to live unless --forecast-origin-utc is supplied, "
+            "in which case it defaults to replay. Only timely live runs update latest."
+        ),
+    )
+    parser.add_argument(
+        "--decision-cutoff-utc",
+        help="Explicit live decision deadline. Defaults to the forecast origin.",
+    )
+    parser.add_argument(
+        "--generated-at-utc",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--at-hour-utc",
@@ -69,19 +86,19 @@ def parse_args() -> argparse.Namespace:
         "--score-days",
         type=int,
         default=14,
-        help="Lookback window for recent completed-origin scoring.",
+        help="Deprecated compatibility option; diagnostics now run separately.",
     )
     parser.add_argument(
         "--score-max-origins",
         type=int,
         default=7,
-        help="Maximum recent completed origins used for model scores.",
+        help="Deprecated compatibility option; diagnostics now run separately.",
     )
     parser.add_argument(
         "--score-holdout-days",
         type=int,
         default=2,
-        help="Holdout days between latest panel timestamp and scoring origins.",
+        help="Deprecated compatibility option; diagnostics now run separately.",
     )
     parser.add_argument(
         "--models",

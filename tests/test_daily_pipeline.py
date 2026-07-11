@@ -124,3 +124,28 @@ def test_daily_pipeline_defaults_to_local_forecast_time(monkeypatch) -> None:
 
     assert "--forecast-local-time 12:00" in result.stdout
     assert "--at-hour-utc" not in result.stdout
+
+
+def test_daily_pipeline_runs_recent_diagnostics_only_when_explicit() -> None:
+    default = subprocess.run(
+        [sys.executable, "scripts/run_daily_pipeline.py", "--dry-run"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    requested = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_daily_pipeline.py",
+            "--dry-run",
+            "--with-diagnostics",
+        ],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "run_recent_diagnostics.py" not in default.stdout
+    assert "run_recent_diagnostics.py" in requested.stdout

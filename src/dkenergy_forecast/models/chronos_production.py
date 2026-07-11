@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -17,7 +18,9 @@ from dkenergy_forecast.features.weather_features import (
 from dkenergy_forecast.layout import runtime_layout
 from dkenergy_forecast.types import (
     PRICE_AVAILABILITY_COLUMN,
+    TARGET_CONTRACT_COLUMNS,
     add_copenhagen_calendar,
+    add_target_contract,
     ensure_price_availability,
     filter_price_history_available_before,
     normalize_utc_column,
@@ -30,6 +33,9 @@ DEFAULT_RUNTIME_LAYOUT = runtime_layout()
 DEFAULT_CHRONOS_LORA_ARTIFACT_PATH = DEFAULT_RUNTIME_LAYOUT.chronos_model_artifact
 DEFAULT_WEATHER_FEATURES_LONG_PATH = DEFAULT_RUNTIME_LAYOUT.weather_features_long
 CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION = 2
+WEATHER_HORIZON_COVERAGE_UNIT = "required_weather_covariate_cells"
+CONTEXT_WEATHER_FILL_POLICY = "per_series_forward_fill_then_zero"
+FUTURE_WEATHER_FILL_POLICY = "no_temporal_fill_then_zero"
 
 CALENDAR_COVARIATES = [
     "local_hour",
@@ -56,6 +62,8 @@ class Chronos2LoRAWeatherConfig:
     cross_learning: bool = False
     add_weather_ensemble_features: bool = True
     add_weather_derived_features: bool = False
+    weather_horizon_min_coverage: float = 1.0
+    weather_future_fallback_policy: Literal["error", "zero"] = "error"
 
 
 PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG = Chronos2LoRAWeatherConfig()
@@ -68,6 +76,7 @@ class Chronos2ProductionFrames:
     horizon_metadata: pd.DataFrame
     prediction_length: int
     covariates: list[str]
+    weather_coverage_by_series: dict[str, float]
 
 
 @dataclass
@@ -86,6 +95,10 @@ class Chronos2LoRAWeatherDayAhead:
             raise ValueError("prediction_length must be positive")
         if self.config.batch_size <= 0:
             raise ValueError("batch_size must be positive")
+        if not 0 < self.config.weather_horizon_min_coverage <= 1:
+            raise ValueError("weather_horizon_min_coverage must be in (0, 1]")
+        if self.config.weather_future_fallback_policy not in {"error", "zero"}:
+            raise ValueError("weather_future_fallback_policy must be 'error' or 'zero'")
         if tuple(self.config.quantile_levels) != (0.10, 0.50, 0.90):
             raise ValueError("Chronos2LoRAWeatherDayAhead currently expects q10/q50/q90 quantiles")
         self._history: pd.DataFrame | None = None
@@ -122,20 +135,20 @@ class Chronos2LoRAWeatherDayAhead:
             raise ValueError(f"Chronos LoRA predictions are missing delivery rows: missing={missing}")
         scored["model_name"] = self.model_name
         scored["model_version"] = self.model_version
-        return scored[
-            [
-                "unique_id",
-                "ds_utc",
-                "forecast_origin_utc",
-                "horizon",
-                "model_name",
-                "model_version",
-                "q10",
-                "q50",
-                "q90",
-                "y_pred",
-            ]
-        ].sort_values(["unique_id", "ds_utc"]).reset_index(drop=True)
+        output_columns = [
+            "unique_id",
+            "ds_utc",
+            "forecast_origin_utc",
+            "horizon",
+            *[column for column in TARGET_CONTRACT_COLUMNS if column in scored.columns],
+            "model_name",
+            "model_version",
+            "q10",
+            "q50",
+            "q90",
+            "y_pred",
+        ]
+        return scored[output_columns].sort_values(["unique_id", "ds_utc"]).reset_index(drop=True)
 
     def artifact_manifest(self) -> dict[str, Any]:
         if self._artifact_manifest is None:
@@ -144,6 +157,7 @@ class Chronos2LoRAWeatherDayAhead:
 
     def artifact_covariates(self) -> list[str]:
         manifest = self.artifact_manifest()
+        validate_artifact_weather_policy(manifest, self.config)
         covariates = manifest.get("covariates")
         if not isinstance(covariates, list) or not covariates or not all(isinstance(item, str) for item in covariates):
             raise ValueError("Chronos LoRA artifact manifest must contain a non-empty string list `covariates`")
@@ -228,10 +242,15 @@ def build_lora_weather_prediction_frames(
     _require_covariate_columns(context_full, covariates, "Chronos context frame")
     _require_covariate_columns(full_future, covariates, "Chronos future frame")
     require_lora_weather_signal(context_full, covariates, "Chronos context frame")
-    require_lora_weather_signal(full_future, covariates, "Chronos future frame")
+    weather_coverage = validate_weather_horizon_coverage(
+        full_future,
+        covariates,
+        min_coverage=config.weather_horizon_min_coverage,
+        fallback_policy=config.weather_future_fallback_policy,
+    )
 
-    context_full = fill_lora_covariates(context_full, covariates)
-    full_future = fill_lora_covariates(full_future, covariates)
+    context_full = fill_lora_covariates(context_full, covariates, role="context")
+    full_future = fill_lora_covariates(full_future, covariates, role="future")
     context_full["item_id"] = context_full["unique_id"]
     context_full["timestamp"] = to_chronos_timestamp(context_full["ds_utc"])
     full_future["item_id"] = full_future["unique_id"]
@@ -239,13 +258,21 @@ def build_lora_weather_prediction_frames(
 
     context_df = context_full[["item_id", "timestamp", "y", *covariates]].rename(columns={"y": "target"})
     future_df = full_future[["item_id", "timestamp", *covariates]]
-    horizon_metadata = future_frame[["unique_id", "ds_utc", "forecast_origin_utc", "horizon"]].copy()
+    horizon_metadata_columns = [
+        "unique_id",
+        "ds_utc",
+        "forecast_origin_utc",
+        "horizon",
+        *[column for column in TARGET_CONTRACT_COLUMNS if column in future_frame.columns],
+    ]
+    horizon_metadata = future_frame[horizon_metadata_columns].copy()
     return Chronos2ProductionFrames(
         context_df=context_df.sort_values(["item_id", "timestamp"]).reset_index(drop=True),
         future_df=future_df.sort_values(["item_id", "timestamp"]).reset_index(drop=True),
         horizon_metadata=horizon_metadata.sort_values(["unique_id", "ds_utc"]).reset_index(drop=True),
         prediction_length=len(prediction_timestamps),
         covariates=list(covariates),
+        weather_coverage_by_series=weather_coverage,
     )
 
 
@@ -261,7 +288,63 @@ def load_lora_artifact_manifest(model_artifact_path: str | Path) -> dict[str, An
             "Unsupported Chronos LoRA artifact schema version: "
             f"{schema_version!r}; expected {CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION}"
         )
+    _validate_artifact_file_hashes(artifact_path, manifest)
     return manifest
+
+
+def _validate_artifact_file_hashes(
+    artifact_path: Path,
+    manifest: dict[str, Any],
+) -> None:
+    expected = manifest.get("artifact_files_sha256")
+    if expected is None:
+        return
+    if not isinstance(expected, dict) or not expected:
+        raise ValueError("Chronos artifact_files_sha256 must be a non-empty object")
+    for relative_path, expected_hash in expected.items():
+        path = artifact_path / str(relative_path)
+        if not path.is_file():
+            raise ValueError(f"Chronos artifact file is missing: {path}")
+        actual_hash = _file_sha256(path)
+        if actual_hash != expected_hash:
+            raise ValueError(
+                f"Chronos artifact checksum mismatch for {path}: "
+                f"expected {expected_hash}, got {actual_hash}"
+            )
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def validate_artifact_weather_policy(
+    manifest: dict[str, Any],
+    config: Chronos2LoRAWeatherConfig,
+) -> None:
+    policy = manifest.get("weather_horizon_coverage_policy")
+    if not isinstance(policy, dict):
+        raise ValueError(
+            "Chronos LoRA artifact manifest must contain `weather_horizon_coverage_policy`"
+        )
+    expected = {
+        "unit": WEATHER_HORIZON_COVERAGE_UNIT,
+        "minimum": float(config.weather_horizon_min_coverage),
+        "insufficient_coverage_fallback": config.weather_future_fallback_policy,
+    }
+    observed = {
+        "unit": policy.get("unit"),
+        "minimum": policy.get("minimum"),
+        "insufficient_coverage_fallback": policy.get("insufficient_coverage_fallback"),
+    }
+    if observed != expected:
+        raise ValueError(
+            "Chronos runtime weather coverage policy does not match the trained artifact: "
+            f"runtime={expected}, artifact={observed}"
+        )
 
 
 def load_weather_features(path: str | Path) -> pd.DataFrame:
@@ -283,7 +366,21 @@ def weather_artifact_summary(path: str | Path) -> dict[str, Any]:
         "weather_features_long_path": str(weather_path),
         "weather_features_exists": True,
         "weather_feature_rows": int(len(weather)),
+        "weather_features_sha256": _file_sha256(weather_path),
     }
+    if "dataset_version" in weather.columns:
+        summary["weather_dataset_versions"] = sorted(
+            weather["dataset_version"].dropna().astype(str).unique().tolist()
+        )
+    for column in (
+        "forecast_reference_time_type",
+        "forecast_reference_time_is_observed",
+        "forecast_availability_time_type",
+    ):
+        if column in weather.columns:
+            summary[column] = sorted(
+                str(value) for value in weather[column].dropna().unique().tolist()
+            )
     if "ds_utc" in weather.columns:
         summary["weather_max_ds_utc"] = pd.to_datetime(weather["ds_utc"], utc=True).max()
     if "forecast_available_at_utc" in weather.columns:
@@ -371,8 +468,16 @@ def selected_weather_columns(frame: pd.DataFrame, mode: str) -> list[str]:
     raise ValueError(f"Unknown weather covariate mode: {mode!r}")
 
 
-def fill_lora_covariates(frame: pd.DataFrame, covariates: list[str]) -> pd.DataFrame:
-    """Apply the shared train/serve covariate fill policy per time series."""
+def fill_lora_covariates(
+    frame: pd.DataFrame,
+    covariates: list[str],
+    *,
+    role: Literal["training", "context", "future"] = "training",
+) -> pd.DataFrame:
+    """Fill covariates without borrowing values from later valid times."""
+
+    if role not in {"training", "context", "future"}:
+        raise ValueError(f"Unknown covariate frame role: {role!r}")
 
     output = frame.sort_values(["unique_id", "ds_utc"]).copy()
     missing_columns = [column for column in covariates if column not in output.columns]
@@ -381,12 +486,42 @@ def fill_lora_covariates(frame: pd.DataFrame, covariates: list[str]) -> pd.DataF
     for column in covariates:
         if pd.api.types.is_bool_dtype(output[column]):
             output[column] = output[column].astype("int8")
-    output[covariates] = (
-        output.groupby("unique_id", observed=True)[covariates]
-        .transform(lambda values: values.ffill().bfill())
-        .fillna(0.0)
-    )
+    weather_columns = [column for column in covariates if column.startswith("weather_")]
+    if role in {"training", "context"} and weather_columns:
+        output[weather_columns] = output.groupby("unique_id", observed=True)[
+            weather_columns
+        ].transform(lambda values: values.ffill())
+    output[covariates] = output[covariates].fillna(0.0)
     return output
+
+
+def validate_weather_horizon_coverage(
+    frame: pd.DataFrame,
+    covariates: list[str],
+    *,
+    min_coverage: float = 1.0,
+    fallback_policy: Literal["error", "zero"] = "error",
+) -> dict[str, float]:
+    """Validate required weather-covariate cell coverage for every series."""
+
+    if not 0 < min_coverage <= 1:
+        raise ValueError("min_coverage must be in (0, 1]")
+    if fallback_policy not in {"error", "zero"}:
+        raise ValueError("fallback_policy must be 'error' or 'zero'")
+    weather_columns = [column for column in covariates if column.startswith("weather_")]
+    if not weather_columns:
+        return {}
+    _require_covariate_columns(frame, weather_columns, "weather horizon")
+    row_coverage = frame[weather_columns].notna().mean(axis=1)
+    coverage = row_coverage.groupby(frame["unique_id"], observed=True).mean().astype(float)
+    insufficient = coverage[coverage < min_coverage]
+    if not insufficient.empty and fallback_policy == "error":
+        details = {str(item_id): float(value) for item_id, value in insufficient.items()}
+        raise ValueError(
+            "Chronos future weather coverage is below the configured minimum "
+            f"({WEATHER_HORIZON_COVERAGE_UNIT}, min_coverage={min_coverage}): {details}"
+        )
+    return {str(item_id): float(value) for item_id, value in coverage.items()}
 
 
 def rename_chronos_prediction_columns(predictions: pd.DataFrame) -> pd.DataFrame:
@@ -434,6 +569,7 @@ def _prepare_weather_future(future: pd.DataFrame) -> pd.DataFrame:
     require_columns(future, ["unique_id", "area", "ds_utc", "forecast_origin_utc", "horizon"], "future")
     output = normalize_utc_column(future, "ds_utc")
     output = normalize_utc_column(output, "forecast_origin_utc")
+    output = add_target_contract(output)
     return output.sort_values(["unique_id", "ds_utc"]).reset_index(drop=True)
 
 

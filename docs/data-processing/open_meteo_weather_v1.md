@@ -134,6 +134,11 @@ latitude
 longitude
 valid_time_utc
 forecast_available_at_utc
+forecast_reference_time
+forecast_reference_time_type
+forecast_reference_time_is_observed
+forecast_availability_time_type
+weather_vintage_id
 parameter_id
 value
 unit
@@ -141,13 +146,20 @@ raw_batch_id
 retrieved_at_utc
 ```
 
-For Open-Meteo `previous_dayN`, the v1 availability timestamp is:
+Open-Meteo `previous_dayN` does not expose an observed model initialization or
+publication timestamp. V1 therefore uses the following explicit proxy:
 
 ```text
 forecast_available_at_utc = valid_time_utc - N days
+forecast_reference_time = valid_time_utc - N days
+forecast_reference_time_type = synthetic_valid_time_minus_lead
+forecast_reference_time_is_observed = false
+forecast_availability_time_type = synthetic_reference_time_proxy
 ```
 
-This is conservative and explicit. A `previous_day1` value for a late delivery
+`weather_vintage_id` combines provider, product, model, and the synthetic
+reference time. It is coherent across locations and parameters, but it must not
+be presented as an upstream run ID. A `previous_day1` value for a late delivery
 hour can still be unavailable at a 10:00 UTC day-ahead forecast origin, so
 availability masking is mandatory at join time.
 
@@ -181,6 +193,11 @@ location_coverage_pass
 feature_window_coverage_ratio
 feature_group_pass
 forecast_available_at_utc
+forecast_reference_time
+forecast_reference_time_type
+forecast_reference_time_is_observed
+forecast_availability_time_type
+weather_vintage_id
 dataset_version
 ```
 
@@ -215,9 +232,15 @@ Rows failing that rule are left null. Coverage-failing feature groups and
 individual low-coverage hours are excluded by default. Materialized joined
 experiment frames live under `data/features/` and must not overwrite the
 canonical EDS price panel. Production Chronos applies the same join in memory
-for each historical context row and future delivery row, then applies its
-artifact-versioned per-series fill policy without changing the source weather
-artifact.
+for each historical context row and future delivery row. Features from different
+vintages of the same model and lead are never mixed for one target row.
+
+Training and context rows may carry the last earlier value forward within a
+series, then use zero for remaining leading gaps. Future rows never use forward
+or backward fill across valid times. By default, every required future weather
+covariate cell must be present; insufficient coverage fails. An artifact can
+instead declare the explicit `zero` fallback, and runtime configuration must
+match the policy stored in the artifact manifest.
 
 ## First Commands
 

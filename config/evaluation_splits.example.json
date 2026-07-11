@@ -1,0 +1,18 @@
+{
+  "frozen": true,
+  "timestamp_column": "forecast_origin_utc",
+  "splits": {
+    "development": {
+      "start_utc": "2025-01-01T00:00:00Z",
+      "end_utc": "2026-01-01T00:00:00Z"
+    },
+    "validation": {
+      "start_utc": "2026-01-01T00:00:00Z",
+      "end_utc": "2026-04-01T00:00:00Z"
+    },
+    "test": {
+      "start_utc": "2026-04-01T00:00:00Z",
+      "end_utc": "2026-07-01T00:00:00Z"
+    }
+  }
+}

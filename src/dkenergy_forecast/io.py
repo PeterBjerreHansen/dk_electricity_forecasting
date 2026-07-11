@@ -8,6 +8,7 @@ import pandas as pd
 from dkenergy_forecast.types import (
     PANEL_REQUIRED_COLUMNS,
     PRICE_AVAILABILITY_COLUMN,
+    add_target_contract,
     ensure_price_availability,
     normalize_utc_column,
     require_columns,
@@ -28,6 +29,7 @@ def load_price_panel(
     ]
     require_columns(panel, required_without_availability, "price panel")
     panel = normalize_utc_column(panel, "ds_utc")
+    panel = add_target_contract(panel)
     panel = ensure_price_availability(panel)
 
     duplicate_count = int(panel.duplicated(["unique_id", "ds_utc"]).sum())

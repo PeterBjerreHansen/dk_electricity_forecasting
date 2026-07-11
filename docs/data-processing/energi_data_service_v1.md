@@ -253,6 +253,10 @@ is_dst
 utc_offset_hours
 area
 y
+market_regime
+native_resolution_minutes
+target_aggregation
+target_definition
 price_dkk_per_mwh
 price_eur_per_mwh
 source_dataset
@@ -276,6 +280,12 @@ Column decisions:
 6. `price_available_at_utc` is a deterministic v1 market-availability timestamp:
    every local delivery day is treated as published at 12:00
    `Europe/Copenhagen` on the previous local calendar day.
+7. The target contract is explicit on every row and every future horizon:
+   `market_regime` is `native_hourly` before the stitch boundary and
+   `native_quarter_hour` from the boundary onward;
+   `native_resolution_minutes` is 60 or 15; `target_aggregation` is `identity`
+   or `arithmetic_mean_of_4_quarter_hours`; and `target_definition` is
+   `hourly_day_ahead_area_price_dkk_per_mwh`.
 
 Primary key:
 

@@ -53,6 +53,26 @@ def _prepare_weather_features(
     )
     weather = normalize_utc_column(area_features_long, "ds_utc")
     weather = normalize_utc_column(weather, "forecast_available_at_utc")
+    if "forecast_reference_time" not in weather.columns:
+        weather["forecast_reference_time"] = weather["forecast_available_at_utc"]
+    weather = normalize_utc_column(weather, "forecast_reference_time")
+    weather["_weather_vintage_group"] = weather["feature_name"].map(
+        _weather_vintage_group
+    )
+    if "forecast_reference_time_type" not in weather.columns:
+        weather["forecast_reference_time_type"] = "legacy_unspecified"
+    if "forecast_reference_time_is_observed" not in weather.columns:
+        weather["forecast_reference_time_is_observed"] = pd.NA
+    if "forecast_availability_time_type" not in weather.columns:
+        weather["forecast_availability_time_type"] = "legacy_unspecified"
+    if "weather_vintage_id" not in weather.columns:
+        weather["weather_vintage_id"] = weather.apply(
+            lambda row: _legacy_vintage_id(
+                row["_weather_vintage_group"],
+                row["forecast_reference_time"],
+            ),
+            axis=1,
+        )
     if require_feature_group_pass:
         weather = weather[
             weather["feature_group_pass"] & weather["location_coverage_pass"]
@@ -81,6 +101,13 @@ def _join_prepared_weather_features(
 
     output = base.copy()
     if not eligible.empty:
+        latest_reference_time = eligible.groupby(
+            ["_weather_row_id", "_weather_vintage_group"],
+            observed=True,
+        )["forecast_reference_time"].transform("max")
+        eligible = eligible[
+            eligible["forecast_reference_time"].eq(latest_reference_time)
+        ].copy()
         eligible = (
             eligible.sort_values(["_weather_row_id", "feature_name", "forecast_available_at_utc"])
             .drop_duplicates(["_weather_row_id", "feature_name"], keep="last")
@@ -104,7 +131,50 @@ def _join_prepared_weather_features(
             values="forecast_available_at_utc",
             aggfunc="last",
         ).rename(columns=lambda column: f"{column}_available_at_utc")
-        wide = pd.concat([value_wide, coverage_wide, availability_wide], axis=1)
+        reference_time_wide = eligible.pivot_table(
+            index="_weather_row_id",
+            columns="feature_name",
+            values="forecast_reference_time",
+            aggfunc="last",
+        ).rename(columns=lambda column: f"{column}_reference_time_utc")
+        vintage_wide = eligible.pivot_table(
+            index="_weather_row_id",
+            columns="feature_name",
+            values="weather_vintage_id",
+            aggfunc="last",
+        ).rename(columns=lambda column: f"{column}_vintage_id")
+        reference_type_wide = eligible.pivot_table(
+            index="_weather_row_id",
+            columns="feature_name",
+            values="forecast_reference_time_type",
+            aggfunc="last",
+        ).rename(columns=lambda column: f"{column}_reference_time_type")
+        reference_observed_wide = eligible.pivot_table(
+            index="_weather_row_id",
+            columns="feature_name",
+            values="forecast_reference_time_is_observed",
+            aggfunc="last",
+            dropna=False,
+        ).rename(columns=lambda column: f"{column}_reference_time_is_observed")
+        availability_type_wide = eligible.pivot_table(
+            index="_weather_row_id",
+            columns="feature_name",
+            values="forecast_availability_time_type",
+            aggfunc="last",
+        ).rename(columns=lambda column: f"{column}_availability_time_type")
+        wide = pd.concat(
+            [
+                value_wide,
+                coverage_wide,
+                availability_wide,
+                reference_time_wide,
+                vintage_wide,
+                reference_type_wide,
+                reference_observed_wide,
+                availability_type_wide,
+            ],
+            axis=1,
+        )
         wide.columns.name = None
         output = output.merge(wide, left_on="_weather_row_id", right_index=True, how="left")
 
@@ -145,12 +215,20 @@ def build_weather_experiment_frame(
 
 
 def weather_value_columns(frame: pd.DataFrame) -> list[str]:
+    metadata_suffixes = (
+        "_coverage_ratio",
+        "_available_at_utc",
+        "_reference_time_utc",
+        "_vintage_id",
+        "_reference_time_type",
+        "_reference_time_is_observed",
+        "_availability_time_type",
+    )
     return [
         column
         for column in frame.columns
         if column.startswith("weather_")
-        and not column.endswith("_coverage_ratio")
-        and not column.endswith("_available_at_utc")
+        and not column.endswith(metadata_suffixes)
         and pd.api.types.is_numeric_dtype(frame[column])
     ]
 
@@ -320,3 +398,20 @@ def _parse_weather_feature_column(column: str) -> tuple[str, str, str] | None:
     if not lead or not parameter:
         return None
     return model, f"lead{lead}", parameter
+
+
+def _weather_vintage_group(feature_name: object) -> str:
+    parsed = _parse_weather_feature_column(str(feature_name))
+    if parsed is None:
+        return str(feature_name)
+    model, lead, _parameter = parsed
+    return f"{model}:{lead}"
+
+
+def _legacy_vintage_id(group: str, reference_time: object) -> str:
+    timestamp = pd.Timestamp(reference_time)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.tz_localize("UTC")
+    else:
+        timestamp = timestamp.tz_convert("UTC")
+    return f"legacy_unspecified:{group}:{timestamp.strftime('%Y%m%dT%H%M%SZ')}"

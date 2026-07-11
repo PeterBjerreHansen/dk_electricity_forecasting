@@ -9,6 +9,14 @@ import pandas as pd
 COPENHAGEN_TZ = "Europe/Copenhagen"
 DEFAULT_PRICE_PUBLICATION_LOCAL_TIME = "12:00"
 PRICE_AVAILABILITY_COLUMN = "price_available_at_utc"
+TARGET_REGIME_BOUNDARY_LOCAL = pd.Timestamp("2025-10-01T00:00:00", tz=COPENHAGEN_TZ)
+TARGET_DEFINITION = "hourly_day_ahead_area_price_dkk_per_mwh"
+TARGET_CONTRACT_COLUMNS = [
+    "market_regime",
+    "native_resolution_minutes",
+    "target_aggregation",
+    "target_definition",
+]
 
 PANEL_REQUIRED_COLUMNS = [
     "unique_id",
@@ -45,6 +53,7 @@ KNOWN_FUTURE_COLUMNS = [
     "is_dst",
     "utc_offset_hours",
     "dataset_version",
+    *TARGET_CONTRACT_COLUMNS,
     PRICE_AVAILABILITY_COLUMN,
 ]
 
@@ -196,6 +205,26 @@ def add_copenhagen_calendar(frame: pd.DataFrame) -> pd.DataFrame:
     output["utc_offset_hours"] = output["ds_local"].map(
         lambda value: value.utcoffset().total_seconds() / 3600
     )
+    return add_target_contract(output)
+
+
+def add_target_contract(frame: pd.DataFrame) -> pd.DataFrame:
+    """Attach the known target definition for each Danish delivery timestamp."""
+
+    require_columns(frame, ["ds_utc"], "frame")
+    output = normalize_utc_column(frame, "ds_utc")
+    local = output["ds_utc"].dt.tz_convert(COPENHAGEN_TZ)
+    quarter_hour_regime = local >= TARGET_REGIME_BOUNDARY_LOCAL
+    output["market_regime"] = quarter_hour_regime.map(
+        {False: "native_hourly", True: "native_quarter_hour"}
+    )
+    output["native_resolution_minutes"] = quarter_hour_regime.map(
+        {False: 60, True: 15}
+    ).astype("int16")
+    output["target_aggregation"] = quarter_hour_regime.map(
+        {False: "identity", True: "arithmetic_mean_of_4_quarter_hours"}
+    )
+    output["target_definition"] = TARGET_DEFINITION
     return output
 
 

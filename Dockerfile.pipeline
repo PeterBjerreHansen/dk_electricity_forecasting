@@ -6,12 +6,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md constraints-production.txt ./
 COPY src ./src
 COPY scripts ./scripts
 
 RUN python -m pip install --upgrade pip \
-    && python -m pip install -e ".[chronos,aws]"
+    && python -m pip install -c constraints-production.txt -e ".[chronos,aws]"
 
 ENTRYPOINT ["python", "scripts/container_entrypoint.py"]
 CMD ["pipeline"]

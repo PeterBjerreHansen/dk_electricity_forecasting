@@ -8,8 +8,11 @@ import pandas as pd
 from dkenergy_forecast.evaluation.point_metrics import bias, mae, rmse
 from dkenergy_forecast.evaluation.probabilistic_metrics import (
     average_interval_width,
+    interval_score,
     interval_coverage,
+    mean_absolute_calibration_error,
     pinball_loss,
+    weighted_interval_score,
 )
 from dkenergy_forecast.types import require_columns
 
@@ -75,6 +78,12 @@ def model_score_table(
                 "bias": bias(frame),
                 "coverage": _coverage_or_nan(frame),
                 "interval_width": _interval_width_or_nan(frame),
+                "pinball_q10": _pinball_or_nan(frame, quantile=0.10),
+                "pinball_q50": _pinball_or_nan(frame, quantile=0.50),
+                "pinball_q90": _pinball_or_nan(frame, quantile=0.90),
+                "interval_score_80": _interval_score_or_nan(frame),
+                "weighted_interval_score": _wis_or_nan(frame),
+                "calibration_error": _calibration_error_or_nan(frame),
                 "missing_rate": float(frame["y_pred"].isna().mean()),
             }
         )
@@ -140,4 +149,22 @@ def _pinball_or_nan(frame: pd.DataFrame, *, quantile: float) -> float:
     column = f"q{int(round(quantile * 100))}"
     if {"y", column}.issubset(frame.columns):
         return pinball_loss(frame, quantile=quantile, pred_col=column)
+    return math.nan
+
+
+def _interval_score_or_nan(frame: pd.DataFrame) -> float:
+    if {"y", "q10", "q90"}.issubset(frame.columns):
+        return interval_score(frame)
+    return math.nan
+
+
+def _wis_or_nan(frame: pd.DataFrame) -> float:
+    if {"y", "q10", "q50", "q90"}.issubset(frame.columns):
+        return weighted_interval_score(frame)
+    return math.nan
+
+
+def _calibration_error_or_nan(frame: pd.DataFrame) -> float:
+    if {"y", "q10", "q50", "q90"}.issubset(frame.columns):
+        return mean_absolute_calibration_error(frame)
     return math.nan

@@ -113,6 +113,7 @@ def test_chronos_lora_weather_adapter_emits_delivery_quantiles_and_uses_publishe
     artifact_path = _chronos_artifact(
         tmp_path,
         covariates=[*CALENDAR_COVARIATES, "weather_gfs_global_lead1d_temperature_2m"],
+        weather_future_fallback_policy="zero",
     )
     weather_path = _weather_path(
         tmp_path,
@@ -128,6 +129,7 @@ def test_chronos_lora_weather_adapter_emits_delivery_quantiles_and_uses_publishe
             model_artifact_path=artifact_path,
             weather_features_long_path=weather_path,
             context_length=48,
+            weather_future_fallback_policy="zero",
         ),
         pipeline=pipeline,
     ).fit(history).predict(future)
@@ -155,6 +157,7 @@ def test_chronos_training_and_serving_share_point_in_time_weather_covariates() -
     config = Chronos2LoRAWeatherConfig(
         context_length=24,
         weather_covariate_mode="raw",
+        weather_future_fallback_policy="zero",
     )
 
     training, training_covariates, _diagnostics = make_lora_training_frame(
@@ -255,6 +258,7 @@ def test_chronos_lora_weather_adapter_handles_dst_bridge_lengths(
     artifact_path = _chronos_artifact(
         tmp_path,
         covariates=[*CALENDAR_COVARIATES, "weather_gfs_global_lead1d_temperature_2m"],
+        weather_future_fallback_policy="zero",
     )
     weather_path = _weather_path(
         tmp_path,
@@ -270,6 +274,7 @@ def test_chronos_lora_weather_adapter_handles_dst_bridge_lengths(
             model_artifact_path=artifact_path,
             weather_features_long_path=weather_path,
             context_length=48,
+            weather_future_fallback_policy="zero",
         ),
         pipeline=pipeline,
     ).fit(history).predict(future)
@@ -288,7 +293,11 @@ def test_chronos_lora_weather_adapter_allows_partial_weather_nans_when_other_sig
         "weather_gfs_global_lead1d_temperature_2m",
         "weather_gfs_global_lead2d_temperature_2m",
     ]
-    artifact_path = _chronos_artifact(tmp_path, covariates=covariates)
+    artifact_path = _chronos_artifact(
+        tmp_path,
+        covariates=covariates,
+        weather_future_fallback_policy="zero",
+    )
     weather_path = _weather_path(
         tmp_path,
         panel=panel,
@@ -306,6 +315,7 @@ def test_chronos_lora_weather_adapter_allows_partial_weather_nans_when_other_sig
             model_artifact_path=artifact_path,
             weather_features_long_path=weather_path,
             context_length=48,
+            weather_future_fallback_policy="zero",
         ),
         pipeline=FakeChronosPredictDfPipeline(),
     ).fit(history).predict(future)
@@ -449,7 +459,12 @@ def _weather_vintages(panel: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _chronos_artifact(tmp_path, *, covariates: list[str]) -> Path:
+def _chronos_artifact(
+    tmp_path,
+    *,
+    covariates: list[str],
+    weather_future_fallback_policy: str = "error",
+) -> Path:
     artifact_path = tmp_path / "chronos_artifact"
     artifact_path.mkdir()
     (artifact_path / "manifest.json").write_text(
@@ -457,6 +472,11 @@ def _chronos_artifact(tmp_path, *, covariates: list[str]) -> Path:
             {
                 "artifact_schema_version": CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION,
                 "covariates": covariates,
+                "weather_horizon_coverage_policy": {
+                    "unit": "required_weather_covariate_cells",
+                    "minimum": 1.0,
+                    "insufficient_coverage_fallback": weather_future_fallback_policy,
+                },
             }
         ),
         encoding="utf-8",

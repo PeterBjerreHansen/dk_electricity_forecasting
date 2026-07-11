@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
 import math
+import os
 import shutil
 import subprocess
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -53,8 +58,17 @@ MODEL_SCORE_COLUMNS = [
     "bias",
     "coverage",
     "interval_width",
+    "pinball_q10",
+    "pinball_q50",
+    "pinball_q90",
+    "interval_score_80",
+    "weighted_interval_score",
+    "calibration_error",
     "missing_rate",
 ]
+
+COMPLETED_RUN_STATUSES = frozenset({"success", "complete", "completed"})
+SCOREABLE_RUN_KINDS = frozenset({"live", "shadow"})
 
 
 def normalize_published_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
@@ -151,7 +165,13 @@ def build_published_forecast_history(
     artifact_root: str | Path,
     panel: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Score only immutable forecast-run predictions that now have actuals."""
+    """Score eligible immutable forecast runs that now have actuals.
+
+    Modern manifests must explicitly describe a completed ``live`` or ``shadow``
+    run with ``score_eligible=true``. Manifests written before those lifecycle
+    fields existed remain scoreable when their status is absent or completed.
+    A directory without a manifest is never considered complete and is ignored.
+    """
 
     published = _load_forecast_run_predictions(artifact_root)
     if published.empty:
@@ -173,9 +193,9 @@ def build_published_forecast_history(
     evaluated = merged.loc[merged["y"].notna() & merged["y_pred"].notna()].copy()
     if evaluated.empty:
         return _empty_published_history_frame()
-    return evaluated.sort_values(["forecast_origin_utc", "run_id", "model_label", "unique_id", "ds_utc"]).reset_index(
-        drop=True
-    )
+    return evaluated.sort_values(
+        ["forecast_origin_utc", "run_id", "model_label", "unique_id", "ds_utc"]
+    ).reset_index(drop=True)
 
 
 def build_published_forecast_scores(history: pd.DataFrame) -> pd.DataFrame:
@@ -201,8 +221,8 @@ def write_published_forecast_history(
         "published_history_predictions": history_path / "predictions.parquet",
         "published_history_scores": history_path / "model_scores.parquet",
     }
-    predictions.to_parquet(paths["published_history_predictions"], index=False)
-    scores.to_parquet(paths["published_history_scores"], index=False)
+    atomic_write_parquet(paths["published_history_predictions"], predictions)
+    atomic_write_parquet(paths["published_history_scores"], scores)
     return paths
 
 
@@ -212,29 +232,113 @@ def _load_forecast_run_predictions(artifact_root: str | Path) -> pd.DataFrame:
         return _empty_published_prediction_frame()
 
     frames: list[pd.DataFrame] = []
+    seen_run_ids: dict[str, Path] = {}
     for run_dir in sorted(path for path in root.iterdir() if path.is_dir()):
+        manifest_path = run_dir / "manifest.json"
+        manifest = _read_optional_manifest(manifest_path)
+        if not manifest or not _manifest_is_score_eligible(manifest):
+            continue
         predictions_path = run_dir / "predictions.parquet"
         if not predictions_path.exists():
             continue
+        _verify_manifest_artifact_checksum(manifest, "predictions", predictions_path)
         frame = normalize_published_predictions(pd.read_parquet(predictions_path))
         require_columns(frame, ["unique_id"], f"{predictions_path}")
         validate_prediction_artifact_schema(frame)
-        manifest = _read_optional_manifest(run_dir / "manifest.json")
-        frame["run_id"] = frame.get("run_id", manifest.get("run_id") or run_dir.name)
-        frame["run_id"] = frame["run_id"].fillna(manifest.get("run_id") or run_dir.name).astype(str)
-        frame["published_at_utc"] = manifest.get("created_at_utc")
-        frame["published_forecast_origin_utc"] = manifest.get("forecast_origin_utc")
+        run_id = str(manifest.get("run_id") or run_dir.name)
+        if run_id in seen_run_ids:
+            raise ValueError(
+                f"Published run_id {run_id!r} is used by both "
+                f"{seen_run_ids[run_id]} and {run_dir}"
+            )
+        seen_run_ids[run_id] = run_dir
+        if "run_id" in frame.columns:
+            conflicting_run_ids = frame["run_id"].dropna().astype(str).ne(run_id)
+            if conflicting_run_ids.any():
+                raise ValueError(
+                    f"Published prediction run_id does not match its manifest: {predictions_path}"
+                )
+        manifest_origin = manifest.get("forecast_origin_utc")
+        if manifest_origin is not None:
+            expected_origin = to_utc_timestamp(manifest_origin)
+            if frame["forecast_origin_utc"].ne(expected_origin).any():
+                raise ValueError(
+                    "Published prediction forecast_origin_utc does not match its manifest: "
+                    f"{predictions_path}"
+                )
+        frame["run_id"] = run_id
+        frame["published_at_utc"] = manifest.get(
+            "published_at_utc", manifest.get("created_at_utc")
+        )
+        frame["published_forecast_origin_utc"] = manifest_origin
+        frame["run_kind"] = manifest.get("run_kind", "legacy")
+        frame["score_eligible"] = manifest.get("score_eligible", True)
         frames.append(frame)
 
     if not frames:
         return _empty_published_prediction_frame()
-    return pd.concat(frames, ignore_index=True)
+    published = pd.concat(frames, ignore_index=True)
+    published["published_at_utc"] = pd.to_datetime(
+        published["published_at_utc"], utc=True, errors="coerce"
+    )
+    publication_key = [
+        "forecast_origin_utc",
+        "unique_id",
+        "ds_utc",
+        "area",
+        "model_label",
+    ]
+    # A retry or corrected publication must not give one forecast target extra
+    # weight. Keep the earliest durable publication; later rows could have seen
+    # information unavailable to the original forecast.
+    return (
+        published.sort_values(
+            [*publication_key, "published_at_utc", "run_id"],
+            na_position="last",
+        )
+        .drop_duplicates(publication_key, keep="first")
+        .reset_index(drop=True)
+    )
 
 
 def _read_optional_manifest(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _manifest_is_score_eligible(manifest: dict[str, Any]) -> bool:
+    status = str(manifest.get("status", "success")).lower()
+    if status not in COMPLETED_RUN_STATUSES:
+        return False
+
+    has_explicit_lifecycle = "run_kind" in manifest or "score_eligible" in manifest
+    if not has_explicit_lifecycle:
+        # Backward-compatible rule for runs published before lifecycle metadata
+        # existed. The manifest itself remains the completion marker.
+        return True
+    return (
+        manifest.get("run_kind") in SCOREABLE_RUN_KINDS
+        and manifest.get("score_eligible") is True
+    )
+
+
+def _verify_manifest_artifact_checksum(
+    manifest: dict[str, Any],
+    artifact_name: str,
+    path: Path,
+) -> None:
+    artifact_hashes = manifest.get("artifact_sha256", {})
+    if not isinstance(artifact_hashes, dict):
+        raise ValueError("Forecast run manifest artifact_sha256 must be an object")
+    expected = artifact_hashes.get(artifact_name)
+    if expected is None:
+        return
+    actual = file_sha256(path)
+    if actual != expected:
+        raise ValueError(
+            f"Published artifact checksum mismatch for {path}: expected {expected}, got {actual}"
+        )
 
 
 def _panel_actuals(panel: pd.DataFrame) -> pd.DataFrame:
@@ -287,6 +391,9 @@ def make_forecast_run_manifest(
     status: str = "success",
     created_at_utc: object | None = None,
     extra: dict[str, Any] | None = None,
+    run_kind: str | None = None,
+    score_eligible: bool | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     forecast_origin = to_utc_timestamp(forecast_origin_utc)
     created_at = to_utc_timestamp(created_at_utc or datetime.now(timezone.utc))
@@ -305,6 +412,12 @@ def make_forecast_run_manifest(
     }
     if extra:
         manifest.update(extra)
+    if run_kind is not None:
+        manifest["run_kind"] = run_kind
+    if score_eligible is not None:
+        manifest["score_eligible"] = score_eligible
+    if idempotency_key is not None:
+        manifest["idempotency_key"] = idempotency_key
     return manifest
 
 
@@ -317,6 +430,14 @@ def write_forecast_run_artifacts(
     score_predictions: pd.DataFrame | None = None,
     dashboard: dict[str, Any] | None = None,
 ) -> dict[str, Path]:
+    """Transactionally publish one immutable run directory.
+
+    Files are prepared in a hidden sibling directory. The completed directory
+    becomes visible with one atomic rename, so readers never observe a partial
+    run. When a manifest supplies ``idempotency_key``, an exact retry returns
+    the existing paths; reusing the key for different core artifacts fails.
+    """
+
     run_path = Path(run_dir)
     predictions_out = normalize_published_predictions(predictions)
     validate_prediction_artifact_schema(predictions_out)
@@ -326,25 +447,67 @@ def write_forecast_run_artifacts(
         score_predictions_out = normalize_published_predictions(score_predictions)
         validate_evaluated_prediction_artifact_schema(score_predictions_out)
 
-    if run_path.exists():
+    idempotency_key = manifest.get("idempotency_key")
+    if idempotency_key is not None and (
+        not isinstance(idempotency_key, str) or not idempotency_key.strip()
+    ):
+        raise ValueError("Forecast run idempotency_key must be a non-empty string")
+    if run_path.exists() and idempotency_key is None:
         raise FileExistsError(f"Immutable forecast run already exists: {run_path}")
-    run_path.mkdir(parents=True)
 
-    paths = {
-        "predictions": run_path / "predictions.parquet",
-        "model_scores": run_path / "model_scores.parquet",
-        "manifest": run_path / "manifest.json",
-    }
-    predictions_out.to_parquet(paths["predictions"], index=False)
-    scores.to_parquet(paths["model_scores"], index=False)
-    if score_predictions_out is not None:
-        paths["score_predictions"] = run_path / "score_predictions.parquet"
-        score_predictions_out.to_parquet(paths["score_predictions"], index=False)
-    write_json(paths["manifest"], manifest)
-    if dashboard is not None:
-        paths["dashboard"] = run_path / "forecast_dashboard.json"
-        write_json(paths["dashboard"], dashboard)
-    return paths
+    run_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = Path(
+        tempfile.mkdtemp(prefix=f".{run_path.name}.tmp-", dir=run_path.parent)
+    )
+    temp_paths = _forecast_run_paths(
+        temp_path,
+        include_score_predictions=score_predictions_out is not None,
+        include_dashboard=dashboard is not None,
+    )
+    try:
+        predictions_out.to_parquet(temp_paths["predictions"], index=False)
+        scores.to_parquet(temp_paths["model_scores"], index=False)
+        if score_predictions_out is not None:
+            score_predictions_out.to_parquet(temp_paths["score_predictions"], index=False)
+        if dashboard is not None:
+            _write_json_direct(temp_paths["dashboard"], dashboard)
+
+        artifact_sha256 = {
+            name: file_sha256(path)
+            for name, path in temp_paths.items()
+            if name != "manifest"
+        }
+        manifest_out = dict(manifest)
+        manifest_out["artifact_sha256"] = artifact_sha256
+        manifest_out["artifact_identity_sha256"] = _artifact_identity_sha256(
+            artifact_sha256
+        )
+        _write_json_direct(temp_paths["manifest"], manifest_out)
+
+        if run_path.exists():
+            return _resolve_existing_idempotent_run(
+                run_path,
+                candidate_manifest=manifest_out,
+                expected_paths=temp_paths,
+            )
+        try:
+            os.rename(temp_path, run_path)
+        except OSError:
+            if run_path.exists():
+                return _resolve_existing_idempotent_run(
+                    run_path,
+                    candidate_manifest=manifest_out,
+                    expected_paths=temp_paths,
+                )
+            raise
+        return _forecast_run_paths(
+            run_path,
+            include_score_predictions=score_predictions_out is not None,
+            include_dashboard=dashboard is not None,
+        )
+    finally:
+        if temp_path.exists():
+            shutil.rmtree(temp_path)
 
 
 def update_latest_exports(
@@ -357,29 +520,54 @@ def update_latest_exports(
     manifest: dict[str, Any],
     dashboard: dict[str, Any],
     score_predictions: pd.DataFrame | None = None,
+    write_recent_scores: bool = True,
 ) -> dict[str, Path]:
+    predictions_out = normalize_published_predictions(predictions)
+    validate_prediction_artifact_schema(predictions_out)
+    validate_model_scores_schema(scores)
+    score_predictions_out = None
+    if score_predictions is not None:
+        score_predictions_out = normalize_published_predictions(score_predictions)
+        validate_evaluated_prediction_artifact_schema(score_predictions_out)
+
     latest_dir = Path(latest_forecast_dir)
     scores_dir = Path(recent_scores_dir)
     dashboard_out = Path(dashboard_path)
     latest_dir.mkdir(parents=True, exist_ok=True)
-    scores_dir.mkdir(parents=True, exist_ok=True)
+    if write_recent_scores:
+        scores_dir.mkdir(parents=True, exist_ok=True)
     dashboard_out.parent.mkdir(parents=True, exist_ok=True)
 
     paths = {
         "latest_predictions": latest_dir / "predictions.parquet",
         "latest_manifest": latest_dir / "manifest.json",
-        "recent_scores": scores_dir / "model_scores.parquet",
         "dashboard": dashboard_out,
     }
-    normalize_published_predictions(predictions).to_parquet(paths["latest_predictions"], index=False)
-    scores.to_parquet(paths["recent_scores"], index=False)
-    if score_predictions is not None:
-        score_predictions_out = normalize_published_predictions(score_predictions)
-        validate_evaluated_prediction_artifact_schema(score_predictions_out)
+    if write_recent_scores:
+        paths["recent_scores"] = scores_dir / "model_scores.parquet"
+    if write_recent_scores and score_predictions_out is not None:
         paths["recent_predictions"] = scores_dir / "predictions.parquet"
-        score_predictions_out.to_parquet(paths["recent_predictions"], index=False)
-    write_json(paths["latest_manifest"], manifest)
-    write_json(paths["dashboard"], dashboard)
+
+    # The lock serializes this multi-file promotion. Each individual replace is
+    # atomic, and the manifest is replaced last as the reader-visible commit
+    # marker for the new set.
+    lock_path = latest_dir.parent / f".{latest_dir.name}.update.lock"
+    with _exclusive_file_lock(lock_path):
+        _reject_stale_latest_promotion(paths["latest_manifest"], manifest)
+        atomic_write_parquet(paths["latest_predictions"], predictions_out)
+        if write_recent_scores:
+            atomic_write_parquet(paths["recent_scores"], scores)
+        if write_recent_scores and score_predictions_out is not None:
+            atomic_write_parquet(paths["recent_predictions"], score_predictions_out)
+        atomic_write_json(paths["dashboard"], dashboard)
+        latest_hashes = {
+            name: file_sha256(path)
+            for name, path in paths.items()
+            if name != "latest_manifest"
+        }
+        latest_manifest = dict(manifest)
+        latest_manifest["latest_artifact_sha256"] = latest_hashes
+        atomic_write_json(paths["latest_manifest"], latest_manifest)
     return paths
 
 
@@ -430,12 +618,158 @@ def git_commit(cwd: str | Path) -> str | None:
 
 
 def write_json(path: str | Path, payload: Any) -> None:
+    """Backward-compatible alias for an atomic JSON replacement."""
+
+    atomic_write_json(path, payload)
+
+
+def atomic_write_json(path: str | Path, payload: Any) -> None:
+    """Write JSON to a sibling temporary file and atomically replace ``path``."""
+
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(
+    temp_path = _new_atomic_temp_path(out)
+    try:
+        _write_json_direct(temp_path, payload)
+        os.replace(temp_path, out)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def atomic_write_parquet(path: str | Path, frame: pd.DataFrame) -> None:
+    """Write Parquet to a sibling temporary file and atomically replace ``path``."""
+
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = _new_atomic_temp_path(out)
+    try:
+        frame.to_parquet(temp_path, index=False)
+        os.replace(temp_path, out)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def file_sha256(path: str | Path) -> str:
+    """Return the SHA-256 digest of a file without loading it all into memory."""
+
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _write_json_direct(path: Path, payload: Any) -> None:
+    path.write_text(
         json.dumps(json_safe(payload), allow_nan=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def _new_atomic_temp_path(destination: Path) -> Path:
+    descriptor, value = tempfile.mkstemp(
+        prefix=f".{destination.name}.tmp-",
+        dir=destination.parent,
+    )
+    os.close(descriptor)
+    return Path(value)
+
+
+@contextmanager
+def _exclusive_file_lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError(f"Another artifact promotion is already in progress: {path}") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _reject_stale_latest_promotion(
+    current_manifest_path: Path,
+    candidate_manifest: dict[str, Any],
+) -> None:
+    if not current_manifest_path.exists():
+        return
+    current_manifest = _read_optional_manifest(current_manifest_path)
+    current_origin = current_manifest.get("forecast_origin_utc")
+    candidate_origin = candidate_manifest.get("forecast_origin_utc")
+    if current_origin is None or candidate_origin is None:
+        return
+    if to_utc_timestamp(candidate_origin) < to_utc_timestamp(current_origin):
+        raise ValueError(
+            "Refusing to replace latest forecast with an older origin: "
+            f"candidate={to_utc_timestamp(candidate_origin).isoformat()}, "
+            f"current={to_utc_timestamp(current_origin).isoformat()}"
+        )
+
+
+def _forecast_run_paths(
+    run_path: Path,
+    *,
+    include_score_predictions: bool,
+    include_dashboard: bool,
+) -> dict[str, Path]:
+    paths = {
+        "predictions": run_path / "predictions.parquet",
+        "model_scores": run_path / "model_scores.parquet",
+        "manifest": run_path / "manifest.json",
+    }
+    if include_score_predictions:
+        paths["score_predictions"] = run_path / "score_predictions.parquet"
+    if include_dashboard:
+        paths["dashboard"] = run_path / "forecast_dashboard.json"
+    return paths
+
+
+def _artifact_identity_sha256(artifact_hashes: dict[str, str]) -> str:
+    identity_hashes = {
+        name: digest
+        for name, digest in artifact_hashes.items()
+        if name in {"predictions", "model_scores", "score_predictions"}
+    }
+    canonical = json.dumps(identity_hashes, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _resolve_existing_idempotent_run(
+    run_path: Path,
+    *,
+    candidate_manifest: dict[str, Any],
+    expected_paths: dict[str, Path],
+) -> dict[str, Path]:
+    idempotency_key = candidate_manifest.get("idempotency_key")
+    if idempotency_key is None:
+        raise FileExistsError(f"Immutable forecast run already exists: {run_path}")
+
+    existing_manifest = _read_optional_manifest(run_path / "manifest.json")
+    if existing_manifest.get("idempotency_key") != idempotency_key:
+        raise FileExistsError(
+            f"Immutable forecast run already exists with a different idempotency key: {run_path}"
+        )
+    if (
+        existing_manifest.get("artifact_identity_sha256")
+        != candidate_manifest.get("artifact_identity_sha256")
+    ):
+        raise ValueError(
+            f"Forecast run idempotency key was reused for different artifacts: {idempotency_key}"
+        )
+
+    final_paths = _forecast_run_paths(
+        run_path,
+        include_score_predictions="score_predictions" in expected_paths,
+        include_dashboard="dashboard" in expected_paths,
+    )
+    missing = [str(path) for path in final_paths.values() if not path.exists()]
+    if missing:
+        raise ValueError(
+            "Existing idempotent forecast run is incomplete; missing: " + ", ".join(missing)
+        )
+    return final_paths
 
 
 def json_safe(value: Any) -> Any:

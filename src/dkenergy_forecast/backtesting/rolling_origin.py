@@ -6,6 +6,7 @@ import pandas as pd
 
 from dkenergy_forecast.types import (
     PREDICTION_REQUIRED_COLUMNS,
+    TARGET_CONTRACT_COLUMNS,
     TARGET_LEAKAGE_COLUMNS,
     ForecastModel,
     ensure_price_availability,
@@ -30,6 +31,7 @@ METADATA_JOIN_COLUMNS = [
     "utc_offset_hours",
     "price_available_at_utc",
     "dataset_version",
+    *TARGET_CONTRACT_COLUMNS,
 ]
 
 

@@ -42,8 +42,8 @@ variable "pipeline_image_uri" {
 
 variable "forecast_schedule_expression" {
   type        = string
-  description = "EventBridge Scheduler expression for the pipeline."
-  default     = "cron(15 13 * * ? *)"
+  description = "EventBridge Scheduler expression for the live pipeline; keep enough headroom before the market-noon decision cutoff."
+  default     = "cron(0 10 * * ? *)"
 }
 
 variable "forecast_schedule_timezone" {

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import shutil
@@ -21,6 +22,9 @@ from dkenergy_forecast.layout import PROJECT_ROOT, runtime_layout  # noqa: E402
 from dkenergy_forecast.models.chronos_production import (  # noqa: E402
     CALENDAR_COVARIATES,
     CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION,
+    CONTEXT_WEATHER_FILL_POLICY,
+    FUTURE_WEATHER_FILL_POLICY,
+    WEATHER_HORIZON_COVERAGE_UNIT,
     Chronos2LoRAWeatherConfig,
     DEFAULT_CHRONOS_LORA_ARTIFACT_PATH,
     DEFAULT_WEATHER_FEATURES_LONG_PATH,
@@ -34,6 +38,7 @@ from dkenergy_forecast.publishing import git_commit, json_safe  # noqa: E402
 from dkenergy_forecast.types import (  # noqa: E402
     DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
     PRICE_AVAILABILITY_COLUMN,
+    TARGET_CONTRACT_COLUMNS,
     COPENHAGEN_TZ,
     ensure_price_availability,
     filter_price_history_available_before,
@@ -72,6 +77,9 @@ def main() -> None:
 
     from chronos import BaseChronosPipeline
     from chronos.chronos2 import preprocess
+    from transformers import set_seed
+
+    set_seed(args.random_seed)
 
     train_inputs = preprocess.from_data_frame(
         train_df,
@@ -81,7 +89,10 @@ def main() -> None:
         timestamp_column="timestamp",
         known_covariates_names=covariates,
     )
-    pipeline = BaseChronosPipeline.from_pretrained(args.base_model_id, device_map=args.device_map)
+    load_kwargs: dict[str, Any] = {"device_map": args.device_map}
+    if args.base_model_revision:
+        load_kwargs["revision"] = args.base_model_revision
+    pipeline = BaseChronosPipeline.from_pretrained(args.base_model_id, **load_kwargs)
     trainer_dir = output_dir / "_trainer"
     lora_pipeline = pipeline.fit(
         inputs=train_inputs,
@@ -130,6 +141,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weather-features-long-path", default=str(DEFAULT_WEATHER_FEATURES_LONG_PATH))
     parser.add_argument("--output-dir", default=str(DEFAULT_CHRONOS_LORA_ARTIFACT_PATH))
     parser.add_argument("--base-model-id", default="amazon/chronos-2")
+    parser.add_argument(
+        "--base-model-revision",
+        help="Optional immutable Hugging Face model revision (recommended for production exports).",
+    )
     parser.add_argument("--first-eval-origin-utc", default="2026-04-01T10:00:00Z")
     parser.add_argument("--context-length", type=int, default=1024)
     parser.add_argument("--prediction-length", type=int, default=36)
@@ -137,7 +152,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--logging-steps", type=int, default=25)
+    parser.add_argument("--random-seed", type=int, default=2026)
     parser.add_argument("--weather-covariate-mode", choices=["all", "raw", "ensemble", "ensemble_mean"], default="all")
+    parser.add_argument("--weather-horizon-min-coverage", type=float, default=1.0)
+    parser.add_argument(
+        "--weather-future-fallback-policy",
+        choices=["error", "zero"],
+        default="error",
+    )
     parser.add_argument(
         "--validation-scores-path",
         help="Optional model_scores.parquet path to summarize into the exported artifact manifest.",
@@ -199,7 +221,7 @@ def make_lora_training_frame(
     covariates = [column for column in CALENDAR_COVARIATES if column in train.columns] + weather_columns
     covariates = list(dict.fromkeys(covariates))
     require_lora_weather_signal(train, covariates, "Chronos LoRA training frame")
-    train = fill_lora_covariates(train, covariates)
+    train = fill_lora_covariates(train, covariates, role="training")
     if train["y"].isna().any():
         raise ValueError(f"Chronos LoRA training target has missing rows: {int(train['y'].isna().sum())}")
 
@@ -225,7 +247,7 @@ def make_lora_training_frame(
         "covariate_count": int(len(covariates)),
         "weather_covariate_count": int(sum(column.startswith("weather_") for column in covariates)),
         "weather_origin_policy": "price_available_at_utc for each historical target row",
-        "covariate_fill_policy": "per-series forward-fill, backward-fill, then zero-fill",
+        "covariate_fill_policy": CONTEXT_WEATHER_FILL_POLICY,
         "price_availability_policy": {
             "column": PRICE_AVAILABILITY_COLUMN,
             "publication_local_time": DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
@@ -271,6 +293,16 @@ def make_manifest(
         chronos_version = getattr(chronos, "__version__", None)
     except ImportError:
         chronos_version = None
+    try:
+        import torch
+
+        torch_version = torch.__version__
+    except ImportError:
+        torch_version = None
+    output_dir = getattr(args, "output_dir", None)
+    artifact_files_sha256 = (
+        _artifact_file_hashes(Path(output_dir)) if output_dir else {}
+    )
     scores = read_validation_scores(
         args.validation_scores_path,
         model_label=args.validation_score_model_label,
@@ -279,12 +311,14 @@ def make_manifest(
         "artifact_schema_version": CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION,
         "created_at_utc": datetime.now(timezone.utc),
         "base_model_id": args.base_model_id,
+        "base_model_revision": getattr(args, "base_model_revision", None),
         "model_family": "chronos2_lora_calendar_weather",
         "context_length": int(args.context_length),
         "prediction_length": int(args.prediction_length),
         "num_steps": int(args.num_steps),
         "batch_size": int(args.batch_size),
         "learning_rate": float(args.learning_rate),
+        "random_seed": int(getattr(args, "random_seed", 2026)),
         "weather_covariate_mode": args.weather_covariate_mode,
         "covariates": list(covariates),
         "calendar_covariates": [column for column in covariates if column in CALENDAR_COVARIATES],
@@ -305,17 +339,91 @@ def make_manifest(
             "serving_future_origin": "forecast_origin_utc",
             "eligibility_operator": "<= forecast_origin_utc",
         },
-        "covariate_fill_policy": "per-series forward-fill, backward-fill, then zero-fill",
+        "weather_vintage_policy": {
+            "vintage_id_column": "weather_vintage_id",
+            "reference_time_column": "forecast_reference_time",
+            "reference_time_types": _unique_values(weather, "forecast_reference_time_type"),
+            "reference_time_is_observed": _unique_values(
+                weather,
+                "forecast_reference_time_is_observed",
+            ),
+            "availability_time_column": "forecast_available_at_utc",
+            "availability_time_types": _unique_values(
+                weather,
+                "forecast_availability_time_type",
+            ),
+        },
+        "weather_horizon_coverage_policy": {
+            "unit": WEATHER_HORIZON_COVERAGE_UNIT,
+            "minimum": float(args.weather_horizon_min_coverage),
+            "insufficient_coverage_fallback": args.weather_future_fallback_policy,
+        },
+        "covariate_fill_policy": {
+            "training": CONTEXT_WEATHER_FILL_POLICY,
+            "serving_context": CONTEXT_WEATHER_FILL_POLICY,
+            "serving_future": FUTURE_WEATHER_FILL_POLICY,
+            "temporal_future_fill": False,
+        },
+        "target_contract": {
+            "columns": TARGET_CONTRACT_COLUMNS,
+            "market_regimes": _unique_values(panel, "market_regime"),
+            "native_resolution_minutes": _unique_values(
+                panel,
+                "native_resolution_minutes",
+            ),
+            "target_aggregations": _unique_values(panel, "target_aggregation"),
+            "target_definitions": _unique_values(panel, "target_definition"),
+        },
         "diagnostics": diagnostics,
         "validation_scores": scores,
         "panel_path": args.panel_path,
         "weather_features_long_path": args.weather_features_long_path,
+        "training_data_sha256": {
+            "price_panel": _file_sha256_if_present(Path(args.panel_path)),
+            "weather_features": _file_sha256_if_present(
+                Path(args.weather_features_long_path)
+            ),
+        },
+        "artifact_files_sha256": artifact_files_sha256,
+        "artifact_content_sha256": _hash_mapping(artifact_files_sha256),
         "panel_dataset_version": sorted(panel["dataset_version"].dropna().unique().tolist()),
         "weather_min_ds_utc": pd.to_datetime(weather["ds_utc"], utc=True).min() if "ds_utc" in weather else None,
         "weather_max_ds_utc": pd.to_datetime(weather["ds_utc"], utc=True).max() if "ds_utc" in weather else None,
         "chronos_version": chronos_version,
+        "torch_version": torch_version,
         "git_commit": git_commit(ROOT),
     }
+
+
+def _unique_values(frame: pd.DataFrame, column: str) -> list[Any]:
+    if column not in frame.columns:
+        return []
+    return sorted(frame[column].dropna().unique().tolist())
+
+
+def _artifact_file_hashes(root: Path) -> dict[str, str]:
+    return {
+        path.relative_to(root).as_posix(): _file_sha256(path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path.name != "manifest.json" and "_trainer" not in path.parts
+    }
+
+
+def _file_sha256_if_present(path: Path) -> str | None:
+    return _file_sha256(path) if path.exists() else None
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _hash_mapping(values: dict[str, str]) -> str:
+    canonical = json.dumps(values, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def read_validation_scores(

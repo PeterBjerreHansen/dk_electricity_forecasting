@@ -149,6 +149,18 @@ def _render_run_summary(
     cols[2].metric("Score rows", score_count)
     cols[3].metric("Generated", _format_optional_timestamp(generated_at))
 
+    run_kind = run.get("run_kind")
+    if run_kind and run_kind != "live":
+        st.info(f"This is a {run_kind} run and is not the promoted live forecast.")
+    if run.get("score_eligible") is False:
+        reason = run.get("score_ineligibility_reason") or "unspecified reason"
+        st.warning(f"This run is excluded from published-performance scoring: {reason}.")
+    generated_timestamp = pd.to_datetime(generated_at, utc=True, errors="coerce")
+    if pd.notna(generated_timestamp):
+        age = pd.Timestamp.now(tz="UTC") - generated_timestamp
+        if age > pd.Timedelta(hours=36):
+            st.warning(f"Latest forecast artifact is stale ({age.total_seconds() / 3600:.1f} hours old).")
+
 
 def _render_actual_prices(panel: pd.DataFrame) -> None:
     if panel.empty:
@@ -381,6 +393,11 @@ def _render_scores(scores: pd.DataFrame) -> None:
             "bias",
             "coverage",
             "interval_width",
+            "weighted_interval_score",
+            "calibration_error",
+            "pinball_q10",
+            "pinball_q50",
+            "pinball_q90",
         ]
         if column in frame.columns
     ]

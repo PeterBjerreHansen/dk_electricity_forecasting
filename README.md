@@ -27,6 +27,10 @@ python -m pip install -e ".[catboost]"
 The default workflow is file based and writes ignored runtime artifacts under
 `data/`, `results/`, `artifacts/`, and `app_data/`.
 
+New to the repository? Start with the [codebase tour](docs/codebase-tour.md).
+The detailed model-comparison workflow is documented in
+[the evaluation guide](docs/evaluation.md).
+
 ## Data Sources
 
 Price data comes from Energi Data Service. The ingestion script archives raw
@@ -36,6 +40,12 @@ JSON bytes and metadata for DK1/DK2, then builds an hourly model-ready panel:
 python scripts/fetch_eds_prices.py --areas DK1 DK2
 python scripts/build_price_panel.py --allow-incomplete-recent
 ```
+
+Every price row declares its target contract. Before 2025-10-01 the target is a
+native hourly price; from that local-market boundary onward it is the arithmetic
+mean of four native quarter-hour prices. `market_regime`,
+`native_resolution_minutes`, `target_aggregation`, and `target_definition`
+travel with panels, horizons, predictions, and evaluation strata.
 
 Open-Meteo Previous Runs provides representative DK1/DK2 weather forecast
 features. Raw API payloads are stored before normalized forecasts and the
@@ -50,6 +60,9 @@ Weather outputs preserve the production timing/provenance fields
 `forecast_reference_time`, `valid_time`, `lead_time_hours`, `model`, `variable`,
 and `price_area`, while retaining existing project columns such as
 `forecast_available_at_utc`, `ds_utc`, `weather_model`, and `parameter_id`.
+Because the Previous Runs endpoint has no observed initialization timestamp,
+the reference and availability times are explicitly labeled synthetic proxies;
+`weather_vintage_id` is a project-generated identity, not an upstream run ID.
 
 ## Architecture
 
@@ -63,12 +76,16 @@ src/dkenergy_forecast/
   features/     price and availability-safe weather feature joins
   models/       baselines, fixed CatBoost adapter, Chronos adapters,
                 and the production model registry
-  evaluation/   point and probabilistic forecast-accuracy metrics
-  publishing/   immutable run artifacts and latest dashboard exports
+  evaluation/   metrics, frozen splits, paired comparisons, bootstrap CIs,
+                stratification, and champion-promotion rules
+  operations/   separate live publication, recent diagnostics, and daily wiring
+  publishing/   transactional immutable runs, checksums, score eligibility,
+                and atomic latest dashboard exports
 
 scripts/
-  fetch_*.py, build_*.py, run_*_backtest.py, run_publish_forecast.py
-  score_published_forecasts.py, run_daily_pipeline.py
+  fetch_*.py, build_*.py, run_*_backtest.py, run_publish_forecast.py,
+  run_recent_diagnostics.py, score_published_forecasts.py,
+  run_evaluation_arena.py, run_daily_pipeline.py
 
 app/
   streamlit_app.py
@@ -90,11 +107,21 @@ List the production registry:
 python scripts/run_publish_forecast.py --list-models
 ```
 
-Run baseline diagnostics and publish the default production forecast artifacts:
+Live publication and diagnostics are deliberately separate. Run a live forecast
+before its decision cutoff:
 
 ```bash
-python scripts/run_baseline_backtest.py --allow-incomplete-panel
 python scripts/run_publish_forecast.py --allow-incomplete-panel
+```
+
+The live origin is local market noon on the execution date. A live run started
+after that cutoff is rejected. Supplying `--forecast-origin-utc` defaults to a
+`replay` run; replay and shadow runs never replace latest. Run rolling-origin
+diagnostics independently so their latency or failure cannot block publication:
+
+```bash
+python scripts/run_recent_diagnostics.py --allow-incomplete-panel
+python scripts/run_baseline_backtest.py --allow-incomplete-panel
 ```
 
 Score saved forecasts that were actually published earlier, without
@@ -112,8 +139,9 @@ and `chronos2_lora_calendar_weather_ctx1024_v1`.
 The Chronos production model loads a manually exported LoRA artifact from
 `artifacts/models/chronos2_lora_calendar_weather_ctx1024_v1/`, consumes the
 Open-Meteo long weather feature parquet, and publishes `q10`, `q50`, `q90`,
-with `y_pred=q50`. It fails rather than falling back if the required weather
-artifact or covariate schema is missing. Daily publishing loads the trained
+with `y_pred=q50`. It fails if the required weather artifact, covariate schema,
+or default full future-covariate coverage is missing. A zero fallback is
+available only when both the artifact and runtime explicitly select it. Daily publishing loads the trained
 LoRA artifact and does not update its weights; export a new artifact explicitly
 when you want to retrain:
 
@@ -121,10 +149,13 @@ when you want to retrain:
 python scripts/train_chronos_lora.py
 ```
 
-Chronos LoRA artifact schema v2 uses the same point-in-time weather selection
-and covariate fill policy in training and serving. Artifacts exported with the
-older schema are rejected and must be retrained rather than silently served
-with different feature semantics.
+Chronos LoRA artifact schema v2 records the point-in-time weather selection,
+role-specific fill rules, coverage threshold, and fallback policy. Training and
+context use forward-only fill; future covariates never borrow from another valid
+time. Runtime refuses to serve with a coverage policy that differs from the
+artifact. Older artifacts are rejected and must be retrained.
+New exports also record the random seed, optional base-model revision,
+Chronos/PyTorch versions, training-data hashes, and hashes of every model file.
 
 `rolling_median_hour_weekend_56d`, `rolling_median_local_hour_28d`,
 `catboost_price_manual_v1`, and `chronos_zero_shot_v1` live in the comparison
@@ -189,7 +220,25 @@ results/<run>/tuning_trials.jsonl                # CatBoost Optuna trials
 results/<run>/experiment_runs.jsonl              # Chronos experiment log
 ```
 
-Metrics include MAE, RMSE, bias, and optional quantile interval coverage/width.
+Metrics include MAE, RMSE, bias, pinball loss, interval coverage/width/score,
+weighted interval score, and calibration error. Candidate promotion uses exact
+candidate/champion key pairing, a deterministic moving-block bootstrap over
+forecast origins, and guardrails by month, area, local hour, DST, price regime,
+extreme/negative prices, and target regime:
+
+```bash
+python scripts/run_evaluation_arena.py \
+  --predictions results/example/predictions.parquet \
+  --candidate candidate_label \
+  --champion champion_label \
+  --splits-json config/evaluation_splits.example.json \
+  --split test \
+  --output-dir results/evaluation_arena/candidate_vs_champion
+```
+
+Commit the small deterministic JSON/Markdown report after review. Prediction
+parquets may remain in durable artifact storage; their SHA-256 is recorded in
+the report.
 
 ## Daily Job
 
@@ -214,6 +263,7 @@ Useful switches:
 python scripts/run_daily_pipeline.py --with-weather
 python scripts/run_daily_pipeline.py --skip-weather
 python scripts/run_daily_pipeline.py --skip-backtest
+python scripts/run_daily_pipeline.py --with-diagnostics
 python scripts/run_daily_pipeline.py --strict-panel
 ```
 
@@ -222,10 +272,12 @@ before publishing. Weather-aware models consume the existing long weather featur
 artifact and fail rather than silently fetching or falling back if that artifact
 or its covariate schema is missing.
 
-In production, run the cloud wrapper in a scheduled pipeline container. It
-hydrates the small runtime state it needs from S3, runs the daily command, writes
-immutable run artifacts, refreshes published-forecast performance history, then
-updates the `latest/` dashboard artifacts last.
+In production, the cloud wrapper runs the live path with `--skip-backtest`,
+hydrates the small runtime state it needs from S3, writes a transactional
+immutable run, and uploads the `latest/` dashboard artifact last. Recent
+diagnostics and `score_published_forecasts.py` are separate operator-scheduled
+jobs. Existing history files may be synchronized, but the live job does not
+recompute either diagnostics or published-history scores.
 
 ## Dashboard
 
@@ -264,6 +316,10 @@ Compose mirrors the production artifact layout with separate images:
 - `Dockerfile.web` builds the lightweight Streamlit dashboard image.
 - `Dockerfile.pipeline` builds the heavier Chronos/PyTorch pipeline image.
 
+Both images install through exact direct-production pins in
+`constraints-production.txt`; change those pins deliberately and verify both
+container builds.
+
 It uses a file-backed store under ignored `cloud_store/` and a runtime workdir
 under ignored `runtime/`. Bootstrap the local store with the trained LoRA
 artifact before running the real pipeline:
@@ -295,8 +351,10 @@ make aws-bootstrap-model
 AWS_ENABLE_PIPELINE_SCHEDULE=true make aws-deploy
 ```
 
-The scheduled production task loads the existing LoRA artifact and refreshes
-weather data by default; it does not retrain Chronos on every update.
+The scheduled production task runs at 10:00 `Europe/Copenhagen`, leaving two
+hours before the noon decision cutoff. It loads the existing LoRA artifact and
+refreshes weather data by default; it does not retrain Chronos or run recent
+diagnostics on every update.
 
 For a local cloud-layout smoke test:
 
@@ -306,8 +364,9 @@ python scripts/run_cloud_pipeline.py --artifact-store-uri file:///tmp/dkenergy-s
 
 ## CI
 
-GitHub Actions runs `python -m ruff check .` and `python -m pytest` on Python
-3.10, 3.11, and 3.12. The workflow lives in `.github/workflows/ci.yml`.
+GitHub Actions runs Ruff, pytest, and compile checks on Python 3.10, 3.11, and
+3.12, validates Terraform, and builds/smoke-checks both production containers.
+The workflow lives in `.github/workflows/ci.yml`.
 Deployments are deliberately separate: start `.github/workflows/production.yml`
 manually after configuring the `production` GitHub environment and the
 `AWS_DEPLOY_ROLE_ARN` and `TF_STATE_BUCKET` repository secrets. The deployment
