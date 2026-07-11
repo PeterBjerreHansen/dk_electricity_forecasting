@@ -13,6 +13,7 @@ from dkenergy_forecast.backtesting.horizons import make_danish_delivery_day_hori
 from dkenergy_forecast.backtesting.rolling_origin import rolling_origin_backtest
 from dkenergy_forecast.evaluation.summary import model_score_table, probabilistic_metric_table
 from dkenergy_forecast.models.registry import (
+    baseline_model_factories,
     default_production_model_labels,
     latest_publish_model_factories,
     production_model_specs,
@@ -21,7 +22,6 @@ from dkenergy_forecast.models.comparison_registry import (
     comparison_model_factories,
     comparison_model_specs,
 )
-from dkenergy_forecast.operations.publish_forecast import resolve_forecast_origin
 from dkenergy_forecast.publishing import (
     build_published_forecast_history,
     build_published_forecast_scores,
@@ -74,6 +74,22 @@ def test_model_score_table_matches_published_contract() -> None:
         "p10_p90_coverage",
         "p10_p90_avg_width",
     }
+
+
+def test_model_scores_do_not_mix_distinct_model_releases() -> None:
+    predictions = pd.concat(
+        [
+            _predictions().assign(model_release_id="release-a", y_pred=[9.0, 19.0]),
+            _predictions().assign(model_release_id="release-b", y_pred=[0.0, 0.0]),
+        ],
+        ignore_index=True,
+    )
+
+    scores = model_score_table(predictions)
+
+    all_area = scores[scores["area"].eq("ALL")]
+    assert set(all_area["model_release_id"]) == {"release-a", "release-b"}
+    assert all_area.set_index("model_release_id").loc["release-a", "mae"] == pytest.approx(1.0)
 
 
 def test_published_artifacts_validate_and_write(tmp_path) -> None:
@@ -135,24 +151,6 @@ def test_published_artifacts_validate_and_write(tmp_path) -> None:
         )
 
 
-@pytest.mark.parametrize(
-    ("latest_panel_timestamp", "expected_origin"),
-    [
-        ("2026-03-29T20:00:00Z", "2026-03-29T10:00:00Z"),
-        ("2026-10-25T20:00:00Z", "2026-10-25T11:00:00Z"),
-    ],
-)
-def test_publish_origin_keeps_local_noon_across_dst(
-    latest_panel_timestamp: str,
-    expected_origin: str,
-) -> None:
-    panel = pd.DataFrame({"ds_utc": [pd.Timestamp(latest_panel_timestamp)]})
-
-    origin = resolve_forecast_origin(panel, None, None, "12:00")
-
-    assert origin == pd.Timestamp(expected_origin)
-
-
 def test_published_prediction_validation_rejects_duplicate_keys() -> None:
     predictions = normalize_published_predictions(_predictions())
     duplicated = pd.concat([predictions, predictions.iloc[[0]]], ignore_index=True)
@@ -210,7 +208,7 @@ def test_future_publish_predictions_preserve_horizon_metadata_without_actuals() 
     panel = _panel(periods=24 * 14)
     origin = panel["ds_utc"].max().normalize() + pd.Timedelta(days=1, hours=10)
     origins = pd.DataFrame({"forecast_origin_utc": [origin]})
-    factories = latest_publish_model_factories(["same_hour_last_week"])
+    factories = baseline_model_factories()
 
     predictions = rolling_origin_backtest(
         model_factory=factories["same_hour_last_week"],
@@ -238,7 +236,7 @@ def test_future_dashboard_payload_serializes_missing_actuals_as_null(tmp_path) -
     panel = _panel(periods=24 * 14)
     origin = panel["ds_utc"].max().normalize() + pd.Timedelta(days=1, hours=10)
     origins = pd.DataFrame({"forecast_origin_utc": [origin]})
-    factories = latest_publish_model_factories(["same_hour_last_week"])
+    factories = baseline_model_factories()
 
     predictions = rolling_origin_backtest(
         model_factory=factories["same_hour_last_week"],
@@ -303,10 +301,22 @@ def test_published_forecast_history_scores_immutable_run_predictions(tmp_path) -
     normalize_published_predictions(predictions).to_parquet(run_dir / "predictions.parquet", index=False)
     (run_dir / "manifest.json").write_text(
         json.dumps(
+                {
+                    "run_id": "forecast_20240102T100000Z",
+                    "created_at_utc": "2024-01-02T10:00:00Z",
+                    "forecast_origin_utc": "2024-01-02T10:00:00Z",
+                    "run_kind": "live",
+                    "decision_deadline_utc": "2024-01-02T12:00:00Z",
+                }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "COMPLETED.json").write_text(
+        json.dumps(
             {
+                "status": "completed",
                 "run_id": "forecast_20240102T100000Z",
-                "created_at_utc": "2024-01-02T10:00:00Z",
-                "forecast_origin_utc": "2024-01-02T10:00:00Z",
+                "committed_at_utc": "2024-01-02T10:01:00Z",
             }
         ),
         encoding="utf-8",
@@ -360,10 +370,22 @@ def test_score_published_forecasts_script_scores_saved_runs(tmp_path) -> None:
     normalize_published_predictions(predictions).to_parquet(run_dir / "predictions.parquet", index=False)
     (run_dir / "manifest.json").write_text(
         json.dumps(
+                {
+                    "run_id": "forecast_20240102T100000Z",
+                    "created_at_utc": "2024-01-02T10:00:00Z",
+                    "forecast_origin_utc": "2024-01-02T10:00:00Z",
+                    "run_kind": "live",
+                    "decision_deadline_utc": "2024-01-02T12:00:00Z",
+                }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "COMPLETED.json").write_text(
+        json.dumps(
             {
+                "status": "completed",
                 "run_id": "forecast_20240102T100000Z",
-                "created_at_utc": "2024-01-02T10:00:00Z",
-                "forecast_origin_utc": "2024-01-02T10:00:00Z",
+                "committed_at_utc": "2024-01-02T10:01:00Z",
             }
         ),
         encoding="utf-8",
@@ -418,24 +440,19 @@ def test_score_published_forecasts_script_scores_saved_runs(tmp_path) -> None:
 def test_production_registry_contains_only_deployed_models(monkeypatch, tmp_path) -> None:
     specs = production_model_specs()
 
-    assert default_production_model_labels() == [
-        "same_hour_last_week",
-        "median_weekday_exp_hl4_floor10_42d__median_weekend_exp_hl28_floor20_56d",
-        "chronos2_lora_calendar_weather_ctx1024_v1",
-    ]
-    assert set(specs) == set(default_production_model_labels())
-    assert specs["chronos2_lora_calendar_weather_ctx1024_v1"].family == "chronos"
-    assert specs["chronos2_lora_calendar_weather_ctx1024_v1"].required_extra == "chronos"
-    assert specs["chronos2_lora_calendar_weather_ctx1024_v1"].default_enabled
-    assert specs["chronos2_lora_calendar_weather_ctx1024_v1"].emits_quantiles
-    assert specs["chronos2_lora_calendar_weather_ctx1024_v1"].requires_weather
+    assert default_production_model_labels() == ["chronos_weather"]
+    assert set(specs) == {"chronos_weather", "weighted_median_v1"}
+    assert specs["chronos_weather"].family == "chronos"
+    assert specs["chronos_weather"].required_extra == "chronos"
+    assert specs["chronos_weather"].emits_quantiles
+    assert specs["chronos_weather"].requires_weather
     monkeypatch.setattr("dkenergy_forecast.models.registry.ensure_chronos_available", lambda: None)
     assert set(latest_publish_model_factories()) == set(default_production_model_labels())
     chronos_factory = latest_publish_model_factories(
-        ["chronos2_lora_calendar_weather_ctx1024_v1"],
+        ["chronos_weather"],
         weather_features_long_path=tmp_path / "weather.parquet",
         chronos_model_artifact_path=tmp_path / "chronos_model",
-    )["chronos2_lora_calendar_weather_ctx1024_v1"]
+    )["chronos_weather"]
     chronos_model = chronos_factory()
     assert chronos_model.config.weather_features_long_path == tmp_path / "weather.parquet"
     assert chronos_model.config.model_artifact_path == tmp_path / "chronos_model"
@@ -452,7 +469,6 @@ def test_comparison_registry_holds_notebook_and_smoke_models(monkeypatch) -> Non
     assert specs["rolling_median_hour_weekend_56d"].family == "baseline"
     assert specs["catboost_price_manual_v1"].family == "catboost"
     assert specs["catboost_price_manual_v1"].required_extra == "catboost"
-    assert not specs["catboost_price_manual_v1"].supports_latest_publish
     assert specs["chronos_zero_shot_v1"].family == "chronos"
     assert specs["chronos_zero_shot_v1"].required_extra == "chronos"
     assert specs["chronos_zero_shot_v1"].emits_quantiles
@@ -480,10 +496,8 @@ def test_publish_model_listing_includes_required_extra_and_quantile_metadata() -
         capture_output=True,
     )
 
-    assert (
-        "chronos2_lora_calendar_weather_ctx1024_v1: chronos, default, latest-publish, "
-        "extra=chronos, quantiles, weather"
-    ) in result.stdout
+    assert "chronos_weather: primary" in result.stdout
+    assert "weighted_median_v1: fallback" in result.stdout
     assert "catboost_price_manual_v1" not in result.stdout
     assert "chronos_zero_shot_v1" not in result.stdout
 

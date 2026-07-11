@@ -46,7 +46,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=_env_int("FORECAST_AT_HOUR_UTC"),
         help="Legacy fixed UTC forecast hour. Omit to use --forecast-local-time.",
     )
-    parser.add_argument("--forecast-local-time", default=_env("FORECAST_LOCAL_TIME", "12:00"))
+    parser.add_argument("--forecast-local-time", default=_env("FORECAST_LOCAL_TIME", "10:00"))
     parser.add_argument("--min-train-days", type=int, default=int(_env("MIN_TRAIN_DAYS", "60")))
     parser.add_argument("--score-days", type=int, default=int(_env("SCORE_DAYS", "14")))
     parser.add_argument("--score-max-origins", type=int, default=int(_env("SCORE_MAX_ORIGINS", "7")))
@@ -61,7 +61,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--models",
         nargs="+",
         default=_env_list("PUBLISH_MODELS"),
-        help="Optional run_publish_forecast.py model labels. Defaults to the registry defaults.",
+        help="Optional models for background diagnostics; live production ignores this list.",
     )
     parser.add_argument(
         "--weather-features-long-path",
@@ -72,6 +72,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--chronos-model-artifact-path",
         default=_env("DKENERGY_CHRONOS_MODEL_ARTIFACT_PATH"),
         help="Local trained Chronos LoRA artifact path passed to production publishing.",
+    )
+    parser.add_argument(
+        "--production-config",
+        default=_env("DKENERGY_PRODUCTION_CONFIG", str(PROJECT_ROOT / "config" / "production.json")),
+        help="Source-controlled live primary/fallback configuration.",
     )
     parser.add_argument("--skip-price-ingest", action="store_true")
     parser.add_argument("--skip-weather", action="store_true", help="Disable weather even when WITH_WEATHER is set.")
@@ -199,25 +204,18 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
             str(paths.price_panel_qa),
             "--artifact-root",
             str(paths.forecast_runs),
-            "--latest-forecast-dir",
-            str(paths.latest_forecast),
-            "--recent-scores-dir",
-            str(paths.recent_scores),
-            "--published-history-dir",
-            str(paths.published_history),
-            "--dashboard-path",
-            str(paths.dashboard_json),
-            "--forecast-local-time",
-            str(args.forecast_local_time),
+            "--latest-pointer-path",
+            str(paths.latest_pointer),
+            "--runtime-root",
+            str(paths.root),
+            "--production-config",
+            str(args.production_config),
             "--min-train-days",
             str(args.min_train_days),
         ]
-        if args.at_hour_utc is not None:
-            publish.extend(["--at-hour-utc", str(args.at_hour_utc)])
-        if args.models:
-            publish.extend(["--models", *args.models])
         publish.extend(["--weather-features-long-path", weather_features_long_path])
-        publish.extend(["--chronos-model-artifact-path", chronos_model_artifact_path])
+        if args.chronos_model_artifact_path:
+            publish.extend(["--chronos-model-artifact-path", chronos_model_artifact_path])
         if not args.strict_panel:
             publish.append("--allow-incomplete-panel")
         commands.append(publish)

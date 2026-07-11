@@ -1,9 +1,8 @@
-from dkenergy_forecast.evaluation.arena import (
-    PromotionPolicy,
-    block_bootstrap_mean_ci,
-    build_evaluation_report,
-    paired_model_predictions,
-    paired_origin_comparison,
+from dkenergy_forecast.evaluation.comparison import (
+    build_model_comparison,
+    moving_block_bootstrap_mean_ci,
+    origin_metric_differences,
+    pair_model_predictions,
 )
 from dkenergy_forecast.evaluation.point_metrics import bias, mae, rmse
 from dkenergy_forecast.evaluation.probabilistic_metrics import (
@@ -16,9 +15,9 @@ from dkenergy_forecast.evaluation.probabilistic_metrics import (
     weighted_interval_score,
 )
 from dkenergy_forecast.evaluation.reporting import (
-    render_evaluation_markdown,
+    render_model_comparison_markdown,
     sha256_file,
-    write_evaluation_report,
+    write_model_comparison,
 )
 from dkenergy_forecast.evaluation.splits import (
     EvaluationInterval,
@@ -42,8 +41,7 @@ __all__ = [
     "add_prediction_diagnostics",
     "average_interval_width",
     "bias",
-    "block_bootstrap_mean_ci",
-    "build_evaluation_report",
+    "build_model_comparison",
     "DEFAULT_STRATA_COLUMNS",
     "EvaluationInterval",
     "explicit_evaluation_interval",
@@ -55,17 +53,17 @@ __all__ = [
     "mae",
     "mean_absolute_calibration_error",
     "model_score_table",
-    "paired_model_predictions",
-    "paired_origin_comparison",
+    "moving_block_bootstrap_mean_ci",
+    "origin_metric_differences",
+    "pair_model_predictions",
     "pinball_loss",
     "prepare_evaluation_strata",
     "probabilistic_metric_table",
-    "PromotionPolicy",
     "quantile_calibration_error",
-    "render_evaluation_markdown",
+    "render_model_comparison_markdown",
     "rmse",
     "sha256_file",
     "stratified_score_table",
     "weighted_interval_score",
-    "write_evaluation_report",
+    "write_model_comparison",
 ]

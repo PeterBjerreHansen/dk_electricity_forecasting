@@ -23,8 +23,13 @@ from dkenergy_forecast.models.chronos_production import (  # noqa: E402
     CALENDAR_COVARIATES,
     CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION,
     CONTEXT_WEATHER_FILL_POLICY,
+    DEFAULT_INFORMATION_CUTOFF_LOCAL_TIME,
+    EXCLUDED_WEATHER_PARAMETERS,
     FUTURE_WEATHER_FILL_POLICY,
+    WEATHER_CUTOFF_COLUMNS,
     WEATHER_HORIZON_COVERAGE_UNIT,
+    WEATHER_MISSING_VALUE_POLICY,
+    WEATHER_SELECTION_POLICY,
     Chronos2LoRAWeatherConfig,
     DEFAULT_CHRONOS_LORA_ARTIFACT_PATH,
     DEFAULT_WEATHER_FEATURES_LONG_PATH,
@@ -40,6 +45,7 @@ from dkenergy_forecast.types import (  # noqa: E402
     PRICE_AVAILABILITY_COLUMN,
     TARGET_CONTRACT_COLUMNS,
     COPENHAGEN_TZ,
+    add_price_availability,
     ensure_price_availability,
     filter_price_history_available_before,
     normalize_utc_column,
@@ -73,6 +79,7 @@ def main() -> None:
         context_length=args.context_length,
         prediction_length=args.prediction_length,
         weather_covariate_mode=args.weather_covariate_mode,
+        information_cutoff_local_time=args.information_cutoff_local_time,
     )
 
     from chronos import BaseChronosPipeline
@@ -146,6 +153,11 @@ def parse_args() -> argparse.Namespace:
         help="Optional immutable Hugging Face model revision (recommended for production exports).",
     )
     parser.add_argument("--first-eval-origin-utc", default="2026-04-01T10:00:00Z")
+    parser.add_argument(
+        "--information-cutoff-local-time",
+        default=DEFAULT_INFORMATION_CUTOFF_LOCAL_TIME,
+        help="Historical delivery-day cutoff in Europe/Copenhagen wall-clock time.",
+    )
     parser.add_argument("--context-length", type=int, default=1024)
     parser.add_argument("--prediction-length", type=int, default=36)
     parser.add_argument("--num-steps", type=int, default=300)
@@ -153,7 +165,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--logging-steps", type=int, default=25)
     parser.add_argument("--random-seed", type=int, default=2026)
-    parser.add_argument("--weather-covariate-mode", choices=["all", "raw", "ensemble", "ensemble_mean"], default="all")
+    parser.add_argument(
+        "--weather-covariate-mode",
+        choices=["all", "raw", "ensemble", "ensemble_mean"],
+        default="ensemble_mean",
+    )
     parser.add_argument("--weather-horizon-min-coverage", type=float, default=1.0)
     parser.add_argument(
         "--weather-future-fallback-policy",
@@ -182,6 +198,7 @@ def make_lora_training_frame(
     context_length: int,
     prediction_length: int,
     weather_covariate_mode: str,
+    information_cutoff_local_time: str = DEFAULT_INFORMATION_CUTOFF_LOCAL_TIME,
 ) -> tuple[pd.DataFrame, list[str], dict[str, Any]]:
     panel_utc = ensure_price_availability(
         normalize_utc_column(panel, "ds_utc")
@@ -210,6 +227,11 @@ def make_lora_training_frame(
         raise ValueError(f"No Chronos LoRA training rows before {first_eval_origin.isoformat()}")
     assert_regular_hourly_training_series(train)
     train["forecast_origin_utc"] = train[PRICE_AVAILABILITY_COLUMN]
+    train = add_price_availability(
+        train,
+        publication_local_time=information_cutoff_local_time,
+        column="information_cutoff_utc",
+    )
     train = add_weather_covariates(
         train,
         weather_utc,
@@ -246,8 +268,13 @@ def make_lora_training_frame(
         "available_random_windows_lower_bound": int((lengths - min_required + 1).clip(lower=0).sum()),
         "covariate_count": int(len(covariates)),
         "weather_covariate_count": int(sum(column.startswith("weather_") for column in covariates)),
-        "weather_origin_policy": "price_available_at_utc for each historical target row",
-        "covariate_fill_policy": CONTEXT_WEATHER_FILL_POLICY,
+        "weather_origin_policy": (
+            f"delivery-day-minus-one at {information_cutoff_local_time} Europe/Copenhagen"
+        ),
+        "weather_selection_policy": WEATHER_SELECTION_POLICY,
+        "information_cutoff_local_time": information_cutoff_local_time,
+        "covariate_fill_policy": WEATHER_MISSING_VALUE_POLICY,
+        "training_frame_sha256": _dataframe_sha256(train_df),
         "price_availability_policy": {
             "column": PRICE_AVAILABILITY_COLUMN,
             "publication_local_time": DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
@@ -307,8 +334,16 @@ def make_manifest(
         args.validation_scores_path,
         model_label=args.validation_score_model_label,
     )
+    artifact_content_sha256 = _hash_mapping(artifact_files_sha256)
+    information_cutoff_local_time = getattr(
+        args,
+        "information_cutoff_local_time",
+        DEFAULT_INFORMATION_CUTOFF_LOCAL_TIME,
+    )
     return {
         "artifact_schema_version": CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION,
+        "model_name": "chronos_weather",
+        "release_id": f"sha256-{artifact_content_sha256[:16]}",
         "created_at_utc": datetime.now(timezone.utc),
         "base_model_id": args.base_model_id,
         "base_model_revision": getattr(args, "base_model_revision", None),
@@ -334,10 +369,23 @@ def make_manifest(
             "local_time": DEFAULT_PRICE_PUBLICATION_LOCAL_TIME,
         },
         "weather_availability_policy": {
-            "training_origin": "price_available_at_utc for each historical target row",
-            "serving_context_origin": "price_available_at_utc for each historical context row",
-            "serving_future_origin": "forecast_origin_utc",
-            "eligibility_operator": "<= forecast_origin_utc",
+            "training_cutoff": (
+                "delivery-day-minus-one at "
+                f"{information_cutoff_local_time} Europe/Copenhagen"
+            ),
+            "serving_context_cutoff": (
+                "delivery-day-minus-one at "
+                f"{information_cutoff_local_time} Europe/Copenhagen"
+            ),
+            "serving_future_cutoff": "information_cutoff_utc",
+            "eligibility_operator": "forecast_available_at_utc <= information_cutoff_utc",
+        },
+        "weather_selection_policy": {
+            "name": WEATHER_SELECTION_POLICY,
+            "cutoff_priority": list(WEATHER_CUTOFF_COLUMNS),
+            "stable_feature_names": True,
+            "excluded_parameters": list(EXCLUDED_WEATHER_PARAMETERS),
+            "historical_cutoff_local_time": information_cutoff_local_time,
         },
         "weather_vintage_policy": {
             "vintage_id_column": "weather_vintage_id",
@@ -362,7 +410,8 @@ def make_manifest(
             "training": CONTEXT_WEATHER_FILL_POLICY,
             "serving_context": CONTEXT_WEATHER_FILL_POLICY,
             "serving_future": FUTURE_WEATHER_FILL_POLICY,
-            "temporal_future_fill": False,
+            "temporal_fill": False,
+            "missing_value": 0.0,
         },
         "target_contract": {
             "columns": TARGET_CONTRACT_COLUMNS,
@@ -385,7 +434,7 @@ def make_manifest(
             ),
         },
         "artifact_files_sha256": artifact_files_sha256,
-        "artifact_content_sha256": _hash_mapping(artifact_files_sha256),
+        "artifact_content_sha256": artifact_content_sha256,
         "panel_dataset_version": sorted(panel["dataset_version"].dropna().unique().tolist()),
         "weather_min_ds_utc": pd.to_datetime(weather["ds_utc"], utc=True).min() if "ds_utc" in weather else None,
         "weather_max_ds_utc": pd.to_datetime(weather["ds_utc"], utc=True).max() if "ds_utc" in weather else None,
@@ -424,6 +473,16 @@ def _file_sha256(path: Path) -> str:
 def _hash_mapping(values: dict[str, str]) -> str:
     canonical = json.dumps(values, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
+
+
+def _dataframe_sha256(frame: pd.DataFrame) -> str:
+    """Hash the materialized training frame, including schema and row order."""
+
+    digest = hashlib.sha256()
+    schema = [(column, str(frame[column].dtype)) for column in frame.columns]
+    digest.update(json.dumps(schema, separators=(",", ":")).encode("utf-8"))
+    digest.update(pd.util.hash_pandas_object(frame, index=False).to_numpy().tobytes())
+    return digest.hexdigest()
 
 
 def read_validation_scores(

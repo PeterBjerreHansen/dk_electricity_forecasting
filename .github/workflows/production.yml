@@ -14,6 +14,8 @@ permissions:
 env:
   AWS_REGION: eu-central-1
   ENABLE_PIPELINE_SCHEDULE: ${{ vars.ENABLE_PIPELINE_SCHEDULE || 'false' }}
+  ENABLE_PUBLISHED_SCORING_SCHEDULE: ${{ vars.ENABLE_PUBLISHED_SCORING_SCHEDULE || 'false' }}
+  ALERT_EMAIL_ENDPOINT: ${{ vars.ALERT_EMAIL_ENDPOINT || '' }}
 
 jobs:
   deploy:
@@ -50,6 +52,11 @@ jobs:
             -backend-config="key=dk-energy-forecasts/production.tfstate" \
             -backend-config="region=${AWS_REGION}"
 
+      - name: Validate Terraform
+        run: |
+          terraform -chdir=infra/aws fmt -check -recursive
+          terraform -chdir=infra/aws validate
+
       - name: Ensure ECR exists
         run: |
           terraform -chdir=infra/aws apply -auto-approve \
@@ -72,10 +79,24 @@ jobs:
           WEB_IMAGE_URI: ${{ steps.ecr.outputs.web_repository_url }}:${{ github.sha }}
           PIPELINE_IMAGE_URI: ${{ steps.ecr.outputs.pipeline_repository_url }}:${{ github.sha }}
         run: |
-          docker build -f Dockerfile.web -t "$WEB_IMAGE_URI" .
-          docker build -f Dockerfile.pipeline -t "$PIPELINE_IMAGE_URI" .
-          docker push "$WEB_IMAGE_URI"
-          docker push "$PIPELINE_IMAGE_URI"
+          WEB_REPOSITORY="${{ steps.ecr.outputs.web_repository_url }}"
+          WEB_REPOSITORY="${WEB_REPOSITORY##*/}"
+          if aws ecr describe-images --repository-name "$WEB_REPOSITORY" --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
+            echo "Reusing immutable web image $WEB_IMAGE_URI"
+          else
+            docker build --build-arg "GIT_SHA=${GITHUB_SHA}" -f Dockerfile.web -t "$WEB_IMAGE_URI" .
+            docker push "$WEB_IMAGE_URI"
+          fi
+
+          PIPELINE_REPOSITORY="${{ steps.ecr.outputs.pipeline_repository_url }}"
+          PIPELINE_REPOSITORY="${PIPELINE_REPOSITORY##*/}"
+          if aws ecr describe-images --repository-name "$PIPELINE_REPOSITORY" --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
+            echo "Reusing immutable pipeline image $PIPELINE_IMAGE_URI"
+          else
+            docker build --build-arg "GIT_SHA=${GITHUB_SHA}" -f Dockerfile.pipeline -t "$PIPELINE_IMAGE_URI" .
+            docker push "$PIPELINE_IMAGE_URI"
+          fi
+
           echo "web_image_uri=$WEB_IMAGE_URI" >> "$GITHUB_OUTPUT"
           echo "pipeline_image_uri=$PIPELINE_IMAGE_URI" >> "$GITHUB_OUTPUT"
 
@@ -98,6 +119,9 @@ jobs:
         run: |
           terraform -chdir=infra/aws apply -auto-approve \
             -var "aws_region=${AWS_REGION}" \
+            -var "build_git_sha=${GITHUB_SHA}" \
             -var "web_image_uri=${{ steps.images.outputs.web_image_uri }}" \
             -var "pipeline_image_uri=${{ steps.images.outputs.pipeline_image_uri }}" \
-            -var "enable_pipeline_schedule=${ENABLE_PIPELINE_SCHEDULE}"
+            -var "enable_pipeline_schedule=${ENABLE_PIPELINE_SCHEDULE}" \
+            -var "enable_published_scoring_schedule=${ENABLE_PUBLISHED_SCORING_SCHEDULE}" \
+            -var "alert_email_endpoint=${ALERT_EMAIL_ENDPOINT}"

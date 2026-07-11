@@ -10,8 +10,12 @@ import numpy as np
 import pandas as pd
 
 from dkenergy_forecast.features.weather_features import (
+    EXCLUDED_WEATHER_PARAMETERS,
+    WEATHER_CUTOFF_COLUMNS,
+    WEATHER_SELECTION_POLICY,
     add_weather_derived_features,
     add_weather_ensemble_features,
+    canonical_weather_feature_name,
     join_weather_features,
     weather_value_columns,
 )
@@ -20,6 +24,7 @@ from dkenergy_forecast.types import (
     PRICE_AVAILABILITY_COLUMN,
     TARGET_CONTRACT_COLUMNS,
     add_copenhagen_calendar,
+    add_price_availability,
     add_target_contract,
     ensure_price_availability,
     filter_price_history_available_before,
@@ -32,10 +37,12 @@ from dkenergy_forecast.types import (
 DEFAULT_RUNTIME_LAYOUT = runtime_layout()
 DEFAULT_CHRONOS_LORA_ARTIFACT_PATH = DEFAULT_RUNTIME_LAYOUT.chronos_model_artifact
 DEFAULT_WEATHER_FEATURES_LONG_PATH = DEFAULT_RUNTIME_LAYOUT.weather_features_long
-CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION = 2
+CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION = 3
 WEATHER_HORIZON_COVERAGE_UNIT = "required_weather_covariate_cells"
-CONTEXT_WEATHER_FILL_POLICY = "per_series_forward_fill_then_zero"
-FUTURE_WEATHER_FILL_POLICY = "no_temporal_fill_then_zero"
+WEATHER_MISSING_VALUE_POLICY = "no_temporal_fill_then_zero"
+DEFAULT_INFORMATION_CUTOFF_LOCAL_TIME = "10:00"
+CONTEXT_WEATHER_FILL_POLICY = WEATHER_MISSING_VALUE_POLICY
+FUTURE_WEATHER_FILL_POLICY = WEATHER_MISSING_VALUE_POLICY
 
 CALENDAR_COVARIATES = [
     "local_hour",
@@ -57,7 +64,8 @@ class Chronos2LoRAWeatherConfig:
     device_map: str = "cpu"
     torch_dtype: str | None = None
     weather_features_long_path: str | Path = DEFAULT_WEATHER_FEATURES_LONG_PATH
-    weather_covariate_mode: Literal["all", "raw", "ensemble", "ensemble_mean"] = "all"
+    information_cutoff_local_time: str = DEFAULT_INFORMATION_CUTOFF_LOCAL_TIME
+    weather_covariate_mode: Literal["all", "raw", "ensemble", "ensemble_mean"] = "ensemble_mean"
     batch_size: int = 128
     cross_learning: bool = False
     add_weather_ensemble_features: bool = True
@@ -85,8 +93,8 @@ class Chronos2LoRAWeatherDayAhead:
 
     config: Chronos2LoRAWeatherConfig = PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG
     pipeline: Any | None = None
-    model_name: str = "chronos2_lora_calendar_weather_day_ahead"
-    model_version: str = "ctx1024_v1"
+    model_name: str = "chronos_weather"
+    model_version: str | None = None
 
     def __post_init__(self) -> None:
         if self.config.context_length <= 0:
@@ -134,7 +142,9 @@ class Chronos2LoRAWeatherDayAhead:
             missing = int(scored["y_pred"].isna().sum())
             raise ValueError(f"Chronos LoRA predictions are missing delivery rows: missing={missing}")
         scored["model_name"] = self.model_name
-        scored["model_version"] = self.model_version
+        scored["model_version"] = self.model_version or str(
+            self.artifact_manifest().get("release_id", "unknown")
+        )
         output_columns = [
             "unique_id",
             "ds_utc",
@@ -202,7 +212,11 @@ def build_lora_weather_prediction_frames(
     history_frame = _prepare_weather_history(history)
     future_frame = _prepare_weather_future(future)
     origin = _single_forecast_origin(future_frame)
-    history_available = filter_price_history_available_before(history_frame, origin)
+    information_cutoff = _single_information_cutoff(future_frame, origin)
+    history_available = filter_price_history_available_before(
+        history_frame,
+        information_cutoff,
+    )
     if history_available.empty:
         raise ValueError(f"No Chronos history rows available before {origin.isoformat()}")
 
@@ -231,10 +245,16 @@ def build_lora_weather_prediction_frames(
     ids = future_frame[["unique_id", "area"]].drop_duplicates("unique_id")
     full_future = ids.merge(pd.DataFrame({"ds_utc": prediction_timestamps}), how="cross")
     full_future["forecast_origin_utc"] = origin
+    full_future["information_cutoff_utc"] = information_cutoff
     full_future = add_copenhagen_calendar(full_future)
 
     context_full = context.copy()
     context_full["forecast_origin_utc"] = context_full[PRICE_AVAILABILITY_COLUMN]
+    context_full = add_price_availability(
+        context_full,
+        publication_local_time=config.information_cutoff_local_time,
+        column="information_cutoff_utc",
+    )
     context_full = add_copenhagen_calendar(context_full)
     context_full = add_weather_covariates(context_full, weather, config=config, expected_covariates=covariates)
     full_future = add_weather_covariates(full_future, weather, config=config, expected_covariates=covariates)
@@ -262,6 +282,7 @@ def build_lora_weather_prediction_frames(
         "unique_id",
         "ds_utc",
         "forecast_origin_utc",
+        *(["information_cutoff_utc"] if "information_cutoff_utc" in future_frame else []),
         "horizon",
         *[column for column in TARGET_CONTRACT_COLUMNS if column in future_frame.columns],
     ]
@@ -325,6 +346,25 @@ def validate_artifact_weather_policy(
     manifest: dict[str, Any],
     config: Chronos2LoRAWeatherConfig,
 ) -> None:
+    selection_policy = manifest.get("weather_selection_policy")
+    expected_selection_policy = {
+        "name": WEATHER_SELECTION_POLICY,
+        "cutoff_priority": list(WEATHER_CUTOFF_COLUMNS),
+        "stable_feature_names": True,
+        "excluded_parameters": list(EXCLUDED_WEATHER_PARAMETERS),
+        "historical_cutoff_local_time": config.information_cutoff_local_time,
+    }
+    if selection_policy != expected_selection_policy:
+        raise ValueError(
+            "Chronos artifact weather-selection policy is incompatible with runtime: "
+            f"runtime={expected_selection_policy}, artifact={selection_policy}"
+        )
+    artifact_mode = manifest.get("weather_covariate_mode")
+    if artifact_mode != config.weather_covariate_mode:
+        raise ValueError(
+            "Chronos runtime weather-covariate mode does not match the trained artifact: "
+            f"runtime={config.weather_covariate_mode!r}, artifact={artifact_mode!r}"
+        )
     policy = manifest.get("weather_horizon_coverage_policy")
     if not isinstance(policy, dict):
         raise ValueError(
@@ -420,7 +460,10 @@ def materialize_unavailable_weather_covariates(
     output = frame.copy()
     if "feature_name" not in weather.columns:
         return output
-    source_features = set(weather["feature_name"].dropna().astype(str))
+    source_features = {
+        canonical_weather_feature_name(feature)
+        for feature in weather["feature_name"].dropna().astype(str)
+    }
     for column in covariates:
         if column in output.columns or not column.startswith("weather_"):
             continue
@@ -436,16 +479,15 @@ def _ensemble_covariate_has_source(column: str, source_features: set[str]) -> bo
     for suffix in ("_mean", "_min", "_max", "_spread"):
         if not body.endswith(suffix):
             continue
-        lead_and_parameter = body[: -len(suffix)]
-        lead, _, parameter = lead_and_parameter.partition("_")
-        if not lead.startswith("lead") or not parameter:
+        parameter = body[: -len(suffix)]
+        if not parameter:
             return False
         matching_sources = [
             feature
             for feature in source_features
             if feature.startswith("weather_")
             and not feature.startswith("weather_ensemble_")
-            and feature.endswith(f"_{lead}_{parameter}")
+            and feature.endswith(f"_{parameter}")
         ]
         return len(matching_sources) >= 2
     return False
@@ -486,11 +528,6 @@ def fill_lora_covariates(
     for column in covariates:
         if pd.api.types.is_bool_dtype(output[column]):
             output[column] = output[column].astype("int8")
-    weather_columns = [column for column in covariates if column.startswith("weather_")]
-    if role in {"training", "context"} and weather_columns:
-        output[weather_columns] = output.groupby("unique_id", observed=True)[
-            weather_columns
-        ].transform(lambda values: values.ffill())
     output[covariates] = output[covariates].fillna(0.0)
     return output
 
@@ -569,6 +606,8 @@ def _prepare_weather_future(future: pd.DataFrame) -> pd.DataFrame:
     require_columns(future, ["unique_id", "area", "ds_utc", "forecast_origin_utc", "horizon"], "future")
     output = normalize_utc_column(future, "ds_utc")
     output = normalize_utc_column(output, "forecast_origin_utc")
+    if "information_cutoff_utc" in output.columns:
+        output = normalize_utc_column(output, "information_cutoff_utc")
     output = add_target_contract(output)
     return output.sort_values(["unique_id", "ds_utc"]).reset_index(drop=True)
 
@@ -589,6 +628,18 @@ def _single_forecast_origin(future: pd.DataFrame) -> pd.Timestamp:
     if len(origins) != 1:
         raise ValueError("Chronos production model expects exactly one forecast_origin_utc")
     return to_utc_timestamp(origins[0])
+
+
+def _single_information_cutoff(
+    future: pd.DataFrame,
+    fallback_origin: pd.Timestamp,
+) -> pd.Timestamp:
+    if "information_cutoff_utc" not in future.columns:
+        return fallback_origin
+    cutoffs = future["information_cutoff_utc"].drop_duplicates().tolist()
+    if len(cutoffs) != 1:
+        raise ValueError("Chronos production model expects exactly one information_cutoff_utc")
+    return to_utc_timestamp(cutoffs[0])
 
 
 def _require_covariate_columns(frame: pd.DataFrame, covariates: list[str], frame_name: str) -> None:

@@ -27,6 +27,11 @@ from dkenergy_forecast.models.chronos_production import (
     load_lora_artifact_manifest,
     load_chronos_lora_pipeline,
 )
+from dkenergy_forecast.features.weather_features import (
+    EXCLUDED_WEATHER_PARAMETERS,
+    WEATHER_CUTOFF_COLUMNS,
+    WEATHER_SELECTION_POLICY,
+)
 from dkenergy_forecast.models.chronos_zero_shot import (
     ChronosProductionConfig,
     ChronosZeroShotDayAhead,
@@ -112,7 +117,7 @@ def test_chronos_lora_weather_adapter_emits_delivery_quantiles_and_uses_publishe
     future = make_danish_delivery_day_horizon(panel, origin)
     artifact_path = _chronos_artifact(
         tmp_path,
-        covariates=[*CALENDAR_COVARIATES, "weather_gfs_global_lead1d_temperature_2m"],
+        covariates=[*CALENDAR_COVARIATES, "weather_gfs_global_temperature_2m"],
         weather_future_fallback_policy="zero",
     )
     weather_path = _weather_path(
@@ -120,7 +125,10 @@ def test_chronos_lora_weather_adapter_emits_delivery_quantiles_and_uses_publishe
         panel=panel,
         origin=origin,
         max_ds_utc=future["ds_utc"].max(),
-        feature_names=["weather_gfs_global_lead1d_temperature_2m"],
+        feature_names=[
+            "weather_gfs_global_lead1d_temperature_2m",
+            "weather_gfs_global_lead2d_temperature_2m",
+        ],
     )
     pipeline = FakeChronosPredictDfPipeline()
 
@@ -129,6 +137,7 @@ def test_chronos_lora_weather_adapter_emits_delivery_quantiles_and_uses_publishe
             model_artifact_path=artifact_path,
             weather_features_long_path=weather_path,
             context_length=48,
+            weather_covariate_mode="raw",
             weather_future_fallback_policy="zero",
         ),
         pipeline=pipeline,
@@ -151,8 +160,7 @@ def test_chronos_training_and_serving_share_point_in_time_weather_covariates() -
     weather = _weather_vintages(panel)
     covariates = [
         *CALENDAR_COVARIATES,
-        "weather_gfs_global_lead1d_temperature_2m",
-        "weather_gfs_global_lead2d_temperature_2m",
+        "weather_gfs_global_temperature_2m",
     ]
     config = Chronos2LoRAWeatherConfig(
         context_length=24,
@@ -176,12 +184,14 @@ def test_chronos_training_and_serving_share_point_in_time_weather_covariates() -
         config=config,
     )
 
-    feature = "weather_gfs_global_lead1d_temperature_2m"
+    feature = "weather_gfs_global_temperature_2m"
+    lead1_feature = "weather_gfs_global_lead1d_temperature_2m"
     target = pd.Timestamp("2024-01-08T20:00:00")
     training_value = training.loc[training["timestamp"].eq(target), feature].iloc[0]
     serving_value = serving.context_df.loc[serving.context_df["timestamp"].eq(target), feature].iloc[0]
     raw_value = weather.loc[
-        weather["ds_utc"].eq(target.tz_localize("UTC")) & weather["feature_name"].eq(feature),
+        weather["ds_utc"].eq(target.tz_localize("UTC"))
+        & weather["feature_name"].eq(lead1_feature),
         "value",
     ].iloc[0]
 
@@ -234,7 +244,7 @@ def test_chronos_lora_loader_rejects_stale_feature_contract(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="expected 2"):
+    with pytest.raises(ValueError, match="expected 3"):
         load_lora_artifact_manifest(artifact_path)
 
 
@@ -257,7 +267,7 @@ def test_chronos_lora_weather_adapter_handles_dst_bridge_lengths(
     future = make_danish_delivery_day_horizon(panel, origin_ts)
     artifact_path = _chronos_artifact(
         tmp_path,
-        covariates=[*CALENDAR_COVARIATES, "weather_gfs_global_lead1d_temperature_2m"],
+        covariates=[*CALENDAR_COVARIATES, "weather_gfs_global_temperature_2m"],
         weather_future_fallback_policy="zero",
     )
     weather_path = _weather_path(
@@ -265,7 +275,10 @@ def test_chronos_lora_weather_adapter_handles_dst_bridge_lengths(
         panel=panel,
         origin=origin_ts,
         max_ds_utc=future["ds_utc"].max(),
-        feature_names=["weather_gfs_global_lead1d_temperature_2m"],
+        feature_names=[
+            "weather_gfs_global_lead1d_temperature_2m",
+            "weather_gfs_global_lead2d_temperature_2m",
+        ],
     )
     pipeline = FakeChronosPredictDfPipeline()
 
@@ -274,6 +287,7 @@ def test_chronos_lora_weather_adapter_handles_dst_bridge_lengths(
             model_artifact_path=artifact_path,
             weather_features_long_path=weather_path,
             context_length=48,
+            weather_covariate_mode="raw",
             weather_future_fallback_policy="zero",
         ),
         pipeline=pipeline,
@@ -283,6 +297,48 @@ def test_chronos_lora_weather_adapter_handles_dst_bridge_lengths(
     assert pipeline.prediction_length == expected_prediction_length
 
 
+def test_real_saved_weather_artifact_covers_production_horizon() -> None:
+    root = Path(__file__).resolve().parents[1]
+    panel_path = root / "data" / "model_ready" / "price_panel_hourly_v1.parquet"
+    weather_path = (
+        root
+        / "data"
+        / "features"
+        / "weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet"
+    )
+    if not panel_path.exists() or not weather_path.exists():
+        pytest.skip("real saved panel/weather artifacts are not available")
+
+    panel = pd.read_parquet(panel_path)
+    weather = pd.read_parquet(weather_path)
+    origin = pd.Timestamp("2026-07-06T10:00:00Z")
+    future = make_danish_delivery_day_horizon(panel, origin)
+    future["information_cutoff_utc"] = origin
+    weather_covariates = [
+        "weather_ensemble_cloud_cover_mean",
+        "weather_ensemble_precipitation_mean",
+        "weather_ensemble_shortwave_radiation_mean",
+        "weather_ensemble_temperature_2m_mean",
+        "weather_ensemble_wind_speed_100m_mean",
+        "weather_ensemble_wind_speed_10m_mean",
+    ]
+
+    frames = build_lora_weather_prediction_frames(
+        panel,
+        future,
+        weather=weather,
+        covariates=[*CALENDAR_COVARIATES, *weather_covariates],
+        config=Chronos2LoRAWeatherConfig(context_length=48),
+    )
+
+    assert frames.prediction_length == len(future) // future["unique_id"].nunique()
+    assert frames.weather_coverage_by_series == {
+        "day_ahead_price_DK1": 1.0,
+        "day_ahead_price_DK2": 1.0,
+    }
+    assert all("_lead" not in column for column in frames.covariates)
+
+
 def test_chronos_lora_weather_adapter_allows_partial_weather_nans_when_other_signal_exists(tmp_path) -> None:
     panel = _panel(periods=24 * 14)
     origin = pd.Timestamp("2024-01-09T10:00:00Z")
@@ -290,8 +346,7 @@ def test_chronos_lora_weather_adapter_allows_partial_weather_nans_when_other_sig
     future = make_danish_delivery_day_horizon(panel, origin)
     covariates = [
         *CALENDAR_COVARIATES,
-        "weather_gfs_global_lead1d_temperature_2m",
-        "weather_gfs_global_lead2d_temperature_2m",
+        "weather_gfs_global_temperature_2m",
     ]
     artifact_path = _chronos_artifact(
         tmp_path,
@@ -315,6 +370,7 @@ def test_chronos_lora_weather_adapter_allows_partial_weather_nans_when_other_sig
             model_artifact_path=artifact_path,
             weather_features_long_path=weather_path,
             context_length=48,
+            weather_covariate_mode="raw",
             weather_future_fallback_policy="zero",
         ),
         pipeline=FakeChronosPredictDfPipeline(),
@@ -330,7 +386,7 @@ def test_chronos_lora_weather_adapter_fails_for_missing_weather_file(tmp_path) -
     future = make_danish_delivery_day_horizon(panel, origin)
     artifact_path = _chronos_artifact(
         tmp_path,
-        covariates=[*CALENDAR_COVARIATES, "weather_gfs_global_lead1d_temperature_2m"],
+        covariates=[*CALENDAR_COVARIATES, "weather_gfs_global_temperature_2m"],
     )
 
     with pytest.raises(FileNotFoundError, match="weather feature file"):
@@ -339,6 +395,7 @@ def test_chronos_lora_weather_adapter_fails_for_missing_weather_file(tmp_path) -
                 model_artifact_path=artifact_path,
                 weather_features_long_path=tmp_path / "missing.parquet",
                 context_length=48,
+                weather_covariate_mode="raw",
             ),
             pipeline=FakeChronosPredictDfPipeline(),
         ).fit(history).predict(future)
@@ -351,7 +408,7 @@ def test_chronos_lora_weather_adapter_enforces_artifact_covariate_schema(tmp_pat
     future = make_danish_delivery_day_horizon(panel, origin)
     artifact_path = _chronos_artifact(
         tmp_path,
-        covariates=[*CALENDAR_COVARIATES, "weather_missing_model_lead1d_temperature_2m"],
+        covariates=[*CALENDAR_COVARIATES, "weather_missing_model_temperature_2m"],
     )
     weather_path = _weather_path(
         tmp_path,
@@ -367,6 +424,7 @@ def test_chronos_lora_weather_adapter_enforces_artifact_covariate_schema(tmp_pat
                 model_artifact_path=artifact_path,
                 weather_features_long_path=weather_path,
                 context_length=48,
+                weather_covariate_mode="raw",
             ),
             pipeline=FakeChronosPredictDfPipeline(),
         ).fit(history).predict(future)
@@ -464,6 +522,7 @@ def _chronos_artifact(
     *,
     covariates: list[str],
     weather_future_fallback_policy: str = "error",
+    weather_covariate_mode: str = "raw",
 ) -> Path:
     artifact_path = tmp_path / "chronos_artifact"
     artifact_path.mkdir()
@@ -471,7 +530,16 @@ def _chronos_artifact(
         json.dumps(
             {
                 "artifact_schema_version": CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION,
+                "release_id": "test-release",
                 "covariates": covariates,
+                "weather_covariate_mode": weather_covariate_mode,
+                "weather_selection_policy": {
+                    "name": WEATHER_SELECTION_POLICY,
+                    "cutoff_priority": list(WEATHER_CUTOFF_COLUMNS),
+                    "stable_feature_names": True,
+                    "excluded_parameters": list(EXCLUDED_WEATHER_PARAMETERS),
+                    "historical_cutoff_local_time": "10:00",
+                },
                 "weather_horizon_coverage_policy": {
                     "unit": "required_weather_covariate_cells",
                     "minimum": 1.0,

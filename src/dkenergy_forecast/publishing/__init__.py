@@ -13,12 +13,12 @@ from dkenergy_forecast.publishing.artifacts import (
     make_forecast_run_manifest,
     normalize_published_predictions,
     unique_run_id,
-    update_latest_exports,
     validate_evaluated_prediction_artifact_schema,
     validate_model_scores_schema,
     validate_prediction_artifact_schema,
     write_forecast_run_artifacts,
     write_json,
+    write_latest_pointer,
     write_published_forecast_history,
 )
 
@@ -37,11 +37,11 @@ __all__ = [
     "make_forecast_run_manifest",
     "normalize_published_predictions",
     "unique_run_id",
-    "update_latest_exports",
     "validate_evaluated_prediction_artifact_schema",
     "validate_model_scores_schema",
     "validate_prediction_artifact_schema",
     "write_forecast_run_artifacts",
+    "write_latest_pointer",
     "write_published_forecast_history",
     "write_json",
 ]

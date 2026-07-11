@@ -6,6 +6,9 @@ data "aws_availability_zones" "available" {
 locals {
   name            = "${var.project_name}-${var.environment}"
   artifact_prefix = trim(var.artifact_prefix, "/")
+  production_config = jsondecode(
+    file("${path.module}/../../config/production.json")
+  )
   bucket_name = (
     var.artifact_bucket_name != ""
     ? var.artifact_bucket_name
@@ -21,12 +24,16 @@ locals {
     ? "${aws_s3_bucket.artifacts.arn}/*"
     : "${aws_s3_bucket.artifacts.arn}/${local.artifact_prefix}/*"
   )
-  model_artifact_uri = "${local.artifact_store_uri}/models/chronos2_lora_calendar_weather_ctx1024_v1"
+  model_artifact_key = trimprefix(
+    local.production_config.primary.artifact_path,
+    "artifacts/"
+  )
+  model_artifact_uri = "${local.artifact_store_uri}/${local.model_artifact_key}"
 }
 
 resource "aws_ecr_repository" "web" {
   name                 = "${var.project_name}-web"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true
@@ -35,7 +42,7 @@ resource "aws_ecr_repository" "web" {
 
 resource "aws_ecr_repository" "pipeline" {
   name                 = "${var.project_name}-pipeline"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true
@@ -148,16 +155,20 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
+data "aws_ec2_managed_prefix_list" "cloudfront_origin_facing" {
+  name = "com.amazonaws.global.cloudfront.origin-facing"
+}
+
 resource "aws_security_group" "alb" {
   name        = "${local.name}-alb"
-  description = "Public HTTP ingress for dashboard ALB"
+  description = "CloudFront-only HTTP ingress for dashboard ALB"
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront_origin_facing.id]
   }
 
   egress {
@@ -168,9 +179,9 @@ resource "aws_security_group" "alb" {
   }
 }
 
-resource "aws_security_group" "tasks" {
-  name        = "${local.name}-tasks"
-  description = "ECS task security group"
+resource "aws_security_group" "web_tasks" {
+  name        = "${local.name}-web-tasks"
+  description = "Streamlit ECS task security group"
   vpc_id      = aws_vpc.main.id
 
   ingress {
@@ -179,6 +190,19 @@ resource "aws_security_group" "tasks" {
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
   }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "pipeline_tasks" {
+  name        = "${local.name}-pipeline-tasks"
+  description = "Scheduled pipeline ECS task security group"
+  vpc_id      = aws_vpc.main.id
 
   egress {
     from_port   = 0
@@ -280,6 +304,11 @@ resource "aws_cloudwatch_log_group" "pipeline" {
   retention_in_days = 14
 }
 
+resource "aws_cloudwatch_log_group" "scoring" {
+  name              = "/ecs/${local.name}/scoring"
+  retention_in_days = 14
+}
+
 resource "aws_ecs_cluster" "main" {
   name = local.name
 }
@@ -305,8 +334,8 @@ resource "aws_iam_role_policy_attachment" "ecs_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-resource "aws_iam_role" "ecs_task" {
-  name = "${local.name}-ecs-task"
+resource "aws_iam_role" "web_task" {
+  name = "${local.name}-web-task"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -321,15 +350,57 @@ resource "aws_iam_role" "ecs_task" {
   })
 }
 
-resource "aws_iam_role_policy" "ecs_task_s3" {
-  name = "${local.name}-s3"
-  role = aws_iam_role.ecs_task.id
+resource "aws_iam_role_policy" "web_task_s3" {
+  name = "${local.name}-s3-read"
+  role = aws_iam_role.web_task.id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = aws_s3_bucket.artifacts.arn
+        Condition = {
+          StringLike = {
+            "s3:prefix" = local.artifact_prefix == "" ? ["*"] : ["${local.artifact_prefix}/*"]
+          }
+        }
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = local.artifact_object_arn
+      }
+    ]
+  })
+}
+
+
+resource "aws_iam_role" "pipeline_task" {
+  name = "${local.name}-pipeline-task"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
         Effect = "Allow"
-        Action = ["s3:ListBucket"]
+        Principal = {
+          Service = "ecs-tasks.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "pipeline_task_s3" {
+  name = "${local.name}-s3-read-write"
+  role = aws_iam_role.pipeline_task.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
         Resource = aws_s3_bucket.artifacts.arn
         Condition = {
           StringLike = {
@@ -356,7 +427,7 @@ resource "aws_ecs_task_definition" "web" {
   cpu                      = var.web_cpu
   memory                   = var.web_memory
   execution_role_arn       = aws_iam_role.ecs_execution.arn
-  task_role_arn            = aws_iam_role.ecs_task.arn
+  task_role_arn            = aws_iam_role.web_task.arn
 
   container_definitions = jsonencode([
     {
@@ -372,8 +443,9 @@ resource "aws_ecs_task_definition" "web" {
         }
       ]
       environment = [
+        { name = "DKENERGY_BUILD_GIT_SHA", value = var.build_git_sha },
         { name = "DKENERGY_ARTIFACT_STORE_URI", value = local.artifact_store_uri },
-        { name = "DKENERGY_DASHBOARD_JSON", value = "${local.artifact_store_uri}/latest/forecast_dashboard.json" },
+        { name = "DKENERGY_LATEST_POINTER", value = "${local.artifact_store_uri}/latest.json" },
         { name = "DKENERGY_PANEL_PATH", value = "${local.artifact_store_uri}/latest/price_panel_hourly_v1.parquet" },
         { name = "DKENERGY_PUBLISHED_HISTORY_PREDICTIONS_PATH", value = "${local.artifact_store_uri}/published_forecast_history/predictions.parquet" },
         { name = "DKENERGY_PUBLISHED_HISTORY_SCORES_PATH", value = "${local.artifact_store_uri}/published_forecast_history/model_scores.parquet" },
@@ -401,9 +473,16 @@ resource "aws_ecs_service" "web" {
 
   network_configuration {
     subnets          = aws_subnet.public[*].id
-    security_groups  = [aws_security_group.tasks.id]
+    security_groups  = [aws_security_group.web_tasks.id]
     assign_public_ip = true
   }
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  health_check_grace_period_seconds = 60
 
   load_balancer {
     target_group_arn = aws_lb_target_group.web.arn
@@ -421,7 +500,7 @@ resource "aws_ecs_task_definition" "pipeline" {
   cpu                      = var.pipeline_cpu
   memory                   = var.pipeline_memory
   execution_role_arn       = aws_iam_role.ecs_execution.arn
-  task_role_arn            = aws_iam_role.ecs_task.arn
+  task_role_arn            = aws_iam_role.pipeline_task.arn
 
   ephemeral_storage {
     size_in_gib = var.pipeline_ephemeral_storage_gib
@@ -439,11 +518,10 @@ resource "aws_ecs_task_definition" "pipeline" {
         "--model-artifact-uri",
         local.model_artifact_uri,
         "--workdir",
-        "/var/lib/dkenergy",
-        "--score-max-origins",
-        tostring(var.score_max_origins)
+        "/var/lib/dkenergy"
       ]
       environment = [
+        { name = "DKENERGY_BUILD_GIT_SHA", value = var.build_git_sha },
         { name = "DKENERGY_ARTIFACT_STORE_URI", value = local.artifact_store_uri },
         { name = "DKENERGY_MODEL_ARTIFACT_URI", value = local.model_artifact_uri },
         { name = "DKENERGY_WORKDIR", value = "/var/lib/dkenergy" },
@@ -455,6 +533,44 @@ resource "aws_ecs_task_definition" "pipeline" {
           awslogs-group         = aws_cloudwatch_log_group.pipeline.name
           awslogs-region        = var.aws_region
           awslogs-stream-prefix = "pipeline"
+        }
+      }
+    }
+  ])
+}
+
+resource "aws_ecs_task_definition" "published_scoring" {
+  family                   = "${local.name}-published-scoring"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.scoring_cpu
+  memory                   = var.scoring_memory
+  execution_role_arn       = aws_iam_role.ecs_execution.arn
+  task_role_arn            = aws_iam_role.pipeline_task.arn
+
+  container_definitions = jsonencode([
+    {
+      name      = "published-scoring"
+      image     = var.pipeline_image_uri
+      essential = true
+      command = [
+        "score-published-cloud",
+        "--artifact-store-uri",
+        local.artifact_store_uri,
+        "--workdir",
+        "/var/lib/dkenergy-scoring"
+      ]
+      environment = [
+        { name = "DKENERGY_BUILD_GIT_SHA", value = var.build_git_sha },
+        { name = "DKENERGY_ARTIFACT_STORE_URI", value = local.artifact_store_uri },
+        { name = "DKENERGY_WORKDIR", value = "/var/lib/dkenergy-scoring" }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.scoring.name
+          awslogs-region        = var.aws_region
+          awslogs-stream-prefix = "published-scoring"
         }
       }
     }
@@ -484,16 +600,19 @@ resource "aws_iam_role_policy" "scheduler" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = ["ecs:RunTask"]
-        Resource = aws_ecs_task_definition.pipeline.arn
+        Effect = "Allow"
+        Action = ["ecs:RunTask"]
+        Resource = [
+          aws_ecs_task_definition.pipeline.arn,
+          aws_ecs_task_definition.published_scoring.arn
+        ]
       },
       {
         Effect = "Allow"
         Action = ["iam:PassRole"]
         Resource = [
           aws_iam_role.ecs_execution.arn,
-          aws_iam_role.ecs_task.arn
+          aws_iam_role.pipeline_task.arn
         ]
       }
     ]
@@ -521,9 +640,48 @@ resource "aws_scheduler_schedule" "pipeline" {
 
       network_configuration {
         subnets          = aws_subnet.public[*].id
-        security_groups  = [aws_security_group.tasks.id]
+        security_groups  = [aws_security_group.pipeline_tasks.id]
         assign_public_ip = true
       }
+    }
+
+
+    retry_policy {
+      maximum_event_age_in_seconds = 300
+      maximum_retry_attempts       = 0
+    }
+  }
+}
+
+resource "aws_scheduler_schedule" "published_scoring" {
+  count = var.enable_published_scoring_schedule ? 1 : 0
+
+  name                         = "${local.name}-published-scoring"
+  schedule_expression          = var.published_scoring_schedule_expression
+  schedule_expression_timezone = var.forecast_schedule_timezone
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_ecs_cluster.main.arn
+    role_arn = aws_iam_role.scheduler.arn
+
+    ecs_parameters {
+      task_definition_arn = aws_ecs_task_definition.published_scoring.arn
+      launch_type         = "FARGATE"
+
+      network_configuration {
+        subnets          = aws_subnet.public[*].id
+        security_groups  = [aws_security_group.pipeline_tasks.id]
+        assign_public_ip = true
+      }
+    }
+
+    retry_policy {
+      maximum_event_age_in_seconds = 300
+      maximum_retry_attempts       = 0
     }
   }
 }

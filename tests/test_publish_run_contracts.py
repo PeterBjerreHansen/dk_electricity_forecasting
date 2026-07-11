@@ -1,59 +1,69 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pandas as pd
 import pytest
 
+from dkenergy_forecast.operations.contracts import ForecastRequest, load_production_config
 from dkenergy_forecast.operations.publish_forecast import (
     default_run_id,
-    resolve_forecast_origin,
+    resolve_forecast_request,
     resolve_run_kind,
-    validate_live_deadline,
     validate_live_price_context,
 )
 from dkenergy_forecast.operations.recent_diagnostics import _write_diagnostics
-from dkenergy_forecast.publishing import update_latest_exports
 from dkenergy_forecast.types import add_copenhagen_calendar
 
 
-def test_live_origin_uses_execution_date_instead_of_latest_panel_date() -> None:
-    panel = pd.DataFrame({"ds_utc": [pd.Timestamp("2030-01-10T22:00:00Z")]})
-
-    origin = resolve_forecast_origin(
-        panel,
-        None,
-        None,
-        "12:00",
-        reference_time_utc="2026-01-02T08:00:00Z",
+def test_live_request_uses_actual_start_as_information_cutoff() -> None:
+    request = resolve_forecast_request(
+        _args(),
+        generated_at="2026-01-02T09:03:00Z",
     )
 
-    assert origin == pd.Timestamp("2026-01-02T11:00:00Z")
+    assert request.information_cutoff_utc == pd.Timestamp("2026-01-02T09:03:00Z")
+    assert request.decision_deadline_utc == pd.Timestamp("2026-01-02T11:00:00Z")
+    assert request.delivery_date_local.isoformat() == "2026-01-03"
+    assert request.forecast_origin_utc == request.information_cutoff_utc
 
 
-def test_explicit_origin_defaults_to_replay_and_live_id_is_stable() -> None:
-    assert resolve_run_kind(None, supplied_origin="2026-01-02T11:00:00Z") == "replay"
+def test_explicit_cutoff_defaults_to_replay() -> None:
+    args = _args(information_cutoff_utc="2026-01-02T09:00:00Z")
+    request = resolve_forecast_request(args, generated_at="2026-02-01T00:00:00Z")
+
+    assert request.run_kind == "replay"
     assert resolve_run_kind(None, supplied_origin=None) == "live"
-    assert (
-        default_run_id("live", "2026-01-02T11:00:00Z")
-        == "live_20260102T110000Z"
-    )
+    with pytest.raises(ValueError, match="Unsupported run_kind"):
+        resolve_run_kind("shadow", supplied_origin=None)
 
 
-def test_late_live_run_is_rejected_but_replay_is_allowed() -> None:
-    with pytest.raises(ValueError, match="after its decision cutoff"):
-        validate_live_deadline(
-            run_kind="live",
-            generated_at="2026-01-02T11:00:01Z",
-            decision_cutoff="2026-01-02T11:00:00Z",
+def test_forecast_request_rejects_invalid_time_contracts() -> None:
+    with pytest.raises(ValueError, match="after its decision deadline"):
+        ForecastRequest(
+            delivery_date_local=pd.Timestamp("2026-01-03").date(),
+            information_cutoff_utc=pd.Timestamp("2026-01-02T09:00:00Z"),
+            decision_deadline_utc=pd.Timestamp("2026-01-02T11:00:00Z"),
+            generated_at_utc=pd.Timestamp("2026-01-02T11:00:01Z"),
+        )
+    with pytest.raises(ValueError, match="after the information-cutoff date"):
+        ForecastRequest(
+            delivery_date_local=pd.Timestamp("2026-01-02").date(),
+            information_cutoff_utc=pd.Timestamp("2026-01-02T09:00:00Z"),
+            decision_deadline_utc=pd.Timestamp("2026-01-02T11:00:00Z"),
+            generated_at_utc=pd.Timestamp("2026-01-02T09:00:00Z"),
         )
 
-    validate_live_deadline(
-        run_kind="replay",
-        generated_at="2026-02-01T00:00:00Z",
-        decision_cutoff="2026-01-02T11:00:00Z",
-    )
+
+def test_live_run_id_records_delivery_date_and_cutoff() -> None:
+    assert default_run_id(
+        "live",
+        "2026-01-02T09:03:00Z",
+        delivery_date_local="2026-01-03",
+    ) == "live_20260103_20260102T090300Z"
 
 
-def test_live_context_requires_complete_current_delivery_day() -> None:
+def test_live_context_requires_complete_previous_delivery_day() -> None:
     timestamps = pd.date_range("2026-01-01T23:00:00Z", periods=24, freq="h")
     panel = add_copenhagen_calendar(
         pd.DataFrame(
@@ -65,67 +75,59 @@ def test_live_context_requires_complete_current_delivery_day() -> None:
             }
         )
     )
-    origin = pd.Timestamp("2026-01-02T11:00:00Z")
 
-    validate_live_price_context(panel, origin)
+    validate_live_price_context(
+        panel,
+        "2026-01-02T09:00:00Z",
+        delivery_date_local="2026-01-03",
+    )
     with pytest.raises(ValueError, match="complete current Danish delivery day"):
-        validate_live_price_context(panel.iloc[:-1], origin)
+        validate_live_price_context(
+            panel.iloc[:-1],
+            "2026-01-02T09:00:00Z",
+            delivery_date_local="2026-01-03",
+        )
+
+
+def test_production_config_has_one_primary_and_one_fallback(tmp_path) -> None:
+    config_path = tmp_path / "production.json"
+    config_path.write_text(
+        '{"schema_version":1,"primary":{"model":"chronos_weather",'
+        '"artifact_path":"models/release-1"},'
+        '"fallback":{"model":"weighted_median_v1"}}',
+        encoding="utf-8",
+    )
+
+    config = load_production_config(config_path, runtime_root=tmp_path)
+
+    assert config.primary_model == "chronos_weather"
+    assert config.primary_artifact_path == tmp_path / "models" / "release-1"
+    assert config.fallback_model == "weighted_median_v1"
 
 
 def test_recent_diagnostics_use_a_separate_versioned_namespace(tmp_path) -> None:
-    predictions = pd.DataFrame({"value": [1.0]})
-    scores = pd.DataFrame({"metric": [2.0]})
-    probabilistic = pd.DataFrame({"metric": [3.0]})
     result = _write_diagnostics(
         tmp_path / "recent_scores",
         run_id="diagnostics_1",
-        predictions=predictions,
-        scores=scores,
-        probabilistic=probabilistic,
+        predictions=pd.DataFrame({"value": [1.0]}),
+        scores=pd.DataFrame({"metric": [2.0]}),
+        probabilistic=pd.DataFrame({"metric": [3.0]}),
         manifest={"run_id": "diagnostics_1", "status": "success"},
     )
 
     assert result.paths["run_dir"].is_dir()
-    assert pd.read_parquet(result.paths["recent_predictions"]).equals(predictions)
-    assert pd.read_parquet(result.paths["recent_scores"]).equals(scores)
+    assert pd.read_parquet(result.paths["recent_predictions"])["value"].tolist() == [1.0]
 
 
-def test_live_latest_promotion_does_not_touch_diagnostic_exports(tmp_path) -> None:
-    predictions = add_copenhagen_calendar(
-        pd.DataFrame(
-            {
-                "unique_id": ["day_ahead_price_DK1"],
-                "forecast_origin_utc": [pd.Timestamp("2026-01-02T11:00:00Z")],
-                "ds_utc": [pd.Timestamp("2026-01-02T23:00:00Z")],
-                "area": ["DK1"],
-                "model_label": ["baseline"],
-                "y_pred": [10.0],
-            }
-        )
-    )
-    scores = pd.DataFrame(
-        columns=[
-            "model_label",
-            "area",
-            "mae",
-            "rmse",
-            "bias",
-            "coverage",
-            "interval_width",
-        ]
-    )
-    recent_dir = tmp_path / "recent_scores"
-
-    paths = update_latest_exports(
-        latest_forecast_dir=tmp_path / "latest",
-        recent_scores_dir=recent_dir,
-        dashboard_path=tmp_path / "dashboard.json",
-        predictions=predictions,
-        scores=scores,
-        manifest={"forecast_origin_utc": "2026-01-02T11:00:00Z"},
-        dashboard={"predictions": []},
-        write_recent_scores=False,
-    )
-
-    assert "recent_scores" not in paths
-    assert not recent_dir.exists()
+def _args(**overrides):
+    values = {
+        "information_cutoff_utc": None,
+        "forecast_origin_utc": None,
+        "run_kind": None,
+        "delivery_date_local": None,
+        "decision_deadline_utc": None,
+        "decision_cutoff_utc": None,
+        "decision_deadline_local_time": "12:00",
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)

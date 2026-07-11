@@ -20,7 +20,12 @@ from dkenergy_data.build.open_meteo_weather_v1 import (
     normalize_batch,
 )
 from dkenergy_forecast.backtesting.horizons import make_next_utc_hours_horizon
-from dkenergy_forecast.features.weather_features import join_weather_features
+from dkenergy_forecast.features.weather_features import (
+    EXCLUDED_WEATHER_PARAMETERS,
+    WEATHER_CUTOFF_COLUMNS,
+    WEATHER_SELECTION_POLICY,
+    join_weather_features,
+)
 from dkenergy_forecast.models.chronos_production import (
     CONTEXT_WEATHER_FILL_POLICY,
     FUTURE_WEATHER_FILL_POLICY,
@@ -126,7 +131,7 @@ def test_open_meteo_marks_synthetic_reference_provenance() -> None:
         assert row["weather_vintage_id"].endswith("synthetic:20250101T000000Z")
 
 
-def test_weather_join_does_not_mix_features_from_different_model_vintages() -> None:
+def test_weather_join_selects_latest_vintage_for_each_model_parameter() -> None:
     target = pd.Timestamp("2025-01-03T00:00:00Z")
     frame = pd.DataFrame(
         {
@@ -135,13 +140,13 @@ def test_weather_join_does_not_mix_features_from_different_model_vintages() -> N
             "forecast_origin_utc": [pd.Timestamp("2025-01-02T10:00:00Z")],
         }
     )
-    temperature = "weather_gfs_global_lead1d_temperature_2m"
-    wind = "weather_gfs_global_lead1d_wind_speed_10m"
+    temperature_source = "weather_gfs_global_lead1d_temperature_2m"
+    wind_source = "weather_gfs_global_lead1d_wind_speed_10m"
     weather = pd.DataFrame(
         {
             "area": ["DK1", "DK1", "DK1"],
             "ds_utc": [target] * 3,
-            "feature_name": [temperature, wind, temperature],
+            "feature_name": [temperature_source, wind_source, temperature_source],
             "value": [1.0, 2.0, 3.0],
             "location_coverage_ratio": [1.0] * 3,
             "location_coverage_pass": [True] * 3,
@@ -163,13 +168,16 @@ def test_weather_join_does_not_mix_features_from_different_model_vintages() -> N
 
     joined = join_weather_features(frame, weather)
 
+    temperature = "weather_gfs_global_temperature_2m"
+    wind = "weather_gfs_global_wind_speed_10m"
     assert joined.loc[0, temperature] == pytest.approx(3.0)
     assert joined.loc[0, f"{temperature}_vintage_id"] == "run-06"
-    assert wind not in joined.columns
+    assert joined.loc[0, wind] == pytest.approx(2.0)
+    assert joined.loc[0, f"{wind}_vintage_id"] == "run-00"
 
 
 def test_future_weather_fill_never_borrows_across_valid_times() -> None:
-    feature = "weather_gfs_global_lead1d_temperature_2m"
+    feature = "weather_gfs_global_temperature_2m"
     frame = pd.DataFrame(
         {
             "unique_id": ["DK1"] * 3,
@@ -181,13 +189,13 @@ def test_future_weather_fill_never_borrows_across_valid_times() -> None:
     training = fill_lora_covariates(frame, [feature], role="training")
     future = fill_lora_covariates(frame, [feature], role="future")
 
-    assert training[feature].tolist() == [0.0, 2.0, 2.0]
+    assert training[feature].tolist() == [0.0, 2.0, 0.0]
     assert future[feature].tolist() == [0.0, 2.0, 0.0]
 
 
 def test_weather_horizon_coverage_has_explicit_error_and_zero_fallbacks() -> None:
-    temperature = "weather_gfs_global_lead1d_temperature_2m"
-    wind = "weather_gfs_global_lead1d_wind_speed_10m"
+    temperature = "weather_gfs_global_temperature_2m"
+    wind = "weather_gfs_global_wind_speed_10m"
     frame = pd.DataFrame(
         {
             "unique_id": ["DK1", "DK1"],
@@ -216,6 +224,14 @@ def test_weather_horizon_coverage_has_explicit_error_and_zero_fallbacks() -> Non
 
 def test_runtime_weather_policy_must_match_artifact_manifest() -> None:
     manifest = {
+        "weather_covariate_mode": "raw",
+        "weather_selection_policy": {
+            "name": WEATHER_SELECTION_POLICY,
+            "cutoff_priority": list(WEATHER_CUTOFF_COLUMNS),
+            "stable_feature_names": True,
+            "excluded_parameters": list(EXCLUDED_WEATHER_PARAMETERS),
+            "historical_cutoff_local_time": "10:00",
+        },
         "weather_horizon_coverage_policy": {
             "unit": WEATHER_HORIZON_COVERAGE_UNIT,
             "minimum": 1.0,
@@ -226,12 +242,18 @@ def test_runtime_weather_policy_must_match_artifact_manifest() -> None:
     with pytest.raises(ValueError, match="does not match"):
         validate_artifact_weather_policy(
             manifest,
-            Chronos2LoRAWeatherConfig(weather_future_fallback_policy="error"),
+            Chronos2LoRAWeatherConfig(
+                weather_covariate_mode="raw",
+                weather_future_fallback_policy="error",
+            ),
         )
 
     validate_artifact_weather_policy(
         manifest,
-        Chronos2LoRAWeatherConfig(weather_future_fallback_policy="zero"),
+        Chronos2LoRAWeatherConfig(
+            weather_covariate_mode="raw",
+            weather_future_fallback_policy="zero",
+        ),
     )
 
 
@@ -273,7 +295,7 @@ def test_chronos_manifest_records_weather_and_target_policies() -> None:
         args=args,
         panel=panel,
         weather=weather,
-        covariates=["local_hour", "weather_gfs_global_lead1d_temperature_2m"],
+        covariates=["local_hour", "weather_gfs_global_temperature_2m"],
         diagnostics={},
     )
 
@@ -284,5 +306,6 @@ def test_chronos_manifest_records_weather_and_target_policies() -> None:
     }
     assert manifest["covariate_fill_policy"]["training"] == CONTEXT_WEATHER_FILL_POLICY
     assert manifest["covariate_fill_policy"]["serving_future"] == FUTURE_WEATHER_FILL_POLICY
-    assert manifest["covariate_fill_policy"]["temporal_future_fill"] is False
+    assert manifest["covariate_fill_policy"]["temporal_fill"] is False
+    assert manifest["weather_selection_policy"]["name"] == WEATHER_SELECTION_POLICY
     assert manifest["target_contract"]["native_resolution_minutes"] == [60]

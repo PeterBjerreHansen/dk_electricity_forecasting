@@ -38,7 +38,7 @@ def prepare_evaluation_strata(
     extreme_threshold: float | None = None,
     extreme_quantile: float = 0.95,
 ) -> tuple[pd.DataFrame, float]:
-    """Add stable, human-readable subgroup columns used by the arena."""
+    """Add stable, human-readable subgroup columns for model diagnostics."""
 
     require_columns(predictions, ["ds_utc", "area", y_col], "predictions")
     if not 0 < extreme_quantile < 1:

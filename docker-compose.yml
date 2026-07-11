@@ -38,7 +38,7 @@ services:
     environment:
       DKENERGY_ARTIFACT_STORE_URI: ${DKENERGY_ARTIFACT_STORE_URI:-file:///app/cloud_store}
       DKENERGY_WORKDIR: ${DKENERGY_WORKDIR:-/app/runtime}
-      DKENERGY_MODEL_ARTIFACT_URI: ${DKENERGY_MODEL_ARTIFACT_URI:-file:///app/cloud_store/models/chronos2_lora_calendar_weather_ctx1024_v1}
+      DKENERGY_MODEL_ARTIFACT_URI: ${DKENERGY_MODEL_ARTIFACT_URI:-file:///app/cloud_store/models/chronos_weather}
       EDS_START: ${EDS_START:-}
       EDS_END: ${EDS_END:-}
       OPEN_METEO_START: ${OPEN_METEO_START:-}

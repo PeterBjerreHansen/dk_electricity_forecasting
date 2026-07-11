@@ -1,0 +1,10 @@
+{
+  "fallback": {
+    "model": "weighted_median_v1"
+  },
+  "primary": {
+    "artifact_path": "artifacts/models/chronos2_lora_calendar_weather_ctx1024_v1",
+    "model": "chronos_weather"
+  },
+  "schema_version": 1
+}

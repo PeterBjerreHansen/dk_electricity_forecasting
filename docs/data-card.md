@@ -1,50 +1,100 @@
 # Data card
 
-## Prices
+This card summarizes the datasets used by the production forecast and the most
+important qualifications on any result derived from them. The detailed,
+executable contracts live in the source-specific processing guides.
 
-Energi Data Service supplies DK1/DK2 day-ahead prices. Raw JSON and request
-metadata are archived before deterministic normalization. Duplicate conflicts,
-missing UTC hours, mismatched area coverage, incomplete quarter-hour groups,
-transition boundaries, and DST delivery-day lengths are checked during build.
+## Electricity prices
 
-There is a target-regime break at 2025-10-01 local time:
+Energi Data Service supplies DK1 and DK2 day-ahead prices. The ingestion layer
+archives raw response bytes and request metadata before deterministic
+normalization. The builder checks duplicate conflicts, missing UTC intervals,
+area symmetry, incomplete quarter-hour groups, the source-product transition,
+and 23/24/25-hour Danish delivery days.
 
-- Earlier rows are native hourly prices.
-- Later rows are hourly arithmetic means of four native quarter-hour products.
+There is a target-regime break at 2025-10-01 Copenhagen time:
 
-This distinction is encoded in every row and must be used as an evaluation
-stratum. Details are in
-[data-processing/energi_data_service_v1.md](data-processing/energi_data_service_v1.md).
+- Earlier rows are native hourly `Elspotprices` values.
+- Later rows are hourly arithmetic means of four native 15-minute
+  `DayAheadPrices` values.
 
-Price publication time is a deterministic project convention: noon Copenhagen
-on the calendar day before delivery. It is an information-set model, not a
-source revision timestamp.
+Every panel, horizon, prediction, and evaluation row carries
+`market_regime`, `native_resolution_minutes`, `target_aggregation`, and
+`target_definition`. The post-transition target must not be described as a
+native hourly market product.
 
-## Weather
+`price_available_at_utc` uses a deterministic project convention: local noon
+on the calendar day before delivery. It models the information set; it is not
+an observed source revision or publication timestamp. Historical source
+revisions are not reconstructed as-of each old forecast origin.
+
+See the [Energi Data Service processing contract](data-processing/energi_data_service_v1.md).
+
+## Forecast weather
 
 Open-Meteo Previous Runs supplies GFS Global, ICON-EU, and MET Norway Nordic
-fields over five representative coordinates per price area. Area features are
-simple coordinate averages with explicit coverage thresholds; they are not
-capacity-, population-, or offshore-weighted fundamentals.
+fields over five representative coordinates in each price area. The builder
+stores immutable raw responses, normalized location-level values, and a
+canonical long area-hour table. Area values are simple coordinate means with
+explicit coverage gates; they are not capacity-, population-, land-area-, or
+offshore-weighted fundamentals.
 
-The source does not expose observed model initialization/publication timestamps
-for these fields. The project labels `valid_time - lead` as a synthetic
-reference and availability proxy and generates a coherent `weather_vintage_id`.
-Do not describe that ID as an upstream NWP run.
+The modeled variables are:
 
-Details are in
-[data-processing/open_meteo_weather_v1.md](data-processing/open_meteo_weather_v1.md).
+- 2 m temperature.
+- 10 m and 100 m wind speed.
+- Shortwave radiation.
+- Cloud cover.
+- Precipitation.
+
+Wind direction is deliberately excluded from model covariates. The current
+source table aggregates it arithmetically across coordinates, which is invalid
+for a circular quantity. It should only return after vector or sine/cosine
+aggregation is implemented and an ablation demonstrates value.
+
+Open-Meteo Previous Runs does not expose an observed forecast-run
+initialization or publication timestamp. The project uses
+`valid_time - requested lead` as an explicitly synthetic reference and
+availability proxy. `weather_vintage_id` is project-generated provenance, not
+an upstream numerical-weather-prediction run ID.
+
+At each training, replay, or live row, the canonical weather join selects the
+newest eligible value for each `(area, valid hour, model, parameter)` under:
+
+```text
+forecast_available_at_utc <= information_cutoff_utc
+```
+
+The selected lead, source feature, reference time, availability type, and
+vintage stay attached as metadata. The stable model feature name does not
+encode lead. Training and serving apply the same selection and missing-value
+semantics: no forward or backward fill across valid hours, coverage validation
+before missing values are replaced with the artifact-declared zero value.
+
+See the [Open-Meteo processing contract](data-processing/open_meteo_weather_v1.md).
+
+## Direct DMI data
+
+Direct DMI ingestion is not implemented or used in production. The
+[DMI document](data-processing/dmi_weather_v1_plan.md) is a historical research
+plan for a possible future provenance source. It must not be read as a current
+data contract.
 
 ## Known limitations
 
 - The hourly post-transition target hides intrahour price structure.
-- Historical price revision times are not modeled separately.
-- Weather geography is coarse and not generation-capacity weighted.
-- Synthetic weather availability may differ from real provider publication.
-- Direct market fundamentals such as load/generation forecasts, outages,
-  interconnector capacity, neighboring prices, fuel, and carbon are absent.
-- Runtime artifacts are ignored by Git; reviewed evaluation reports and hashes
-  are the source-controlled evidence layer.
+- Historical price revisions are represented by the latest retrieved raw
+  version, not by a complete as-of revision store.
+- Price availability uses a project convention rather than observed
+  publication events.
+- Weather availability uses a synthetic proxy that may differ from actual
+  provider latency.
+- The weather geography is coarse and not generation-capacity weighted.
+- Direct market fundamentals—load and generation forecasts, outages,
+  interconnector capacity, neighboring prices, fuels, and carbon—are absent.
+- Runtime Parquet files and model weights are ignored by Git; manifests,
+  hashes, tests, and reviewed comparison reports carry reproducibility claims.
 
-Any new source should preserve raw bytes, observed availability/revision times,
-source identity, units, geography, and a deterministic build/version contract.
+Any new source should preserve raw bytes, retrieval time, observed
+availability/revision time when available, source identity, units, geography,
+and a deterministic dataset-version contract.

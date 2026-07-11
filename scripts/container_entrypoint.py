@@ -22,6 +22,8 @@ def main() -> None:
         )
     if mode == "pipeline":
         _exec([sys.executable, "scripts/run_cloud_pipeline.py", *command[1:]])
+    if mode == "score-published-cloud":
+        _exec([sys.executable, "scripts/run_cloud_scoring.py", *command[1:]])
     _exec(command)
 
 

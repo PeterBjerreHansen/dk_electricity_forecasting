@@ -15,6 +15,20 @@ from dkenergy_forecast.types import normalize_utc_column, require_columns
 
 HorizonBuilder = Callable[[pd.DataFrame, pd.Timestamp], pd.DataFrame]
 
+WEATHER_SELECTION_POLICY = "newest_eligible_per_model_parameter"
+WEATHER_CUTOFF_COLUMNS = ("information_cutoff_utc", "forecast_origin_utc")
+WEATHER_PARAMETERS = (
+    "temperature_2m",
+    "wind_speed_10m",
+    "wind_speed_100m",
+    "shortwave_radiation",
+    "cloud_cover",
+    "precipitation",
+)
+# Direction is intentionally excluded. Its arithmetic area/model mean is not a
+# valid circular statistic, and the current Chronos release does not need it.
+EXCLUDED_WEATHER_PARAMETERS = ("wind_direction_10m",)
+
 
 def join_weather_features(
     frame: pd.DataFrame,
@@ -22,14 +36,30 @@ def join_weather_features(
     *,
     require_feature_group_pass: bool = True,
 ) -> pd.DataFrame:
-    """Join availability-masked weather features to a future/feature frame."""
+    """Join the newest eligible weather value under stable feature names.
 
-    require_columns(frame, ["area", "ds_utc", "forecast_origin_utc"], "frame")
+    The source table may contain several lead-specific forecasts for the same
+    model, parameter, area, and valid hour. For each target row we select the
+    newest forecast available at that row's information cutoff. The lead is
+    retained as metadata instead of being encoded in the model covariate name.
+    """
+
+    require_columns(frame, ["area", "ds_utc"], "frame")
+    require_columns(area_features_long, ["area", "ds_utc"], "area_features_long")
+    _weather_cutoff_column(frame)
+    base = normalize_utc_column(frame, "ds_utc")
+    if base.empty:
+        return base.reset_index(drop=True)
+    weather_ds = pd.to_datetime(area_features_long["ds_utc"], utc=True)
+    relevant = area_features_long[
+        area_features_long["area"].isin(base["area"].unique())
+        & weather_ds.between(base["ds_utc"].min(), base["ds_utc"].max())
+    ].copy()
     weather = _prepare_weather_features(
-        area_features_long,
+        relevant,
         require_feature_group_pass=require_feature_group_pass,
     )
-    return _join_prepared_weather_features(frame, weather)
+    return _join_prepared_weather_features(base, weather)
 
 
 def _prepare_weather_features(
@@ -53,12 +83,33 @@ def _prepare_weather_features(
     )
     weather = normalize_utc_column(area_features_long, "ds_utc")
     weather = normalize_utc_column(weather, "forecast_available_at_utc")
+    if {"weather_model", "parameter_id"}.issubset(weather.columns):
+        weather["_canonical_feature_name"] = (
+            "weather_"
+            + weather["weather_model"].astype(str)
+            + "_"
+            + weather["parameter_id"].astype(str)
+        )
+        weather["_weather_parameter"] = weather["parameter_id"].astype(str)
+    else:
+        weather["_canonical_feature_name"] = weather["feature_name"].map(
+            canonical_weather_feature_name
+        )
+        weather["_weather_parameter"] = weather["feature_name"].map(
+            _weather_parameter
+        )
+    weather = weather[
+        ~weather["_weather_parameter"].isin(EXCLUDED_WEATHER_PARAMETERS)
+    ].copy()
+    if weather.empty:
+        return weather.reset_index(drop=True)
+    if "lead_time_days" not in weather.columns:
+        weather["lead_time_days"] = weather["feature_name"].map(
+            _weather_lead_time_days
+        )
     if "forecast_reference_time" not in weather.columns:
         weather["forecast_reference_time"] = weather["forecast_available_at_utc"]
     weather = normalize_utc_column(weather, "forecast_reference_time")
-    weather["_weather_vintage_group"] = weather["feature_name"].map(
-        _weather_vintage_group
-    )
     if "forecast_reference_time_type" not in weather.columns:
         weather["forecast_reference_time_type"] = "legacy_unspecified"
     if "forecast_reference_time_is_observed" not in weather.columns:
@@ -66,12 +117,11 @@ def _prepare_weather_features(
     if "forecast_availability_time_type" not in weather.columns:
         weather["forecast_availability_time_type"] = "legacy_unspecified"
     if "weather_vintage_id" not in weather.columns:
-        weather["weather_vintage_id"] = weather.apply(
-            lambda row: _legacy_vintage_id(
-                row["_weather_vintage_group"],
-                row["forecast_reference_time"],
-            ),
-            axis=1,
+        weather["weather_vintage_id"] = (
+            "legacy_unspecified:"
+            + weather["_canonical_feature_name"].astype(str)
+            + ":"
+            + weather["forecast_reference_time"].dt.strftime("%Y%m%dT%H%M%SZ")
         )
     if require_feature_group_pass:
         weather = weather[
@@ -84,84 +134,107 @@ def _join_prepared_weather_features(
     frame: pd.DataFrame,
     weather: pd.DataFrame,
 ) -> pd.DataFrame:
-    require_columns(frame, ["area", "ds_utc", "forecast_origin_utc"], "frame")
+    require_columns(frame, ["area", "ds_utc"], "frame")
     base = normalize_utc_column(frame, "ds_utc")
-    base = normalize_utc_column(base, "forecast_origin_utc").reset_index(drop=True)
+    cutoff_column = _weather_cutoff_column(base)
+    base = normalize_utc_column(base, cutoff_column).reset_index(drop=True)
     base["_weather_row_id"] = range(len(base))
+    if base.empty:
+        return base.drop(columns=["_weather_row_id"])
+    weather = weather[
+        weather["area"].isin(base["area"].unique())
+        & weather["ds_utc"].between(base["ds_utc"].min(), base["ds_utc"].max())
+    ].copy()
 
-    merged = base[["_weather_row_id", "area", "ds_utc", "forecast_origin_utc"]].merge(
+    merged = base[["_weather_row_id", "area", "ds_utc", cutoff_column]].merge(
         weather,
         on=["area", "ds_utc"],
         how="left",
     )
     eligible = merged[
         merged["feature_name"].notna()
-        & (merged["forecast_available_at_utc"] <= merged["forecast_origin_utc"])
+        & (merged["forecast_available_at_utc"] <= merged[cutoff_column])
     ].copy()
 
     output = base.copy()
     if not eligible.empty:
-        latest_reference_time = eligible.groupby(
-            ["_weather_row_id", "_weather_vintage_group"],
-            observed=True,
-        )["forecast_reference_time"].transform("max")
-        eligible = eligible[
-            eligible["forecast_reference_time"].eq(latest_reference_time)
-        ].copy()
         eligible = (
-            eligible.sort_values(["_weather_row_id", "feature_name", "forecast_available_at_utc"])
-            .drop_duplicates(["_weather_row_id", "feature_name"], keep="last")
+            eligible.sort_values(
+                [
+                    "_weather_row_id",
+                    "_canonical_feature_name",
+                    "forecast_reference_time",
+                    "forecast_available_at_utc",
+                    "lead_time_days",
+                ]
+            )
+            .drop_duplicates(
+                ["_weather_row_id", "_canonical_feature_name"],
+                keep="last",
+            )
             .reset_index(drop=True)
         )
         value_wide = eligible.pivot_table(
             index="_weather_row_id",
-            columns="feature_name",
+            columns="_canonical_feature_name",
             values="value",
             aggfunc="last",
         )
         coverage_wide = eligible.pivot_table(
             index="_weather_row_id",
-            columns="feature_name",
+            columns="_canonical_feature_name",
             values="location_coverage_ratio",
             aggfunc="last",
         ).rename(columns=lambda column: f"{column}_coverage_ratio")
         availability_wide = eligible.pivot_table(
             index="_weather_row_id",
-            columns="feature_name",
+            columns="_canonical_feature_name",
             values="forecast_available_at_utc",
             aggfunc="last",
         ).rename(columns=lambda column: f"{column}_available_at_utc")
         reference_time_wide = eligible.pivot_table(
             index="_weather_row_id",
-            columns="feature_name",
+            columns="_canonical_feature_name",
             values="forecast_reference_time",
             aggfunc="last",
         ).rename(columns=lambda column: f"{column}_reference_time_utc")
         vintage_wide = eligible.pivot_table(
             index="_weather_row_id",
-            columns="feature_name",
+            columns="_canonical_feature_name",
             values="weather_vintage_id",
             aggfunc="last",
         ).rename(columns=lambda column: f"{column}_vintage_id")
         reference_type_wide = eligible.pivot_table(
             index="_weather_row_id",
-            columns="feature_name",
+            columns="_canonical_feature_name",
             values="forecast_reference_time_type",
             aggfunc="last",
         ).rename(columns=lambda column: f"{column}_reference_time_type")
         reference_observed_wide = eligible.pivot_table(
             index="_weather_row_id",
-            columns="feature_name",
+            columns="_canonical_feature_name",
             values="forecast_reference_time_is_observed",
             aggfunc="last",
             dropna=False,
         ).rename(columns=lambda column: f"{column}_reference_time_is_observed")
         availability_type_wide = eligible.pivot_table(
             index="_weather_row_id",
-            columns="feature_name",
+            columns="_canonical_feature_name",
             values="forecast_availability_time_type",
             aggfunc="last",
         ).rename(columns=lambda column: f"{column}_availability_time_type")
+        selected_lead_wide = eligible.pivot_table(
+            index="_weather_row_id",
+            columns="_canonical_feature_name",
+            values="lead_time_days",
+            aggfunc="last",
+        ).rename(columns=lambda column: f"{column}_selected_lead_time_days")
+        source_feature_wide = eligible.pivot_table(
+            index="_weather_row_id",
+            columns="_canonical_feature_name",
+            values="feature_name",
+            aggfunc="last",
+        ).rename(columns=lambda column: f"{column}_source_feature_name")
         wide = pd.concat(
             [
                 value_wide,
@@ -172,6 +245,8 @@ def _join_prepared_weather_features(
                 reference_type_wide,
                 reference_observed_wide,
                 availability_type_wide,
+                selected_lead_wide,
+                source_feature_wide,
             ],
             axis=1,
         )
@@ -196,7 +271,6 @@ def build_weather_experiment_frame(
     require_columns(origins, ["forecast_origin_utc"], "origins")
     panel_utc = normalize_utc_column(panel, "ds_utc")
     origins_utc = normalize_utc_column(origins, "forecast_origin_utc")
-    weather = _prepare_weather_features(area_features_long)
     price_features = build_price_experiment_frame(
         panel_utc,
         origins_utc,
@@ -206,7 +280,7 @@ def build_weather_experiment_frame(
     if price_features.empty:
         return pd.DataFrame()
 
-    output = _join_prepared_weather_features(price_features, weather)
+    output = join_weather_features(price_features, area_features_long)
     if add_ensemble_features:
         output = add_weather_ensemble_features(output)
     if add_derived_features:
@@ -223,6 +297,8 @@ def weather_value_columns(frame: pd.DataFrame) -> list[str]:
         "_reference_time_type",
         "_reference_time_is_observed",
         "_availability_time_type",
+        "_selected_lead_time_days",
+        "_source_feature_name",
     )
     return [
         column
@@ -240,22 +316,29 @@ def add_weather_ensemble_features(frame: pd.DataFrame) -> pd.DataFrame:
         for column in weather_value_columns(output)
         if not column.startswith("weather_ensemble_")
     ]
-    groups: dict[tuple[str, str], list[str]] = {}
+    groups: dict[str, list[str]] = {}
 
     for column in value_columns:
-        parsed = _parse_weather_feature_column(column)
+        parsed = _parse_canonical_weather_feature_column(column)
         if parsed is None:
             continue
-        _model, lead, parameter = parsed
-        groups.setdefault((lead, parameter), []).append(column)
+        _model, parameter = parsed
+        groups.setdefault(parameter, []).append(column)
 
-    for (lead, parameter), columns in groups.items():
+    for parameter, columns in groups.items():
         if len(columns) < 2:
             continue
-        prefix = f"weather_ensemble_{lead}_{parameter}"
-        output[f"{prefix}_mean"] = output[columns].mean(axis=1, skipna=True)
-        output[f"{prefix}_min"] = output[columns].min(axis=1, skipna=True)
-        output[f"{prefix}_max"] = output[columns].max(axis=1, skipna=True)
+        prefix = f"weather_ensemble_{parameter}"
+        enough_models = output[columns].notna().sum(axis=1) >= 2
+        output[f"{prefix}_mean"] = output[columns].mean(axis=1, skipna=True).where(
+            enough_models
+        )
+        output[f"{prefix}_min"] = output[columns].min(axis=1, skipna=True).where(
+            enough_models
+        )
+        output[f"{prefix}_max"] = output[columns].max(axis=1, skipna=True).where(
+            enough_models
+        )
         output[f"{prefix}_spread"] = output[f"{prefix}_max"] - output[f"{prefix}_min"]
 
     return output
@@ -266,17 +349,16 @@ def add_weather_derived_features(frame: pd.DataFrame) -> pd.DataFrame:
 
     output = frame.copy()
     output = _add_weather_physics_features(output)
-    output = _add_weather_lead_delta_features(output)
     output = _add_weather_area_spread_features(output)
     return output
 
 
 def _add_weather_physics_features(frame: pd.DataFrame) -> pd.DataFrame:
     output = frame.copy()
-    groups = _weather_columns_by_model_lead(output)
+    groups = _weather_columns_by_model(output)
 
-    for (model, lead), columns in groups.items():
-        prefix = f"weather_{model}_{lead}"
+    for model, columns in groups.items():
+        prefix = f"weather_{model}"
         direction = columns.get("wind_direction_10m")
         speed_10m = columns.get("wind_speed_10m")
         speed_100m = columns.get("wind_speed_100m")
@@ -307,32 +389,13 @@ def _add_weather_physics_features(frame: pd.DataFrame) -> pd.DataFrame:
 
     return output
 
-
-def _add_weather_lead_delta_features(frame: pd.DataFrame) -> pd.DataFrame:
-    output = frame.copy()
-    groups = _weather_columns_by_model_lead(output)
-    by_model_parameter: dict[tuple[str, str], dict[str, str]] = {}
-    for (model, lead), columns in groups.items():
-        for parameter, column in columns.items():
-            by_model_parameter.setdefault((model, parameter), {})[lead] = column
-
-    for (model, parameter), lead_columns in by_model_parameter.items():
-        lead1 = lead_columns.get("lead1d")
-        lead2 = lead_columns.get("lead2d")
-        if lead1 is None or lead2 is None:
-            continue
-        output[f"weather_{model}_lead1d_minus_lead2d_{parameter}"] = (
-            output[lead1] - output[lead2]
-        )
-    return output
-
-
 def _add_weather_area_spread_features(frame: pd.DataFrame) -> pd.DataFrame:
-    if not {"area", "forecast_origin_utc", "ds_utc"}.issubset(frame.columns):
+    if not {"area", "ds_utc"}.issubset(frame.columns):
         return frame
 
     output = frame.copy()
-    key_columns = ["forecast_origin_utc", "ds_utc"]
+    cutoff_column = _weather_cutoff_column(output)
+    key_columns = [cutoff_column, "ds_utc"]
     source_columns = [
         column
         for column in weather_value_columns(output)
@@ -365,25 +428,16 @@ def _add_weather_area_spread_features(frame: pd.DataFrame) -> pd.DataFrame:
     return output
 
 
-def _weather_columns_by_model_lead(frame: pd.DataFrame) -> dict[tuple[str, str], dict[str, str]]:
-    groups: dict[tuple[str, str], dict[str, str]] = {}
-    base_parameters = {
-        "temperature_2m",
-        "wind_speed_10m",
-        "wind_direction_10m",
-        "wind_speed_100m",
-        "shortwave_radiation",
-        "cloud_cover",
-        "precipitation",
-    }
+def _weather_columns_by_model(frame: pd.DataFrame) -> dict[str, dict[str, str]]:
+    groups: dict[str, dict[str, str]] = {}
     for column in weather_value_columns(frame):
-        parsed = _parse_weather_feature_column(column)
+        parsed = _parse_canonical_weather_feature_column(column)
         if parsed is None:
             continue
-        model, lead, parameter = parsed
-        if parameter not in base_parameters:
+        model, parameter = parsed
+        if parameter not in WEATHER_PARAMETERS:
             continue
-        groups.setdefault((model, lead), {})[parameter] = column
+        groups.setdefault(model, {})[parameter] = column
     return groups
 
 
@@ -400,18 +454,51 @@ def _parse_weather_feature_column(column: str) -> tuple[str, str, str] | None:
     return model, f"lead{lead}", parameter
 
 
-def _weather_vintage_group(feature_name: object) -> str:
+def _parse_canonical_weather_feature_column(column: str) -> tuple[str, str] | None:
+    if not column.startswith("weather_") or column.startswith("weather_ensemble_"):
+        return None
+    body = column.removeprefix("weather_")
+    for parameter in sorted((*WEATHER_PARAMETERS, *EXCLUDED_WEATHER_PARAMETERS), key=len, reverse=True):
+        suffix = f"_{parameter}"
+        if body.endswith(suffix):
+            model = body[: -len(suffix)]
+            if model:
+                return model, parameter
+    return None
+
+
+def canonical_weather_feature_name(feature_name: object) -> str:
+    """Return the stable model/parameter name for a lead-specific source name."""
+
+    value = str(feature_name)
+    parsed = _parse_weather_feature_column(value)
+    if parsed is None:
+        return value
+    model, _lead, parameter = parsed
+    return f"weather_{model}_{parameter}"
+
+
+def _weather_parameter(feature_name: object) -> str | None:
+    parsed = _parse_weather_feature_column(str(feature_name))
+    if parsed is not None:
+        return parsed[2]
+    canonical = _parse_canonical_weather_feature_column(str(feature_name))
+    return canonical[1] if canonical is not None else None
+
+
+def _weather_lead_time_days(feature_name: object) -> int | None:
     parsed = _parse_weather_feature_column(str(feature_name))
     if parsed is None:
-        return str(feature_name)
-    model, lead, _parameter = parsed
-    return f"{model}:{lead}"
+        return None
+    lead = parsed[1].removeprefix("lead").removesuffix("d")
+    return int(lead) if lead.isdigit() else None
 
 
-def _legacy_vintage_id(group: str, reference_time: object) -> str:
-    timestamp = pd.Timestamp(reference_time)
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.tz_localize("UTC")
-    else:
-        timestamp = timestamp.tz_convert("UTC")
-    return f"legacy_unspecified:{group}:{timestamp.strftime('%Y%m%dT%H%M%SZ')}"
+def _weather_cutoff_column(frame: pd.DataFrame) -> str:
+    for column in WEATHER_CUTOFF_COLUMNS:
+        if column in frame.columns:
+            return column
+    raise ValueError(
+        "frame is missing a weather information cutoff column; expected one of "
+        f"{list(WEATHER_CUTOFF_COLUMNS)}"
+    )

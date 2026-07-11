@@ -34,7 +34,7 @@ DEFAULT_CATBOOST_MODEL_PREFIX = "catboost"
 FEATURE_FRAME_BASELINE_COLUMNS = {
     "same_hour_last_week": "lag_168h",
     "rolling_median_hour_weekend_56d": "seasonal_median_hour_weekend",
-    "median_weekday_exp_hl4_floor10_42d__median_weekend_exp_hl28_floor20_56d": RESIDUAL_BASELINE_COLUMN,
+    "weighted_median_v1": RESIDUAL_BASELINE_COLUMN,
 }
 
 

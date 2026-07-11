@@ -40,7 +40,7 @@ def model_score_table(
     model_label_col: str = "model_label",
     include_all_area: bool = True,
 ) -> pd.DataFrame:
-    """Build the production-facing model score table."""
+    """Build a model score table for production and experiment diagnostics."""
 
     require_columns(
         predictions,
@@ -48,28 +48,35 @@ def model_score_table(
         "predictions",
     )
     rows: list[dict[str, Any]] = []
+    identity_columns = [model_label_col]
+    if "model_release_id" in predictions.columns:
+        identity_columns.append("model_release_id")
 
     if include_all_area:
         groups = [
-            (("ALL", model_label), frame)
-            for model_label, frame in predictions.groupby(model_label_col, dropna=False)
+            (("ALL", *_as_tuple(identity)), frame)
+            for identity, frame in predictions.groupby(identity_columns, dropna=False)
         ]
     else:
         groups = []
     groups.extend(
         [
-            ((area, model_label), frame)
-            for (area, model_label), frame in predictions.groupby(
-                ["area", model_label_col],
+            (_as_tuple(identity), frame)
+            for identity, frame in predictions.groupby(
+                ["area", *identity_columns],
                 dropna=False,
             )
         ]
     )
 
-    for (area, model_label), frame in groups:
+    for key, frame in groups:
+        area, model_label, *release_values = key
+        identity = {"model_label": model_label}
+        if release_values:
+            identity["model_release_id"] = release_values[0]
         rows.append(
             {
-                "model_label": model_label,
+                **identity,
                 "area": area,
                 "rows": int(len(frame)),
                 "evaluated_rows": int(frame[["y", "y_pred"]].dropna().shape[0]),
@@ -88,7 +95,10 @@ def model_score_table(
             }
         )
 
-    return pd.DataFrame(rows).sort_values(["area", "mae", "model_label"]).reset_index(drop=True)
+    sort_columns = ["area", "mae", "model_label"]
+    if "model_release_id" in predictions.columns:
+        sort_columns.append("model_release_id")
+    return pd.DataFrame(rows).sort_values(sort_columns).reset_index(drop=True)
 
 
 def probabilistic_metric_table(
@@ -100,37 +110,48 @@ def probabilistic_metric_table(
 
     require_columns(predictions, [model_label_col], "predictions")
     rows: list[dict[str, Any]] = []
-    for model_label, frame in predictions.groupby(model_label_col, dropna=False):
+    identity_columns = [model_label_col]
+    if "model_release_id" in predictions.columns:
+        identity_columns.append("model_release_id")
+    for group_key, frame in predictions.groupby(identity_columns, dropna=False):
+        model_label, *release_values = _as_tuple(group_key)
+        identity = {"model_label": model_label}
+        if release_values:
+            identity["model_release_id"] = release_values[0]
         rows.extend(
             [
                 {
-                    "model_label": model_label,
+                    **identity,
                     "metric": "pinball_q10",
                     "value": _pinball_or_nan(frame, quantile=0.10),
                 },
                 {
-                    "model_label": model_label,
+                    **identity,
                     "metric": "pinball_q50",
                     "value": _pinball_or_nan(frame, quantile=0.50),
                 },
                 {
-                    "model_label": model_label,
+                    **identity,
                     "metric": "pinball_q90",
                     "value": _pinball_or_nan(frame, quantile=0.90),
                 },
                 {
-                    "model_label": model_label,
+                    **identity,
                     "metric": "p10_p90_coverage",
                     "value": _coverage_or_nan(frame),
                 },
                 {
-                    "model_label": model_label,
+                    **identity,
                     "metric": "p10_p90_avg_width",
                     "value": _interval_width_or_nan(frame),
                 },
             ]
         )
     return pd.DataFrame(rows)
+
+
+def _as_tuple(value: object) -> tuple[Any, ...]:
+    return value if isinstance(value, tuple) else (value,)
 
 
 def _coverage_or_nan(frame: pd.DataFrame) -> float:

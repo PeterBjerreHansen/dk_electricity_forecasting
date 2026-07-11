@@ -14,7 +14,7 @@ from dkenergy_forecast.layout import PROJECT_ROOT, runtime_layout  # noqa: E402
 from dkenergy_forecast.models.chronos_production import (  # noqa: E402
     PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG,
 )
-from dkenergy_forecast.models.registry import default_production_model_labels  # noqa: E402
+from dkenergy_forecast.models.registry import production_model_specs  # noqa: E402
 from dkenergy_forecast.operations.recent_diagnostics import run_recent_diagnostics  # noqa: E402
 
 
@@ -36,13 +36,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--panel-path", default=str(DEFAULT_LAYOUT.price_panel))
     parser.add_argument("--qa-path", default=str(DEFAULT_LAYOUT.price_panel_qa))
     parser.add_argument("--output-dir", default=str(DEFAULT_LAYOUT.recent_scores))
-    parser.add_argument("--forecast-local-time", default="12:00")
+    parser.add_argument("--forecast-local-time", default="10:00")
     parser.add_argument("--at-hour-utc", type=int)
     parser.add_argument("--min-train-days", type=int, default=60)
     parser.add_argument("--score-days", type=int, default=14)
     parser.add_argument("--score-max-origins", type=int, default=7)
     parser.add_argument("--score-holdout-days", type=int, default=2)
-    parser.add_argument("--models", nargs="+", help=f"Defaults to {default_production_model_labels()}.")
+    parser.add_argument("--models", nargs="+", help=f"Defaults to {list(production_model_specs())}.")
     parser.add_argument(
         "--weather-features-long-path",
         default=str(PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG.weather_features_long_path),

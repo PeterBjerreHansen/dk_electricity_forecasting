@@ -67,7 +67,7 @@ def test_daily_pipeline_refreshes_weather_sources_when_requested() -> None:
     assert "build_weather_backtest_frame.py" not in result.stdout
 
 
-def test_daily_pipeline_passes_model_selection_to_publish_without_weather_refresh() -> None:
+def test_daily_pipeline_does_not_allow_diagnostics_to_select_the_live_model() -> None:
     result = subprocess.run(
         [
             sys.executable,
@@ -84,7 +84,10 @@ def test_daily_pipeline_passes_model_selection_to_publish_without_weather_refres
 
     assert "fetch_open_meteo_previous_runs.py" not in result.stdout
     assert "build_weather_backtest_frame.py" not in result.stdout
-    assert "--models same_hour_last_week" in result.stdout
+    publish_line = next(
+        line for line in result.stdout.splitlines() if "run_publish_forecast.py" in line
+    )
+    assert "--models" not in publish_line
 
 
 def test_daily_pipeline_runtime_root_rewrites_runtime_artifact_paths(tmp_path) -> None:
@@ -104,12 +107,9 @@ def test_daily_pipeline_runtime_root_rewrites_runtime_artifact_paths(tmp_path) -
 
     assert f"--raw-dir {tmp_path}/data/raw/energi_data_service" in result.stdout
     assert f"--panel-path {tmp_path}/data/model_ready/price_panel_hourly_v1.parquet" in result.stdout
-    assert f"--published-history-dir {tmp_path}/results/published_forecast_history" in result.stdout
-    assert f"--dashboard-path {tmp_path}/app_data/forecast_dashboard.json" in result.stdout
-    assert (
-        f"--chronos-model-artifact-path {tmp_path}/artifacts/models/"
-        "chronos2_lora_calendar_weather_ctx1024_v1"
-    ) in result.stdout
+    assert f"--artifact-root {tmp_path}/artifacts/forecast_runs" in result.stdout
+    assert f"--latest-pointer-path {tmp_path}/artifacts/latest.json" in result.stdout
+    assert f"--runtime-root {tmp_path}" in result.stdout
 
 
 def test_daily_pipeline_defaults_to_local_forecast_time(monkeypatch) -> None:
@@ -122,7 +122,7 @@ def test_daily_pipeline_defaults_to_local_forecast_time(monkeypatch) -> None:
         capture_output=True,
     )
 
-    assert "--forecast-local-time 12:00" in result.stdout
+    assert "--forecast-local-time 10:00" in result.stdout
     assert "--at-hour-utc" not in result.stdout
 
 

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -14,9 +16,12 @@ from dkenergy_forecast.layout import (
     runtime_layout,
 )
 from dkenergy_forecast.storage import ArtifactStore, join_uri
+from dkenergy_forecast.publishing import atomic_write_json
+from dkenergy_forecast.types import to_utc_timestamp
 
 
 MODEL_ARTIFACT_RELATIVE_PATH = CHRONOS_MODEL_ARTIFACT_RELATIVE_PATH
+PRODUCTION_CONFIG_PATH = PROJECT_ROOT / "config" / "production.json"
 WEATHER_FEATURES_RELATIVE_PATH = WEATHER_FEATURES_LONG_PROJECT_RELATIVE_PATH
 STATE_DOWNLOAD_PREFIXES = (
     "state/data/raw/energi_data_service",
@@ -43,11 +48,23 @@ class CloudPipelineConfig:
     score_max_origins: int | None = None
 
 
+@dataclass(frozen=True)
+class CloudScoringConfig:
+    artifact_store_uri: str
+    workdir: Path
+    python: str = sys.executable
+
+
 CommandRunner = Callable[..., subprocess.CompletedProcess]
 
 
 def default_model_artifact_uri(artifact_store_uri: str) -> str:
-    return join_uri(artifact_store_uri, MODEL_ARTIFACT_RELATIVE_PATH.as_posix())
+    payload = json.loads(PRODUCTION_CONFIG_PATH.read_text(encoding="utf-8"))
+    artifact_path = str(payload["primary"]["artifact_path"])
+    relative_path = artifact_path.removeprefix("artifacts/").strip("/")
+    if not relative_path:
+        raise ValueError("production.json primary artifact_path must not be empty")
+    return join_uri(artifact_store_uri, relative_path)
 
 
 def run_cloud_pipeline(
@@ -103,6 +120,7 @@ def _download_runtime_state(store: ArtifactStore, workdir: Path) -> None:
         relative = prefix.removeprefix("state/")
         store.download_prefix(prefix, workdir / relative, required=False)
     store.download_prefix("forecast_runs", workdir / "artifacts" / "forecast_runs", required=False)
+    store.download_file("latest.json", workdir / "artifacts" / "latest.json", required=False)
 
 
 def _download_model_artifact(model_artifact_uri: str, workdir: Path) -> None:
@@ -125,18 +143,47 @@ def _upload_runtime_outputs(store: ArtifactStore, workdir: Path) -> list[str]:
     uploaded: list[str] = []
     for source_relative, destination_prefix in STATE_UPLOAD_PREFIXES:
         uploaded.extend(store.upload_prefix(workdir / source_relative, destination_prefix))
-    uploaded.extend(store.upload_prefix(paths.forecast_runs, "forecast_runs"))
-    uploaded.extend(store.upload_prefix(paths.recent_scores, "recent_scores"))
-    uploaded.extend(store.upload_prefix(paths.published_history, "published_forecast_history"))
 
-    for source, key in _latest_artifacts(workdir):
+    for source, key in _latest_data_artifacts(workdir):
         _require_output(source)
         store.upload_file(source, key)
         uploaded.append(key)
+
+    pointer = _read_latest_pointer(paths.latest_pointer)
+    run_prefix = str(pointer["run_prefix"])
+    run_dir = paths.latest_pointer.parent / run_prefix
+    completion = run_dir / "COMPLETED.json"
+    _require_output(completion)
+    if not store.exists(f"{run_prefix}/COMPLETED.json"):
+        for source in sorted(path for path in run_dir.iterdir() if path.name != "COMPLETED.json"):
+            if not source.is_file():
+                continue
+            key = f"{run_prefix}/{source.name}"
+            store.upload_file(source, key)
+            uploaded.append(key)
+
+        committed_at = to_utc_timestamp(datetime.now(timezone.utc))
+        deadline = to_utc_timestamp(pointer["decision_deadline_utc"])
+        if committed_at > deadline:
+            raise RuntimeError(
+                "Cloud publication missed its decision deadline; latest.json was not updated: "
+                f"committed_at_utc={committed_at.isoformat()}, "
+                f"decision_deadline_utc={deadline.isoformat()}"
+            )
+        completion_payload = json.loads(completion.read_text(encoding="utf-8"))
+        completion_payload["committed_at_utc"] = committed_at
+        atomic_write_json(completion, completion_payload)
+        store.upload_file(completion, f"{run_prefix}/COMPLETED.json")
+        uploaded.append(f"{run_prefix}/COMPLETED.json")
+        pointer["committed_at_utc"] = committed_at
+        atomic_write_json(paths.latest_pointer, pointer)
+
+    store.upload_file(paths.latest_pointer, "latest.json")
+    uploaded.append("latest.json")
     return uploaded
 
 
-def _latest_artifacts(workdir: Path) -> list[tuple[Path, str]]:
+def _latest_data_artifacts(workdir: Path) -> list[tuple[Path, str]]:
     paths = runtime_layout(workdir)
     return [
         (
@@ -147,19 +194,75 @@ def _latest_artifacts(workdir: Path) -> list[tuple[Path, str]]:
             paths.price_panel_qa,
             f"latest/{paths.price_panel_qa.name}",
         ),
-        (
-            paths.latest_forecast / "predictions.parquet",
-            "latest/predictions.parquet",
-        ),
-        (
-            paths.latest_forecast / "manifest.json",
-            "latest/manifest.json",
-        ),
-        (
-            paths.dashboard_json,
-            "latest/forecast_dashboard.json",
-        ),
     ]
+
+
+def _read_latest_pointer(path: Path) -> dict[str, object]:
+    _require_output(path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    required = {
+        "schema_version",
+        "status",
+        "run_id",
+        "run_prefix",
+        "completion_key",
+        "delivery_date_local",
+        "information_cutoff_utc",
+        "decision_deadline_utc",
+        "committed_at_utc",
+    }
+    missing = sorted(required - set(payload))
+    if missing:
+        raise ValueError(f"Latest forecast pointer is missing fields: {missing}")
+    if payload["schema_version"] != 1 or payload["status"] != "completed":
+        raise ValueError("Latest forecast pointer is not a completed schema-v1 pointer")
+    run_prefix = Path(str(payload["run_prefix"]))
+    if run_prefix.is_absolute() or ".." in run_prefix.parts:
+        raise ValueError(f"Latest forecast run_prefix must be relative: {run_prefix}")
+    return payload
+
+
+def run_cloud_scoring(
+    config: CloudScoringConfig,
+    *,
+    dry_run: bool = False,
+    command_runner: CommandRunner = subprocess.run,
+) -> list[str]:
+    """Hydrate saved forecasts, score them, and upload diagnostics independently."""
+
+    store = ArtifactStore(config.artifact_store_uri)
+    workdir = config.workdir
+    workdir.mkdir(parents=True, exist_ok=True)
+    if not dry_run:
+        store.download_prefix(
+            "state/data/model_ready",
+            workdir / "data" / "model_ready",
+            required=True,
+        )
+        store.download_prefix(
+            "forecast_runs",
+            workdir / "artifacts" / "forecast_runs",
+            required=True,
+        )
+    paths = runtime_layout(workdir)
+    command = [
+        config.python,
+        str(PROJECT_ROOT / "scripts" / "score_published_forecasts.py"),
+        "--artifact-root",
+        str(paths.forecast_runs),
+        "--panel-path",
+        str(paths.price_panel),
+        "--qa-path",
+        str(paths.price_panel_qa),
+        "--output-dir",
+        str(paths.published_history),
+        "--allow-incomplete-panel",
+    ]
+    print("+ " + " ".join(command), flush=True)
+    if dry_run:
+        return []
+    command_runner(command, cwd=PROJECT_ROOT, env=os.environ.copy(), check=True)
+    return store.upload_prefix(paths.published_history, "published_forecast_history")
 
 
 def _require_output(path: Path) -> None:

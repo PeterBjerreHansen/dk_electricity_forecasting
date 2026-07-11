@@ -19,6 +19,7 @@ from dkenergy_forecast.types import (
 METADATA_JOIN_COLUMNS = [
     "unique_id",
     "ds_utc",
+    "information_cutoff_utc",
     "y",
     "area",
     "ds_local",
@@ -50,19 +51,32 @@ def rolling_origin_backtest(
         .reset_index(drop=True)
     )
     origins_utc = normalize_utc_column(origins, "forecast_origin_utc")
+    if "information_cutoff_utc" in origins_utc:
+        origins_utc = normalize_utc_column(origins_utc, "information_cutoff_utc")
+    else:
+        origins_utc["information_cutoff_utc"] = origins_utc["forecast_origin_utc"]
+
+    request_columns = ["forecast_origin_utc", "information_cutoff_utc"]
+    requests = origins_utc[request_columns].drop_duplicates()
+    duplicate_origins = requests["forecast_origin_utc"].duplicated(keep=False)
+    if bool(duplicate_origins.any()):
+        raise ValueError("Each forecast_origin_utc must have exactly one information cutoff")
 
     outputs: list[pd.DataFrame] = []
-    for origin in origins_utc["forecast_origin_utc"].sort_values().drop_duplicates():
-        history = filter_price_history_available_before(panel_utc, origin)
+    for request in requests.sort_values("forecast_origin_utc").itertuples(index=False):
+        origin = request.forecast_origin_utc
+        information_cutoff = request.information_cutoff_utc
+        history = filter_price_history_available_before(panel_utc, information_cutoff)
         if min_train_rows is not None and len(history) < min_train_rows:
             raise ValueError(
-                "Not enough training rows before forecast origin "
-                f"{origin.isoformat()}: {len(history)} < {min_train_rows}"
+                "Not enough training rows before information cutoff "
+                f"{information_cutoff.isoformat()}: {len(history)} < {min_train_rows}"
             )
 
         model = model_factory()
         model.fit(history)
         future = horizon_builder(panel_utc, origin)
+        future["information_cutoff_utc"] = information_cutoff
         future_for_model = future.drop(
             columns=[column for column in TARGET_LEAKAGE_COLUMNS if column in future.columns],
             errors="ignore",

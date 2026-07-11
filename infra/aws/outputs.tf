@@ -29,3 +29,11 @@ output "alb_dns_name" {
 output "ecs_cluster_name" {
   value = aws_ecs_cluster.main.name
 }
+
+output "production_alert_topic_arn" {
+  value = aws_sns_topic.production_alerts.arn
+}
+
+output "publication_marker_s3_uri" {
+  value = "s3://${aws_s3_bucket.artifacts.bucket}/${local.publication_marker_key}"
+}

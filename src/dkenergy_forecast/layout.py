@@ -6,7 +6,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-CHRONOS_LORA_WEATHER_MODEL_LABEL = "chronos2_lora_calendar_weather_ctx1024_v1"
+CHRONOS_LORA_WEATHER_MODEL_LABEL = "chronos_weather"
 CHRONOS_LORA_ARTIFACT_ID = CHRONOS_LORA_WEATHER_MODEL_LABEL
 WEATHER_FEATURES_LONG_FILENAME = "weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet"
 PRICE_PANEL_FILENAME = "price_panel_hourly_v1.parquet"
@@ -38,6 +38,7 @@ class RuntimeLayout:
     chronos_model_artifact: Path
     baseline_results: Path
     forecast_runs: Path
+    latest_pointer: Path
     latest_forecast: Path
     recent_scores: Path
     published_history: Path
@@ -71,6 +72,7 @@ def runtime_layout(root: str | Path = PROJECT_ROOT) -> RuntimeLayout:
         chronos_model_artifact=runtime_root / CHRONOS_MODEL_ARTIFACT_PROJECT_RELATIVE_PATH,
         baseline_results=results / "baseline_v1",
         forecast_runs=runtime_root / "artifacts" / "forecast_runs",
+        latest_pointer=runtime_root / "artifacts" / "latest.json",
         latest_forecast=results / "latest_forecast",
         recent_scores=results / "recent_scores",
         published_history=results / "published_forecast_history",

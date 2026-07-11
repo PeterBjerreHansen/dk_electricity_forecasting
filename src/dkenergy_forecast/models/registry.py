@@ -1,15 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from dkenergy_forecast.layout import CHRONOS_LORA_WEATHER_MODEL_LABEL
-from dkenergy_forecast.models.baselines import (
-    LagNaive,
-    WeekdayWeekendWeightedMedian,
-)
+from dkenergy_forecast.models.baselines import LagNaive, WeekdayWeekendWeightedMedian
 from dkenergy_forecast.models.chronos_production import (
     PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG,
     Chronos2LoRAWeatherDayAhead,
@@ -18,12 +14,16 @@ from dkenergy_forecast.models.chronos_production import (
 from dkenergy_forecast.types import ForecastModel
 
 
+WEIGHTED_MEDIAN_MODEL_LABEL = "weighted_median_v1"
+SAME_HOUR_LAST_WEEK_MODEL_LABEL = "same_hour_last_week"
+
+
 @dataclass(frozen=True)
 class ProductionModelSpec:
+    """The small amount of metadata needed to construct a model."""
+
     label: str
     family: str
-    default_enabled: bool
-    supports_latest_publish: bool
     factory: Callable[[], ForecastModel] | None
     description: str
     required_extra: str | None = None
@@ -33,72 +33,64 @@ class ProductionModelSpec:
 
 
 def production_model_specs() -> dict[str, ProductionModelSpec]:
+    """Models allowed on the live path: Chronos and its fixed fallback."""
+
     return {
-        **baseline_production_model_specs(),
-        **chronos_production_model_specs(),
+        CHRONOS_LORA_WEATHER_MODEL_LABEL: _chronos_spec(),
+        WEIGHTED_MEDIAN_MODEL_LABEL: _weighted_median_spec(),
     }
 
 
-def baseline_production_model_specs() -> dict[str, ProductionModelSpec]:
+def baseline_model_specs() -> dict[str, ProductionModelSpec]:
+    """Compact baselines used for diagnostics and model development."""
+
     return {
-        "same_hour_last_week": ProductionModelSpec(
-            label="same_hour_last_week",
+        SAME_HOUR_LAST_WEEK_MODEL_LABEL: ProductionModelSpec(
+            label=SAME_HOUR_LAST_WEEK_MODEL_LABEL,
             family="baseline",
-            default_enabled=True,
-            supports_latest_publish=True,
             factory=lambda: LagNaive(lag_hours=168),
-            description="Lag-naive baseline using the same UTC hour from one week earlier.",
+            description="Same UTC hour one week earlier.",
         ),
-        "median_weekday_exp_hl4_floor10_42d__median_weekend_exp_hl28_floor20_56d": ProductionModelSpec(
-            label="median_weekday_exp_hl4_floor10_42d__median_weekend_exp_hl28_floor20_56d",
-            family="baseline",
-            default_enabled=True,
-            supports_latest_publish=True,
-            factory=lambda: WeekdayWeekendWeightedMedian(
-                weekday_lookback_days=42,
-                weekday_half_life_days=4,
-                weekday_floor=0.10,
-                weekend_lookback_days=56,
-                weekend_half_life_days=28,
-                weekend_floor=0.20,
-                seasonal_keys=("local_hour", "is_weekend"),
-                min_periods=4,
-            ),
-            description=(
-                "Weekday/weekend weighted median baseline: weekday "
-                "42d half-life 4d floor 10%, weekend 56d half-life 28d floor 20%."
-            ),
-        ),
+        WEIGHTED_MEDIAN_MODEL_LABEL: _weighted_median_spec(),
     }
 
 
-def chronos_production_model_specs() -> dict[str, ProductionModelSpec]:
-    return {
-        CHRONOS_LORA_WEATHER_MODEL_LABEL: ProductionModelSpec(
-            label=CHRONOS_LORA_WEATHER_MODEL_LABEL,
-            family="chronos",
-            default_enabled=True,
-            supports_latest_publish=True,
-            factory=lambda: Chronos2LoRAWeatherDayAhead(PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG),
-            description=(
-                "Chronos-2 LoRA day-ahead probabilistic model with calendar and "
-                "Open-Meteo weather covariates."
-            ),
-            required_extra="chronos",
-            emits_quantiles=True,
-            requires_weather=True,
-            dependency_check=ensure_chronos_available,
+def _weighted_median_spec() -> ProductionModelSpec:
+    return ProductionModelSpec(
+        label=WEIGHTED_MEDIAN_MODEL_LABEL,
+        family="baseline",
+        factory=lambda: WeekdayWeekendWeightedMedian(
+            weekday_lookback_days=42,
+            weekday_half_life_days=4,
+            weekday_floor=0.10,
+            weekend_lookback_days=56,
+            weekend_half_life_days=28,
+            weekend_floor=0.20,
+            seasonal_keys=("local_hour", "is_weekend"),
+            min_periods=4,
         ),
-    }
+        description="Fixed weekday/weekend recency-weighted median baseline.",
+    )
+
+
+def _chronos_spec() -> ProductionModelSpec:
+    return ProductionModelSpec(
+        label=CHRONOS_LORA_WEATHER_MODEL_LABEL,
+        family="chronos",
+        factory=lambda: Chronos2LoRAWeatherDayAhead(PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG),
+        description="Chronos-2 LoRA with calendar and point-in-time weather covariates.",
+        required_extra="chronos",
+        emits_quantiles=True,
+        requires_weather=True,
+        dependency_check=ensure_chronos_available,
+    )
 
 
 def baseline_model_factories(*, include_optional: bool = False) -> dict[str, Callable[[], ForecastModel]]:
     factories = {
         label: spec.factory
-        for label, spec in production_model_specs().items()
-        if spec.family == "baseline"
-        and spec.factory is not None
-        and (include_optional or spec.default_enabled)
+        for label, spec in baseline_model_specs().items()
+        if spec.factory is not None
     }
     if include_optional:
         from dkenergy_forecast.models.comparison_registry import comparison_baseline_model_factories
@@ -108,11 +100,9 @@ def baseline_model_factories(*, include_optional: bool = False) -> dict[str, Cal
 
 
 def default_production_model_labels() -> list[str]:
-    return [
-        label
-        for label, spec in production_model_specs().items()
-        if spec.default_enabled
-    ]
+    """Backward-compatible view of the single primary production model."""
+
+    return [CHRONOS_LORA_WEATHER_MODEL_LABEL]
 
 
 def latest_publish_model_factories(
@@ -121,37 +111,27 @@ def latest_publish_model_factories(
     weather_features_long_path: str | Path | None = None,
     chronos_model_artifact_path: str | Path | None = None,
 ) -> dict[str, Callable[[], ForecastModel]]:
+    """Construct explicitly requested live-path models.
+
+    Production orchestration requests the configured primary first and the fixed
+    fallback only after a primary failure. Diagnostics may request both.
+    """
+
     specs = production_model_specs()
     selected = labels or default_production_model_labels()
     missing = sorted(set(selected) - set(specs))
     if missing:
         raise ValueError(
-            "Unknown production model label(s): "
-            f"{missing}; available={sorted(specs)}"
+            f"Unknown production model label(s): {missing}; available={sorted(specs)}"
         )
-
-    unsupported = sorted(
-        label
-        for label in selected
-        if not specs[label].supports_latest_publish or specs[label].factory is None
-    )
-    if unsupported:
-        raise ValueError(
-            "The selected model label(s) are registered but not yet wired into "
-            "latest-forecast publishing: "
-            f"{unsupported}. Run their backtest scripts or add a publish adapter first."
-        )
-
-    for label in selected:
-        dependency_check = specs[label].dependency_check
-        if dependency_check is not None:
-            dependency_check()
 
     factories: dict[str, Callable[[], ForecastModel]] = {}
     for label in selected:
         spec = specs[label]
+        if spec.dependency_check is not None:
+            spec.dependency_check()
         if spec.factory is None:
-            continue
+            raise ValueError(f"Production model {label!r} has no factory")
         if label == CHRONOS_LORA_WEATHER_MODEL_LABEL:
             config = PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG
             if weather_features_long_path is not None:

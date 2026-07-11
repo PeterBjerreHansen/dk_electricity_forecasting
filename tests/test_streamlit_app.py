@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import types
 
@@ -106,6 +107,29 @@ def test_streamlit_parquet_loader_accepts_file_uri(tmp_path) -> None:
     loaded = streamlit_app._load_parquet(f"file://{parquet_path}")
 
     assert loaded.to_dict(orient="records") == [{"x": 1}]
+
+
+def test_latest_pointer_resolves_only_completed_immutable_runs(tmp_path) -> None:
+    run_dir = tmp_path / "forecast_runs" / "run-1"
+    run_dir.mkdir(parents=True)
+    pointer = tmp_path / "latest.json"
+    pointer.write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "run_prefix": "forecast_runs/run-1",
+                "completion_key": "forecast_runs/run-1/COMPLETED.json",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert streamlit_app._resolve_latest_run_resources(str(pointer)) == {}
+
+    (run_dir / "COMPLETED.json").write_text("{}", encoding="utf-8")
+    resources = streamlit_app._resolve_latest_run_resources(str(pointer))
+    assert resources["predictions"] == str(run_dir / "predictions.parquet")
+    assert resources["dashboard"] == str(run_dir / "forecast_dashboard.json")
 
 
 def test_cloud_mode_disables_legacy_backtest_dirs_by_default(monkeypatch) -> None:

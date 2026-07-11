@@ -31,8 +31,6 @@ def comparison_baseline_model_specs() -> dict[str, ProductionModelSpec]:
         "rolling_median_local_hour_28d": ProductionModelSpec(
             label="rolling_median_local_hour_28d",
             family="baseline",
-            default_enabled=False,
-            supports_latest_publish=False,
             factory=lambda: SeasonalRollingMedian(
                 lookback_days=28,
                 seasonal_keys=("local_hour",),
@@ -43,8 +41,6 @@ def comparison_baseline_model_specs() -> dict[str, ProductionModelSpec]:
         "rolling_median_hour_weekend_56d": ProductionModelSpec(
             label="rolling_median_hour_weekend_56d",
             family="baseline",
-            default_enabled=False,
-            supports_latest_publish=False,
             factory=lambda: SeasonalRollingMedian(
                 lookback_days=56,
                 seasonal_keys=("local_hour", "is_weekend"),
@@ -60,8 +56,6 @@ def comparison_catboost_model_specs() -> dict[str, ProductionModelSpec]:
         "catboost_price_manual_v1": ProductionModelSpec(
             label="catboost_price_manual_v1",
             family="catboost",
-            default_enabled=False,
-            supports_latest_publish=False,
             factory=lambda: ProductionCatBoostDayAhead(PRODUCTION_CATBOOST_CONFIG),
             description=(
                 "Manually selected fixed-parameter CatBoost day-ahead price model "
@@ -81,8 +75,6 @@ def comparison_chronos_model_specs() -> dict[str, ProductionModelSpec]:
         "chronos_zero_shot_v1": ProductionModelSpec(
             label="chronos_zero_shot_v1",
             family="chronos",
-            default_enabled=False,
-            supports_latest_publish=False,
             factory=lambda: ChronosZeroShotDayAhead(),
             description="Chronos zero-shot day-ahead probabilistic forecast.",
             required_extra="chronos",

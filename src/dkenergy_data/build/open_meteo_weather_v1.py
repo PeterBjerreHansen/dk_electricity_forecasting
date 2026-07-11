@@ -18,7 +18,6 @@ OPEN_METEO_MODELS = ("gfs_global", "icon_eu", "metno_nordic")
 BASE_VARIABLES = (
     "temperature_2m",
     "wind_speed_10m",
-    "wind_direction_10m",
     "wind_speed_100m",
     "shortwave_radiation",
     "cloud_cover",

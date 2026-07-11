@@ -13,7 +13,7 @@ def test_chronos_manifest_verifies_declared_model_file_hashes(tmp_path) -> None:
     model_file.write_bytes(b"model-v1")
     expected_hash = hashlib.sha256(model_file.read_bytes()).hexdigest()
     manifest = {
-        "artifact_schema_version": 2,
+        "artifact_schema_version": 3,
         "artifact_files_sha256": {model_file.name: expected_hash},
     }
     (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")

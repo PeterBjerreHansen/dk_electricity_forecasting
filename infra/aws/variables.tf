@@ -40,6 +40,17 @@ variable "pipeline_image_uri" {
   default     = "bootstrap"
 }
 
+variable "build_git_sha" {
+  type        = string
+  description = "Git commit embedded in the deployed container images and task environment."
+  default     = "unknown"
+
+  validation {
+    condition     = var.build_git_sha == "unknown" || can(regex("^[0-9a-f]{7,40}$", var.build_git_sha))
+    error_message = "build_git_sha must be 'unknown' or a 7-40 character lowercase hexadecimal Git SHA."
+  }
+}
+
 variable "forecast_schedule_expression" {
   type        = string
   description = "EventBridge Scheduler expression for the live pipeline; keep enough headroom before the market-noon decision cutoff."
@@ -56,6 +67,64 @@ variable "enable_pipeline_schedule" {
   type        = bool
   description = "Whether EventBridge Scheduler should invoke the daily pipeline task."
   default     = false
+}
+
+variable "published_scoring_schedule_expression" {
+  type        = string
+  description = "EventBridge Scheduler expression for independent published-forecast scoring."
+  default     = "cron(0 14 * * ? *)"
+}
+
+variable "enable_published_scoring_schedule" {
+  type        = bool
+  description = "Whether EventBridge Scheduler should run background published-forecast scoring."
+  default     = false
+}
+
+variable "forecast_deadline_check_schedule_expression" {
+  type        = string
+  description = "EventBridge Scheduler expression for checking that the day-ahead forecast was committed."
+  default     = "cron(15 12 * * ? *)"
+}
+
+variable "enable_forecast_deadline_check" {
+  type        = bool
+  description = "Whether to check latest.json shortly after the publication deadline when the live schedule is enabled."
+  default     = true
+}
+
+variable "publication_marker_relative_key" {
+  type        = string
+  description = "Artifact-store-relative S3 key for the atomically committed latest forecast pointer."
+  default     = "latest.json"
+
+  validation {
+    condition     = trim(var.publication_marker_relative_key, "/") != ""
+    error_message = "publication_marker_relative_key must contain a non-empty key."
+  }
+}
+
+variable "forecast_delivery_date_offset_days" {
+  type        = number
+  description = "Expected local delivery-date offset from the deadline-check date; day-ahead forecasts use one day."
+  default     = 1
+}
+
+variable "forecast_marker_max_age_minutes" {
+  type        = number
+  description = "Maximum age accepted for latest.json during the deadline check."
+  default     = 360
+
+  validation {
+    condition     = var.forecast_marker_max_age_minutes > 0
+    error_message = "forecast_marker_max_age_minutes must be positive."
+  }
+}
+
+variable "alert_email_endpoint" {
+  type        = string
+  description = "Optional email address subscribed to the production SNS alert topic. Confirmation is required."
+  default     = ""
 }
 
 variable "web_cpu" {
@@ -93,8 +162,14 @@ variable "pipeline_ephemeral_storage_gib" {
   }
 }
 
-variable "score_max_origins" {
+variable "scoring_cpu" {
   type        = number
-  description = "Recent scoring origin count for production pipeline runs."
-  default     = 7
+  description = "Fargate CPU units for background published-forecast scoring."
+  default     = 1024
+}
+
+variable "scoring_memory" {
+  type        = number
+  description = "Fargate memory MiB for background published-forecast scoring."
+  default     = 4096
 }

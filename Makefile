@@ -9,7 +9,7 @@ EDS_START ?= $(PRICE_START_COPENHAGEN)
 OPEN_METEO_START ?= $(WEATHER_START_COPENHAGEN)
 OPEN_METEO_END ?= $(TOMORROW_COPENHAGEN)
 FORECAST_AT_HOUR_UTC ?=
-FORECAST_LOCAL_TIME ?= 12:00
+FORECAST_LOCAL_TIME ?= 10:00
 MIN_TRAIN_DAYS ?= 60
 SCORE_DAYS ?= 14
 SCORE_MAX_ORIGINS ?= 7
@@ -33,6 +33,7 @@ TF_STATE_REGION ?= $(AWS_REGION)
 EDS_END_ARG := $(if $(EDS_END),--end $(EDS_END),)
 PUBLISH_MODELS_ARG := $(if $(PUBLISH_MODELS),--models $(PUBLISH_MODELS),)
 FORECAST_AT_HOUR_UTC_ARG := $(if $(FORECAST_AT_HOUR_UTC),--at-hour-utc $(FORECAST_AT_HOUR_UTC),)
+PRODUCTION_MODEL_ARTIFACT_PATH := $(shell $(PYTHON) -c 'import json; print(json.load(open("config/production.json"))["primary"]["artifact_path"])')
 
 .PHONY: install install-app install-production test data-prices data-weather backtest-baseline publish diagnostics score-published daily daily-weather dashboard docker-build docker-dashboard docker-pipeline dry-run dry-run-weather aws-terraform-init aws-ensure-ecr aws-ecr-login aws-image aws-push aws-bootstrap-model aws-deploy clean
 
@@ -60,7 +61,7 @@ backtest-baseline:
 	$(PYTHON) scripts/run_baseline_backtest.py --allow-incomplete-panel --forecast-local-time $(FORECAST_LOCAL_TIME) $(FORECAST_AT_HOUR_UTC_ARG) --min-train-days $(MIN_TRAIN_DAYS)
 
 publish:
-	$(PYTHON) scripts/run_publish_forecast.py --allow-incomplete-panel --forecast-local-time $(FORECAST_LOCAL_TIME) $(FORECAST_AT_HOUR_UTC_ARG) --min-train-days $(MIN_TRAIN_DAYS) $(PUBLISH_MODELS_ARG)
+	$(PYTHON) scripts/run_publish_forecast.py --allow-incomplete-panel --min-train-days $(MIN_TRAIN_DAYS)
 
 diagnostics:
 	$(PYTHON) scripts/run_recent_diagnostics.py --allow-incomplete-panel --forecast-local-time $(FORECAST_LOCAL_TIME) $(FORECAST_AT_HOUR_UTC_ARG) --min-train-days $(MIN_TRAIN_DAYS) --score-days $(SCORE_DAYS) --score-max-origins $(SCORE_MAX_ORIGINS) --score-holdout-days $(SCORE_HOLDOUT_DAYS) $(PUBLISH_MODELS_ARG)
@@ -113,7 +114,7 @@ aws-push: aws-ecr-login aws-image
 
 aws-bootstrap-model:
 	@test -n "$(AWS_MODEL_ARTIFACT_URI)" || (echo "AWS_MODEL_ARTIFACT_URI=s3://... is required" && exit 1)
-	aws s3 sync artifacts/models/chronos2_lora_calendar_weather_ctx1024_v1/ $(AWS_MODEL_ARTIFACT_URI) --region $(AWS_REGION)
+	aws s3 sync $(PRODUCTION_MODEL_ARTIFACT_PATH)/ $(AWS_MODEL_ARTIFACT_URI) --region $(AWS_REGION)
 
 aws-deploy: aws-ensure-ecr aws-push
 	terraform -chdir=infra/aws apply -var "aws_region=$(AWS_REGION)" -var "web_image_uri=$(AWS_WEB_IMAGE_URI)" -var "pipeline_image_uri=$(AWS_PIPELINE_IMAGE_URI)" -var "enable_pipeline_schedule=$(AWS_ENABLE_PIPELINE_SCHEDULE)"

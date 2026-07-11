@@ -10,13 +10,14 @@ import streamlit as st
 
 from dkenergy_forecast.evaluation.summary import add_prediction_diagnostics, model_score_table
 from dkenergy_forecast.layout import CHRONOS_LORA_WEATHER_MODEL_LABEL, PROJECT_ROOT, runtime_layout
-from dkenergy_forecast.storage import materialize_uri, resource_exists
+from dkenergy_forecast.storage import join_uri, materialize_uri, parse_uri, resource_exists
 from dkenergy_forecast.types import normalize_utc_column
 
 
 ROOT = PROJECT_ROOT
 DEFAULT_LAYOUT = runtime_layout(ROOT)
 DEFAULT_PANEL_PATH = DEFAULT_LAYOUT.price_panel
+DEFAULT_LATEST_POINTER = DEFAULT_LAYOUT.latest_pointer
 DEFAULT_DASHBOARD_JSON = DEFAULT_LAYOUT.dashboard_json
 DEFAULT_LATEST_PREDICTIONS = DEFAULT_LAYOUT.latest_forecast / "predictions.parquet"
 DEFAULT_RECENT_PREDICTIONS = DEFAULT_LAYOUT.recent_scores / "predictions.parquet"
@@ -31,6 +32,7 @@ CACHE_TTL_SECONDS = 300
 
 MODEL_DISPLAY_NAMES = {
     CHRONOS_LORA_WEATHER_MODEL_LABEL: "Chronos 2 LoRA Weather",
+    "weighted_median_v1": "Weighted Rolling Median",
     "median_weekday_exp_hl4_floor10_42d__median_weekend_exp_hl28_floor20_56d": "Weighted Rolling Median",
     "rolling_median_hour_weekend_56d": "Rolling Median",
     "rolling_median_local_hour_28d": "Rolling Median",
@@ -50,10 +52,15 @@ def main() -> None:
     st.set_page_config(page_title="Danish Electricity Forecasts", layout="wide")
 
     panel_path = _resource_from_env("DKENERGY_PANEL_PATH", DEFAULT_PANEL_PATH)
-    dashboard_json = _resource_from_env("DKENERGY_DASHBOARD_JSON", DEFAULT_DASHBOARD_JSON)
-    latest_predictions_path = _resource_from_env(
+    latest_pointer = _resource_from_env("DKENERGY_LATEST_POINTER", DEFAULT_LATEST_POINTER)
+    latest_resources = _resolve_latest_run_resources(latest_pointer)
+    dashboard_json = os.environ.get(
+        "DKENERGY_DASHBOARD_JSON",
+        latest_resources.get("dashboard", str(DEFAULT_DASHBOARD_JSON)),
+    )
+    latest_predictions_path = os.environ.get(
         "DKENERGY_LATEST_PREDICTIONS_PATH",
-        DEFAULT_LATEST_PREDICTIONS,
+        latest_resources.get("predictions", str(DEFAULT_LATEST_PREDICTIONS)),
     )
     recent_predictions_path = _resource_from_env(
         "DKENERGY_RECENT_PREDICTIONS_PATH",
@@ -123,6 +130,7 @@ def main() -> None:
         _render_run_details(
             run,
             panel_path,
+            latest_pointer,
             dashboard_json,
             latest_predictions_path,
             recent_predictions_path,
@@ -151,7 +159,11 @@ def _render_run_summary(
 
     run_kind = run.get("run_kind")
     if run_kind and run_kind != "live":
-        st.info(f"This is a {run_kind} run and is not the promoted live forecast.")
+        st.info(f"This is a {run_kind} run and is not the live forecast.")
+    if run.get("forecast_status") == "degraded":
+        failure = run.get("primary_failure") or {}
+        reason = failure.get("message", "the primary model was unavailable")
+        st.warning(f"The fixed operational fallback was published because {reason}.")
     if run.get("score_eligible") is False:
         reason = run.get("score_ineligibility_reason") or "unspecified reason"
         st.warning(f"This run is excluded from published-performance scoring: {reason}.")
@@ -437,6 +449,7 @@ def _score_table_for_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
 def _render_run_details(
     run: dict[str, Any],
     panel_path: str,
+    latest_pointer: str,
     dashboard_json: str,
     latest_predictions_path: str,
     recent_predictions_path: str,
@@ -448,6 +461,7 @@ def _render_run_details(
     paths = pd.DataFrame(
         [
             {"artifact": "price_panel", "path": str(panel_path), "exists": _resource_exists(panel_path)},
+            {"artifact": "latest_pointer", "path": str(latest_pointer), "exists": _resource_exists(latest_pointer)},
             {"artifact": "dashboard_json", "path": str(dashboard_json), "exists": _resource_exists(dashboard_json)},
             {
                 "artifact": "latest_predictions",
@@ -489,6 +503,40 @@ def _load_dashboard_payload(path: str) -> dict[str, Any]:
     if not local_path.exists():
         return {}
     return json.loads(local_path.read_text(encoding="utf-8"))
+
+
+def _resolve_latest_run_resources(pointer_resource: str) -> dict[str, str]:
+    pointer_path = _materialize_resource(pointer_resource, required=False)
+    if not pointer_path.exists():
+        return {}
+    try:
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if pointer.get("status") != "completed" or not pointer.get("run_prefix"):
+        return {}
+
+    root = _resource_parent(pointer_resource)
+    completion = join_uri(root, str(pointer.get("completion_key", "")))
+    if not pointer.get("completion_key") or not resource_exists(completion):
+        return {}
+    run_prefix = str(pointer["run_prefix"])
+    return {
+        "predictions": join_uri(root, run_prefix, "predictions.parquet"),
+        "manifest": join_uri(root, run_prefix, "manifest.json"),
+        "dashboard": join_uri(root, run_prefix, "forecast_dashboard.json"),
+        "completion": completion,
+    }
+
+
+def _resource_parent(resource: str) -> str:
+    parsed = parse_uri(resource)
+    if parsed.is_s3:
+        parent_key = str(Path(parsed.key).parent)
+        if parent_key == ".":
+            parent_key = ""
+        return f"s3://{parsed.bucket}/{parent_key}".rstrip("/")
+    return str(Path(parsed.path).parent)
 
 
 def _load_predictions(payload: dict[str, Any], fallback_path: str) -> pd.DataFrame:

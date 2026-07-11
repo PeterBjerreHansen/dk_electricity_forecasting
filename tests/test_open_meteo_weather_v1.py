@@ -52,6 +52,31 @@ def test_normalize_previous_runs_payload_to_long_forecast_rows() -> None:
     assert first["raw_batch_id"] == "batch-dk1_a"
 
 
+def test_default_weather_contract_excludes_circular_wind_direction() -> None:
+    batch = _raw_batch(
+        "dk1_a",
+        payload={
+            "hourly": {
+                "time": ["2025-01-02T00:00"],
+                "wind_direction_10m_previous_day1": [359.0],
+                "temperature_2m_previous_day1": [3.0],
+            },
+            "hourly_units": {
+                "wind_direction_10m_previous_day1": "degree",
+                "temperature_2m_previous_day1": "degC",
+            },
+        },
+    )
+
+    normalized = normalize_batch(
+        batch,
+        locations=[WeatherLocation("dk1_a", "DK1", 56.0, 10.0)],
+        lead_time_days=[1],
+    )
+
+    assert normalized["parameter_id"].tolist() == ["temperature_2m"]
+
+
 def test_normalize_previous_runs_can_filter_valid_time_window() -> None:
     batch = _raw_batch(
         "dk1_a",

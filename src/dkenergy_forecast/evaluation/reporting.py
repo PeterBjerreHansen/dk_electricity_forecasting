@@ -18,7 +18,7 @@ def sha256_file(path: str | Path) -> str:
     return digest.hexdigest()
 
 
-def write_evaluation_report(
+def write_model_comparison(
     report: dict[str, Any],
     output_dir: str | Path,
 ) -> dict[str, Path]:
@@ -27,8 +27,8 @@ def write_evaluation_report(
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
     paths = {
-        "json": destination / "evaluation_report.json",
-        "markdown": destination / "evaluation_report.md",
+        "json": destination / "model_comparison.json",
+        "markdown": destination / "model_comparison.md",
     }
     safe_report = json_safe(report)
     paths["json"].write_text(
@@ -36,47 +36,48 @@ def write_evaluation_report(
         encoding="utf-8",
     )
     paths["markdown"].write_text(
-        render_evaluation_markdown(safe_report),
+        render_model_comparison_markdown(safe_report),
         encoding="utf-8",
     )
     return paths
 
 
-def render_evaluation_markdown(report: dict[str, Any]) -> str:
-    candidate = str(report["candidate_label"])
-    champion = str(report["champion_label"])
-    promotion = report["promotion"]
+def render_model_comparison_markdown(report: dict[str, Any]) -> str:
+    reference = str(report["reference_model"])
+    comparison = str(report["comparison_model"])
     interval = report["evaluation_interval"]
     pairing = report["pairing"]
     overall = report["overall"]
     bootstrap = report["bootstrap_confidence_intervals"]
 
     lines = [
-        "# Forecast model evaluation",
-        "",
-        f"**Decision:** `{promotion['decision']}`",
+        "# Forecast model comparison",
         "",
         (
-            f"Candidate `{_escape(candidate)}` was compared with champion "
-            f"`{_escape(champion)}` on `{interval['timestamp_column']}` in "
+            f"`{_escape(comparison)}` is compared with reference "
+            f"`{_escape(reference)}` on `{interval['timestamp_column']}` in "
             f"`[{interval['start_utc']}, {interval['end_utc']})`."
         ),
         "",
         (
             f"The comparison contains {pairing['paired_rows']} exactly paired rows "
-            f"across {pairing['origin_count']} forecast origins."
+            f"across {pairing['origin_count']} forecast origins. Differences are "
+            "comparison minus reference; negative differences favor the comparison "
+            "for error and scoring metrics."
         ),
         "",
         "## Overall metrics",
         "",
-        "| Model | MAE | RMSE | Bias | WIS | Calibration error | 80% coverage |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "| Role | Model | MAE | RMSE | Bias | WIS | Calibration error | 80% coverage |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
-    for label in (candidate, champion):
-        metrics = overall[label]
+    for role in ("reference", "comparison"):
+        model = overall[role]
+        metrics = model["metrics"]
         lines.append(
-            "| {label} | {mae} | {rmse} | {bias} | {wis} | {calibration} | {coverage} |".format(
-                label=_escape(label),
+            "| {role} | {model} | {mae} | {rmse} | {bias} | {wis} | {calibration} | {coverage} |".format(
+                role=role,
+                model=_escape(model["model_label"]),
                 mae=_number(metrics["mae"]),
                 rmse=_number(metrics["rmse"]),
                 bias=_number(metrics["bias"]),
@@ -91,87 +92,64 @@ def render_evaluation_markdown(report: dict[str, Any]) -> str:
             "",
             "## Origin-block bootstrap",
             "",
-            "Negative differences favor the candidate.",
-            "",
-            "| Metric (candidate − champion) | Mean | Lower | Upper | Confidence | Block |",
+            "| Metric difference | Mean | Lower | Upper | Confidence | Block |",
             "|---|---:|---:|---:|---:|---:|",
         ]
     )
-    for name, result in bootstrap.items():
+    for metric, result in bootstrap.items():
         if result is None:
-            lines.append(f"| {_escape(name)} | n/a | n/a | n/a | n/a | n/a |")
-        else:
-            lines.append(
-                "| {name} | {mean} | {lower} | {upper} | {confidence} | {block} |".format(
-                    name=_escape(name),
-                    mean=_number(result["mean"]),
-                    lower=_number(result["lower"]),
-                    upper=_number(result["upper"]),
-                    confidence=_number(result["confidence"], digits=3),
-                    block=result["block_length"],
-                )
-            )
-
-    lines.extend(
-        [
-            "",
-            "## Promotion checks",
-            "",
-            "| Check | Result |",
-            "|---|---|",
-        ]
-    )
-    for check in promotion["checks"]:
-        result = "skipped" if check["passed"] is None else (
-            "pass" if check["passed"] else "fail"
-        )
-        lines.append(f"| {_escape(check['name'])} | {result} |")
-
-    lines.extend(
-        [
-            "",
-            "## Per-origin paired comparison",
-            "",
-            "| Forecast origin (UTC) | Rows | Candidate MAE | Champion MAE | Difference | Winner |",
-            "|---|---:|---:|---:|---:|---|",
-        ]
-    )
-    for row in report["paired_origin_comparisons"]:
+            lines.append(f"| {_escape(metric)} | n/a | n/a | n/a | n/a | n/a |")
+            continue
         lines.append(
-            "| {origin} | {rows} | {candidate_mae} | {champion_mae} | {difference} | {winner} |".format(
+            "| {metric} | {mean} | {lower} | {upper} | {confidence} | {block} |".format(
+                metric=_escape(metric),
+                mean=_number(result["mean"]),
+                lower=_number(result["lower"]),
+                upper=_number(result["upper"]),
+                confidence=_number(result["confidence"], digits=3),
+                block=result["block_length"],
+            )
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Per-origin differences",
+            "",
+            "| Forecast origin (UTC) | Rows | Reference MAE | Comparison MAE | MAE difference | WIS difference |",
+            "|---|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for row in report["per_origin_differences"]:
+        lines.append(
+            "| {origin} | {rows} | {reference_mae} | {comparison_mae} | {mae_difference} | {wis_difference} |".format(
                 origin=_escape(row["forecast_origin_utc"]),
                 rows=row["rows"],
-                candidate_mae=_number(row["candidate_mae"]),
-                champion_mae=_number(row["champion_mae"]),
-                difference=_number(row["mae_difference"]),
-                winner=_escape(row["mae_winner"]),
+                reference_mae=_number(row["reference_mae"]),
+                comparison_mae=_number(row["comparison_mae"]),
+                mae_difference=_number(row["mae_difference"]),
+                wis_difference=_number(row["weighted_interval_score_difference"]),
             )
         )
 
     lines.extend(
         [
             "",
-            "## Subgroup MAE guardrails",
+            "## Stratified differences",
             "",
-            "Groups below the policy's minimum row count are shown as skipped.",
-            "",
-            "| Stratum | Value | Rows | Candidate MAE | Champion MAE | Relative change | Result |",
-            "|---|---|---:|---:|---:|---:|---|",
+            "| Stratum | Value | Rows | MAE difference | WIS difference | Calibration difference |",
+            "|---|---|---:|---:|---:|---:|",
         ]
     )
-    for row in report["stratification"]["guardrails"]:
-        result = "skipped" if row["passed"] is None else (
-            "pass" if row["passed"] else "fail"
-        )
+    for row in report["stratification"]["differences"]:
         lines.append(
-            "| {stratum} | {value} | {rows} | {candidate_mae} | {champion_mae} | {change} | {result} |".format(
+            "| {stratum} | {value} | {rows} | {mae} | {wis} | {calibration} |".format(
                 stratum=_escape(row["stratum"]),
                 value=_escape(row["stratum_value"]),
                 rows=row["rows"],
-                candidate_mae=_number(row["candidate_mae"]),
-                champion_mae=_number(row["champion_mae"]),
-                change=_percentage(row["mae_relative_change"]),
-                result=result,
+                mae=_number(row["mae_difference"]),
+                wis=_number(row["weighted_interval_score_difference"]),
+                calibration=_number(row["calibration_error_difference"], digits=4),
             )
         )
 
@@ -180,11 +158,11 @@ def render_evaluation_markdown(report: dict[str, Any]) -> str:
             "",
             "## Method",
             "",
-            "- Model rows must match exactly on the recorded pairing keys.",
+            "- Model rows match exactly on the recorded pairing keys.",
             "- WIS uses q10, q50, and q90; calibration error is the mean absolute quantile calibration error.",
             "- Confidence intervals use a deterministic circular moving-block bootstrap over chronological forecast origins.",
             "- Extreme-price groups use the absolute-target threshold recorded in the JSON report.",
-            "- Lower MAE, WIS, and calibration error are better.",
+            "- The report is descriptive and does not select or deploy a model.",
             "",
         ]
     )
@@ -228,18 +206,6 @@ def _number(value: object, *, digits: int = 3) -> str:
     if not math.isfinite(numeric):
         return "n/a"
     return f"{numeric:.{digits}f}"
-
-
-def _percentage(value: object) -> str:
-    if value is None:
-        return "n/a"
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return "n/a"
-    if not math.isfinite(numeric):
-        return "n/a"
-    return f"{numeric:.1%}"
 
 
 def _escape(value: object) -> str:

@@ -1,20 +1,33 @@
 FROM python:3.11-slim
 
+ARG GIT_SHA=unknown
+
 # Default local builds produce the dashboard image. The Chronos pipeline image is
 # built explicitly from Dockerfile.pipeline.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    DKENERGY_BUILD_GIT_SHA=${GIT_SHA} \
+    HOME=/home/app \
+    XDG_CACHE_HOME=/home/app/.cache
+
+LABEL org.opencontainers.image.revision=${GIT_SHA}
 
 WORKDIR /app
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md constraints-production.txt ./
 COPY src ./src
 COPY app ./app
 COPY scripts/container_entrypoint.py ./scripts/container_entrypoint.py
 
-RUN python -m pip install --upgrade pip \
-    && python -m pip install -e ".[app,aws]"
+RUN groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid app --create-home --shell /usr/sbin/nologin app \
+    && python -m pip install --upgrade pip \
+    && python -m pip install -c constraints-production.txt ".[app,aws]" \
+    && mkdir -p /home/app/.cache \
+    && chown -R app:app /home/app
+
+USER app
 
 EXPOSE 8501
 

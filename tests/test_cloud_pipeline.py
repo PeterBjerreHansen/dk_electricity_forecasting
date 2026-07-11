@@ -6,12 +6,17 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from dkenergy_forecast.cloud_pipeline import CloudPipelineConfig, run_cloud_pipeline
+from dkenergy_forecast.cloud_pipeline import (
+    CloudPipelineConfig,
+    CloudScoringConfig,
+    run_cloud_pipeline,
+    run_cloud_scoring,
+)
 
 
 def test_cloud_pipeline_syncs_state_runs_daily_and_uploads_latest_last(tmp_path) -> None:
     store = tmp_path / "store"
-    model = store / "models" / "chronos2_lora_calendar_weather_ctx1024_v1"
+    model = store / "models" / "chronos_weather"
     model.mkdir(parents=True)
     (model / "manifest.json").write_text("{}", encoding="utf-8")
     (store / "state" / "data" / "model_ready").mkdir(parents=True)
@@ -34,7 +39,7 @@ def test_cloud_pipeline_syncs_state_runs_daily_and_uploads_latest_last(tmp_path)
         assert env["WITH_WEATHER"] == "1"
         assert (
             env["DKENERGY_CHRONOS_MODEL_ARTIFACT_PATH"]
-            == str(workdir / "artifacts" / "models" / "chronos2_lora_calendar_weather_ctx1024_v1")
+            == str(workdir / "artifacts" / "models" / "chronos_weather")
         )
         assert "--with-weather" in command
         assert "--skip-backtest" in command
@@ -58,15 +63,16 @@ def test_cloud_pipeline_syncs_state_runs_daily_and_uploads_latest_last(tmp_path)
     assert (workdir / "artifacts" / "forecast_runs" / "previous_run" / "predictions.parquet").exists()
     assert not (workdir / "data" / "raw" / "old.json").exists()
     assert "forecast_runs/run_1/manifest.json" in uploaded
-    assert "published_forecast_history/model_scores.parquet" in uploaded
-    assert uploaded[-1] == "latest/forecast_dashboard.json"
-    assert (store / "latest" / "forecast_dashboard.json").exists()
+    assert "forecast_runs/run_1/COMPLETED.json" in uploaded
+    assert uploaded[-1] == "latest.json"
+    assert (store / "latest.json").exists()
+    assert (store / "forecast_runs" / "run_1" / "forecast_dashboard.json").exists()
     assert (store / "latest" / "price_panel_hourly_v1.parquet").exists()
 
 
 def test_cloud_pipeline_fails_when_model_manifest_is_missing(tmp_path) -> None:
     store = tmp_path / "store"
-    model = store / "models" / "chronos2_lora_calendar_weather_ctx1024_v1"
+    model = store / "models" / "chronos_weather"
     model.mkdir(parents=True)
 
     with pytest.raises(FileNotFoundError, match="manifest.json"):
@@ -82,7 +88,7 @@ def test_cloud_pipeline_fails_when_model_manifest_is_missing(tmp_path) -> None:
 
 def test_cloud_pipeline_fails_when_weather_artifact_is_missing(tmp_path) -> None:
     store = tmp_path / "store"
-    model = store / "models" / "chronos2_lora_calendar_weather_ctx1024_v1"
+    model = store / "models" / "chronos_weather"
     model.mkdir(parents=True)
     (model / "manifest.json").write_text("{}", encoding="utf-8")
     workdir = tmp_path / "workdir"
@@ -104,7 +110,7 @@ def test_cloud_pipeline_fails_when_weather_artifact_is_missing(tmp_path) -> None
 
 def test_cloud_pipeline_fails_when_weather_artifact_is_stale(tmp_path, monkeypatch) -> None:
     store = tmp_path / "store"
-    model = store / "models" / "chronos2_lora_calendar_weather_ctx1024_v1"
+    model = store / "models" / "chronos_weather"
     model.mkdir(parents=True)
     (model / "manifest.json").write_text("{}", encoding="utf-8")
     workdir = tmp_path / "workdir"
@@ -150,6 +156,34 @@ def test_cloud_pipeline_dry_run_does_not_require_model_artifact(tmp_path) -> Non
     assert calls
 
 
+def test_cloud_scoring_is_independent_from_live_publication(tmp_path) -> None:
+    store = tmp_path / "store"
+    panel_dir = store / "state" / "data" / "model_ready"
+    run_dir = store / "forecast_runs" / "run_1"
+    panel_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+    (panel_dir / "price_panel_hourly_v1.parquet").write_text("panel", encoding="utf-8")
+    (run_dir / "COMPLETED.json").write_text("{}", encoding="utf-8")
+    workdir = tmp_path / "workdir"
+
+    def fake_runner(command, *, cwd, env, check):
+        assert "score_published_forecasts.py" in command[1]
+        output = workdir / "results" / "published_forecast_history"
+        output.mkdir(parents=True)
+        (output / "model_scores.parquet").write_text("scores", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0)
+
+    uploaded = run_cloud_scoring(
+        CloudScoringConfig(
+            artifact_store_uri=f"file://{store}",
+            workdir=workdir,
+        ),
+        command_runner=fake_runner,
+    )
+
+    assert uploaded == ["published_forecast_history/model_scores.parquet"]
+
+
 def _write_pipeline_outputs(
     workdir: Path,
     *,
@@ -159,28 +193,33 @@ def _write_pipeline_outputs(
     for path in [
         workdir / "data" / "model_ready",
         workdir / "data" / "features",
-        workdir / "results" / "latest_forecast",
-        workdir / "results" / "recent_scores",
-        workdir / "results" / "published_forecast_history",
         workdir / "artifacts" / "forecast_runs" / "run_1",
-        workdir / "app_data",
     ]:
         path.mkdir(parents=True, exist_ok=True)
     (workdir / "data" / "model_ready" / "price_panel_hourly_v1.parquet").write_text("panel", encoding="utf-8")
     (workdir / "data" / "model_ready" / "price_panel_hourly_v1.qa.json").write_text("{}", encoding="utf-8")
-    (workdir / "results" / "latest_forecast" / "predictions.parquet").write_text("predictions", encoding="utf-8")
-    (workdir / "results" / "latest_forecast" / "manifest.json").write_text("{}", encoding="utf-8")
-    (workdir / "results" / "recent_scores" / "model_scores.parquet").write_text("scores", encoding="utf-8")
-    (workdir / "results" / "published_forecast_history" / "predictions.parquet").write_text(
-        "published predictions",
+    run_dir = workdir / "artifacts" / "forecast_runs" / "run_1"
+    (run_dir / "predictions.parquet").write_text("predictions", encoding="utf-8")
+    (run_dir / "manifest.json").write_text("{}", encoding="utf-8")
+    (run_dir / "forecast_dashboard.json").write_text("{}", encoding="utf-8")
+    (run_dir / "COMPLETED.json").write_text(
+        '{"status":"completed","run_id":"run_1","committed_at_utc":"2026-01-01T10:00:00Z"}',
         encoding="utf-8",
     )
-    (workdir / "results" / "published_forecast_history" / "model_scores.parquet").write_text(
-        "published scores",
+    (workdir / "artifacts" / "latest.json").write_text(
+        "{\n"
+        '  "schema_version": 1,\n'
+        '  "run_id": "run_1",\n'
+        '  "run_prefix": "forecast_runs/run_1",\n'
+        '  "completion_key": "forecast_runs/run_1/COMPLETED.json",\n'
+        '  "delivery_date_local": "2999-01-02",\n'
+        '  "information_cutoff_utc": "2999-01-01T09:00:00Z",\n'
+        '  "decision_deadline_utc": "2999-01-01T12:00:00Z",\n'
+        '  "committed_at_utc": "2999-01-01T09:05:00Z",\n'
+        '  "status": "completed"\n'
+        "}\n",
         encoding="utf-8",
     )
-    (workdir / "artifacts" / "forecast_runs" / "run_1" / "manifest.json").write_text("{}", encoding="utf-8")
-    (workdir / "app_data" / "forecast_dashboard.json").write_text("{}", encoding="utf-8")
     if include_weather:
         timestamp = weather_timestamp or pd.Timestamp.now(tz="UTC")
         pd.DataFrame(

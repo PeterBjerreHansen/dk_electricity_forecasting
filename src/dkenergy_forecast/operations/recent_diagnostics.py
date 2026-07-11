@@ -19,7 +19,7 @@ from dkenergy_forecast.evaluation.summary import (
 )
 from dkenergy_forecast.io import load_price_panel
 from dkenergy_forecast.layout import PROJECT_ROOT
-from dkenergy_forecast.models.registry import latest_publish_model_factories
+from dkenergy_forecast.models.registry import latest_publish_model_factories, production_model_specs
 from dkenergy_forecast.operations.publish_forecast import publish_predictions_for_origins
 from dkenergy_forecast.publishing import git_commit, json_safe, unique_run_id
 
@@ -42,8 +42,9 @@ def run_recent_diagnostics(
     latest pointer.
     """
 
+    diagnostic_labels = args.models or list(production_model_specs())
     factories = latest_publish_model_factories(
-        args.models,
+        diagnostic_labels,
         weather_features_long_path=args.weather_features_long_path,
         chronos_model_artifact_path=args.chronos_model_artifact_path,
     )
