@@ -176,9 +176,10 @@ pipeline --artifact-store-uri s3://BUCKET/dk-energy-forecasts/smoke \
   --information-cutoff-utc 2026-07-01T08:00:00Z
 ```
 
-The separate sub-prefix is the safety boundary: replay state and its
-`latest.json` cannot replace production state, while the task's least-privilege
-S3 policy still permits access. Inspect CloudWatch logs and the S3 objects.
+The separate sub-prefix is the safety boundary: replay state and immutable run
+artifacts cannot replace production state. Replay deliberately does not write a
+`latest.json` pointer, while the task's least-privilege S3 policy still permits
+access. Inspect CloudWatch logs and the S3 objects.
 Verify the run receipt, delivery-date row counts (23/24/25 hours as
 appropriate), model release ID, weather mode, quantile ordering, and completion
 marker.

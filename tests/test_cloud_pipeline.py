@@ -97,10 +97,10 @@ def test_cloud_pipeline_passes_replay_contract_to_daily_pipeline(tmp_path) -> No
         assert "--run-kind" in command
         assert command[command.index("--run-kind") + 1] == "replay"
         assert command[command.index("--information-cutoff-utc") + 1] == "2026-07-01T08:00:00Z"
-        _write_pipeline_outputs(workdir)
+        _write_pipeline_outputs(workdir, include_latest_pointer=False)
         return subprocess.CompletedProcess(command, 0)
 
-    run_cloud_pipeline(
+    uploaded = run_cloud_pipeline(
         CloudPipelineConfig(
             artifact_store_uri=f"file://{store}",
             workdir=workdir,
@@ -110,6 +110,10 @@ def test_cloud_pipeline_passes_replay_contract_to_daily_pipeline(tmp_path) -> No
         ),
         command_runner=fake_runner,
     )
+
+    assert "forecast_runs/run_1/manifest.json" in uploaded
+    assert uploaded[-1] == "forecast_runs/run_1/COMPLETED.json"
+    assert not (store / "latest.json").exists()
 
 
 def test_cloud_pipeline_rejects_replay_without_cutoff(tmp_path) -> None:
@@ -227,6 +231,7 @@ def _write_pipeline_outputs(
     workdir: Path,
     *,
     include_weather: bool = True,
+    include_latest_pointer: bool = True,
     weather_timestamp: pd.Timestamp | None = None,
 ) -> None:
     for path in [
@@ -245,20 +250,21 @@ def _write_pipeline_outputs(
         '{"status":"completed","run_id":"run_1","committed_at_utc":"2026-01-01T10:00:00Z"}',
         encoding="utf-8",
     )
-    (workdir / "artifacts" / "latest.json").write_text(
-        "{\n"
-        '  "schema_version": 1,\n'
-        '  "run_id": "run_1",\n'
-        '  "run_prefix": "forecast_runs/run_1",\n'
-        '  "completion_key": "forecast_runs/run_1/COMPLETED.json",\n'
-        '  "delivery_date_local": "2999-01-02",\n'
-        '  "information_cutoff_utc": "2999-01-01T09:00:00Z",\n'
-        '  "decision_deadline_utc": "2999-01-01T12:00:00Z",\n'
-        '  "committed_at_utc": "2999-01-01T09:05:00Z",\n'
-        '  "status": "completed"\n'
-        "}\n",
-        encoding="utf-8",
-    )
+    if include_latest_pointer:
+        (workdir / "artifacts" / "latest.json").write_text(
+            "{\n"
+            '  "schema_version": 1,\n'
+            '  "run_id": "run_1",\n'
+            '  "run_prefix": "forecast_runs/run_1",\n'
+            '  "completion_key": "forecast_runs/run_1/COMPLETED.json",\n'
+            '  "delivery_date_local": "2999-01-02",\n'
+            '  "information_cutoff_utc": "2999-01-01T09:00:00Z",\n'
+            '  "decision_deadline_utc": "2999-01-01T12:00:00Z",\n'
+            '  "committed_at_utc": "2999-01-01T09:05:00Z",\n'
+            '  "status": "completed"\n'
+            "}\n",
+            encoding="utf-8",
+        )
     if include_weather:
         timestamp = weather_timestamp or pd.Timestamp.now(tz="UTC")
         pd.DataFrame(

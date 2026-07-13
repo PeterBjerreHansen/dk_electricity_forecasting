@@ -98,4 +98,5 @@ not created unless `enable_web=true`. A historical smoke run must use
 `--run-kind replay`, an explicit `--information-cutoff-utc`, and a separate
 sub-prefix such as `s3://BUCKET/dk-energy-forecasts/smoke` so it cannot update
 the production `latest.json` while remaining inside the task's allowed S3
-prefix.
+prefix. Replay uploads its immutable run with `COMPLETED.json` last and does
+not publish a `latest.json` pointer.
