@@ -22,7 +22,7 @@ No step in this document requires automatic retraining, automatic model selectio
 | EventBridge Scheduler | A cloud alarm clock | Starts the pipeline daily only when enabled |
 | SNS | Notification delivery | Sends optional operational email alerts |
 | ALB / CloudFront | Web traffic routing and delivery | Deferred with the dashboard; not needed for forecasting |
-| GitHub OIDC | Short-lived AWS login for GitHub Actions | Deferred until local deployment is understood |
+| GitHub OIDC | Short-lived AWS login for GitHub Actions | Used for the initial image upload; a permanent deploy role remains deferred |
 
 ## Architecture by stage
 
@@ -33,6 +33,29 @@ flowchart LR
     C --> D["Stage 4: independent scoring"]
     D --> E["Stage 5: optional dashboard"]
 ```
+
+## Current deployment status (2026-07-13)
+
+Stages 0–2 are complete in the production account in region `eu-central-1`:
+
+- Terraform state is versioned, encrypted, publicly blocked, and natively
+  locked in the dedicated state bucket.
+- The private artifact bucket and immutable pipeline ECR repository exist.
+- Pipeline image commit `65a4ae25842ceb27df2913769916c21b85c971c9`
+  is deployed as ECS task definition revision 1.
+- Terraform reports no drift with web, pipeline scheduling, and independent
+  scoring disabled. No ECS service, EventBridge schedule, deadline Lambda, SNS
+  topic, or web tier exists.
+- Historical replay `replay_20260713T211418Z` completed with exit code 0. It
+  published 48 ordered, finite Chronos forecasts (24 each for DK1 and DK2) to
+  the isolated `dk-energy-forecasts/smoke` sub-prefix. Artifact hashes match,
+  and neither the smoke nor production root contains `latest.json`.
+
+The next gate is one manual **live** run started before the Copenhagen noon
+deadline. Do not enable Stage 3 scheduling until that run and its production
+`latest.json` have been inspected. The current base image scan also has
+unfixed Debian findings; rescan and review them before enabling unattended
+daily execution.
 
 ## Stage 0 — account safety and local tools
 
