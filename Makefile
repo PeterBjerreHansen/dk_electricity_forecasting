@@ -31,6 +31,7 @@ AWS_ENABLE_WEB ?= false
 TF_STATE_BUCKET ?=
 TF_STATE_KEY ?= dk-energy-forecasts/production.tfstate
 TF_STATE_REGION ?= $(AWS_REGION)
+TF_STATE_USE_LOCKFILE ?= true
 
 EDS_END_ARG := $(if $(EDS_END),--end $(EDS_END),)
 PUBLISH_MODELS_ARG := $(if $(PUBLISH_MODELS),--models $(PUBLISH_MODELS),)
@@ -101,7 +102,7 @@ aws-ecr-login:
 
 aws-terraform-init:
 	@test -n "$(TF_STATE_BUCKET)" || (echo "TF_STATE_BUCKET is required for the Terraform S3 backend" && exit 1)
-	terraform -chdir=infra/aws init -backend-config="bucket=$(TF_STATE_BUCKET)" -backend-config="key=$(TF_STATE_KEY)" -backend-config="region=$(TF_STATE_REGION)"
+	terraform -chdir=infra/aws init -backend-config="bucket=$(TF_STATE_BUCKET)" -backend-config="key=$(TF_STATE_KEY)" -backend-config="region=$(TF_STATE_REGION)" -backend-config="use_lockfile=$(TF_STATE_USE_LOCKFILE)"
 
 aws-ensure-ecr: aws-terraform-init
 	terraform -chdir=infra/aws apply -target=aws_ecr_repository.pipeline -target=aws_ecr_lifecycle_policy.pipeline -var "aws_region=$(AWS_REGION)" -var "enable_web=$(AWS_ENABLE_WEB)"

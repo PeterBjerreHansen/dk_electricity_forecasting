@@ -33,7 +33,8 @@ stack, or run Terraform locally with admin credentials for the first apply.
 terraform -chdir=infra/aws init \
   -backend-config="bucket=$TF_STATE_BUCKET" \
   -backend-config="key=dk-energy-forecasts/production.tfstate" \
-  -backend-config="region=eu-central-1"
+  -backend-config="region=eu-central-1" \
+  -backend-config="use_lockfile=true"
 terraform -chdir=infra/aws apply \
   -target=aws_ecr_repository.pipeline \
   -target=aws_ecr_lifecycle_policy.pipeline
