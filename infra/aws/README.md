@@ -45,9 +45,13 @@ disabled. These are the safe defaults:
 
 ```bash
 export TF_STATE_BUCKET=<terraform-state-bucket>
-export AWS_PROFILE=dkenergy-production
+export AWS_PROFILE=dkenergy-terraform
 make aws-deploy
 ```
+
+`dkenergy-terraform` is a process-credential profile that delegates to the
+temporary `aws login` session in `dkenergy-production`; it does not store
+long-lived access keys. See the deployment plan for its one-time setup.
 
 Upload the trained Chronos LoRA artifact:
 

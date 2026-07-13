@@ -59,6 +59,21 @@ Actions that require you:
    ```
 
    The final ARN must end in `user/peter-admin`, not `root`.
+   Some SDK-based tools do not yet read the new `aws login` cache directly.
+   Configure a second, non-secret profile that asks the AWS CLI for the same
+   temporary session:
+
+   ```bash
+   aws configure set credential_process \
+     "aws configure export-credentials --profile dkenergy-production --format process" \
+     --profile dkenergy-terraform
+   aws configure set region eu-central-1 --profile dkenergy-terraform
+   AWS_PROFILE=dkenergy-terraform aws sts get-caller-identity
+   ```
+
+   Use `dkenergy-production` for direct AWS CLI commands and
+   `dkenergy-terraform` for Terraform. Neither profile contains long-lived
+   access keys.
 6. Create AWS Budget alerts at small thresholds such as EUR 5, 15, and 30. A budget is an alert, not a hard spending cap.
 7. Never paste passwords, access keys, login URLs, or session credentials into this repository.
 
