@@ -31,7 +31,7 @@ output "ecs_cluster_name" {
 }
 
 output "production_alert_topic_arn" {
-  value = aws_sns_topic.production_alerts.arn
+  value = try(aws_sns_topic.production_alerts[0].arn, null)
 }
 
 output "publication_marker_s3_uri" {

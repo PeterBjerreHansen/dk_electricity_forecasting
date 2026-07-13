@@ -131,7 +131,11 @@ Validate the artifact before upload:
 .venv/bin/python -c "from dkenergy_forecast.models.chronos_production import load_lora_artifact_manifest; load_lora_artifact_manifest('artifacts/models/chronos_weather/sha256-55814a7fd0d36973'); print('valid')"
 ```
 
-The current Terraform defaults keep `enable_web`, `enable_pipeline_schedule`, and `enable_published_scoring_schedule` false.
+The current Terraform defaults keep `enable_web`, `enable_pipeline_schedule`,
+and `enable_published_scoring_schedule` false. With those flags disabled,
+Terraform creates only the manual pipeline runtime: it does not create the
+scoring task, Scheduler roles, EventBridge rules, SNS topic, deadline-check
+Lambda, alarms, or web resources.
 
 ### Do we retrain Chronos first?
 
@@ -161,16 +165,23 @@ Expected cost: **pennies to about EUR 1 per run**, depending on duration and req
 
 Add the ECS cluster, task definition, task IAM roles, network, and CloudWatch logs. Keep every schedule and the web tier disabled.
 
-First run a historical replay. Give it a separate store prefix, for example `s3://BUCKET/dk-energy-forecasts-smoke`, and pass:
+First run a historical replay. Give it a separate sub-prefix inside the
+pipeline's permitted artifact prefix, for example
+`s3://BUCKET/dk-energy-forecasts/smoke`, and pass:
 
 ```text
-pipeline --artifact-store-uri s3://BUCKET/dk-energy-forecasts-smoke \
+pipeline --artifact-store-uri s3://BUCKET/dk-energy-forecasts/smoke \
   --model-artifact-uri s3://BUCKET/dk-energy-forecasts/models/chronos_weather/sha256-55814a7fd0d36973 \
   --run-kind replay \
   --information-cutoff-utc 2026-07-01T08:00:00Z
 ```
 
-The separate prefix is the safety boundary: replay state and its `latest.json` cannot replace production state. Inspect CloudWatch logs and the S3 objects. Verify the run receipt, delivery-date row counts (23/24/25 hours as appropriate), model release ID, weather mode, quantile ordering, and completion marker.
+The separate sub-prefix is the safety boundary: replay state and its
+`latest.json` cannot replace production state, while the task's least-privilege
+S3 policy still permits access. Inspect CloudWatch logs and the S3 objects.
+Verify the run receipt, delivery-date row counts (23/24/25 hours as
+appropriate), model release ID, weather mode, quantile ordering, and completion
+marker.
 
 Then run one live task manually before the Copenhagen noon publication deadline. Verify that the immutable run uploads first, `COMPLETED.json` follows, and the root `latest.json` pointer is written last.
 

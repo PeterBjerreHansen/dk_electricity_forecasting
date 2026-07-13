@@ -315,6 +315,7 @@ resource "aws_cloudwatch_log_group" "pipeline" {
 }
 
 resource "aws_cloudwatch_log_group" "scoring" {
+  count             = var.enable_published_scoring_schedule ? 1 : 0
   name              = "/ecs/${local.name}/scoring"
   retention_in_days = 14
 }
@@ -564,6 +565,7 @@ resource "aws_ecs_task_definition" "pipeline" {
 }
 
 resource "aws_ecs_task_definition" "published_scoring" {
+  count                    = var.enable_published_scoring_schedule ? 1 : 0
   family                   = "${local.name}-published-scoring"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
@@ -597,7 +599,7 @@ resource "aws_ecs_task_definition" "published_scoring" {
       logConfiguration = {
         logDriver = "awslogs"
         options = {
-          awslogs-group         = aws_cloudwatch_log_group.scoring.name
+          awslogs-group         = aws_cloudwatch_log_group.scoring[0].name
           awslogs-region        = var.aws_region
           awslogs-stream-prefix = "published-scoring"
         }
@@ -607,7 +609,8 @@ resource "aws_ecs_task_definition" "published_scoring" {
 }
 
 resource "aws_iam_role" "scheduler" {
-  name = "${local.name}-scheduler"
+  count = local.enable_scheduled_operations ? 1 : 0
+  name  = "${local.name}-scheduler"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -623,18 +626,17 @@ resource "aws_iam_role" "scheduler" {
 }
 
 resource "aws_iam_role_policy" "scheduler" {
+  count = local.enable_scheduled_operations ? 1 : 0
+
   name = "${local.name}-run-task"
-  role = aws_iam_role.scheduler.id
+  role = aws_iam_role.scheduler[0].id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
-        Action = ["ecs:RunTask"]
-        Resource = [
-          aws_ecs_task_definition.pipeline.arn,
-          aws_ecs_task_definition.published_scoring.arn
-        ]
+        Effect   = "Allow"
+        Action   = ["ecs:RunTask"]
+        Resource = local.scheduled_task_definition_arns
       },
       {
         Effect = "Allow"
@@ -661,7 +663,7 @@ resource "aws_scheduler_schedule" "pipeline" {
 
   target {
     arn      = aws_ecs_cluster.main.arn
-    role_arn = aws_iam_role.scheduler.arn
+    role_arn = aws_iam_role.scheduler[0].arn
 
     ecs_parameters {
       task_definition_arn = aws_ecs_task_definition.pipeline.arn
@@ -695,10 +697,10 @@ resource "aws_scheduler_schedule" "published_scoring" {
 
   target {
     arn      = aws_ecs_cluster.main.arn
-    role_arn = aws_iam_role.scheduler.arn
+    role_arn = aws_iam_role.scheduler[0].arn
 
     ecs_parameters {
-      task_definition_arn = aws_ecs_task_definition.published_scoring.arn
+      task_definition_arn = aws_ecs_task_definition.published_scoring[0].arn
       launch_type         = "FARGATE"
 
       network_configuration {

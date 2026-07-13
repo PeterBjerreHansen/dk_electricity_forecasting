@@ -6,9 +6,9 @@ beginner-oriented [deployment plan](../../docs/aws-deployment-plan.md).
 - private S3 artifact bucket with versioning and SSE
 - a pipeline ECR image repository, plus an optional web image repository
 - optional ECS/Fargate Streamlit web service behind an ALB and CloudFront
-- ECS/Fargate scheduled pipeline task
-- EventBridge Scheduler daily trigger
-- IAM roles and CloudWatch log groups
+- ECS/Fargate pipeline task for manual or scheduled runs
+- optional EventBridge Scheduler daily trigger and operational alerts
+- IAM roles and CloudWatch log groups for enabled stages only
 
 ## Terraform State
 
@@ -48,6 +48,10 @@ export TF_STATE_BUCKET=<terraform-state-bucket>
 export AWS_PROFILE=dkenergy-terraform
 make aws-deploy
 ```
+
+At this manual-runtime stage, the disabled schedules are strict feature
+boundaries. Terraform does not create scoring, Scheduler, SNS, deadline-check,
+alarm, or web resources until the corresponding stage is enabled.
 
 `dkenergy-terraform` is a process-credential profile that delegates to the
 temporary `aws login` session in `dkenergy-production`; it does not store
@@ -92,4 +96,6 @@ history. Notebook/backtest artifact folders are disabled in ECS via
 The dashboard ECR repository, ECS service, ALB, and CloudFront distribution are
 not created unless `enable_web=true`. A historical smoke run must use
 `--run-kind replay`, an explicit `--information-cutoff-utc`, and a separate
-artifact-store prefix so it cannot update the production `latest.json`.
+sub-prefix such as `s3://BUCKET/dk-energy-forecasts/smoke` so it cannot update
+the production `latest.json` while remaining inside the task's allowed S3
+prefix.
