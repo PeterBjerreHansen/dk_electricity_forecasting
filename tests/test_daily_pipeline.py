@@ -38,6 +38,40 @@ def test_daily_pipeline_accepts_allow_incomplete_panel_alias() -> None:
     assert "--allow-incomplete-panel" in result.stdout
 
 
+def test_daily_pipeline_passes_explicit_replay_contract_to_publisher() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_daily_pipeline.py",
+            "--dry-run",
+            "--run-kind",
+            "replay",
+            "--information-cutoff-utc",
+            "2026-07-01T08:00:00Z",
+        ],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    publish_line = next(line for line in result.stdout.splitlines() if "run_publish_forecast.py" in line)
+    assert "--run-kind replay" in publish_line
+    assert "--information-cutoff-utc 2026-07-01T08:00:00Z" in publish_line
+
+
+def test_daily_pipeline_rejects_replay_without_cutoff() -> None:
+    result = subprocess.run(
+        [sys.executable, "scripts/run_daily_pipeline.py", "--dry-run", "--run-kind", "replay"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
+    assert "Replay daily runs require --information-cutoff-utc" in result.stderr
+
+
 def test_daily_pipeline_allows_explicit_weather_refresh_skip() -> None:
     result = subprocess.run(
         [sys.executable, "scripts/run_daily_pipeline.py", "--dry-run", "--skip-weather"],

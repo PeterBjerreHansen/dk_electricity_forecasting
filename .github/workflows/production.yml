@@ -15,6 +15,7 @@ env:
   AWS_REGION: eu-central-1
   ENABLE_PIPELINE_SCHEDULE: ${{ vars.ENABLE_PIPELINE_SCHEDULE || 'false' }}
   ENABLE_PUBLISHED_SCORING_SCHEDULE: ${{ vars.ENABLE_PUBLISHED_SCORING_SCHEDULE || 'false' }}
+  ENABLE_WEB: ${{ vars.ENABLE_WEB || 'false' }}
   ALERT_EMAIL_ENDPOINT: ${{ vars.ALERT_EMAIL_ENDPOINT || '' }}
 
 jobs:
@@ -60,14 +61,24 @@ jobs:
       - name: Ensure ECR exists
         run: |
           terraform -chdir=infra/aws apply -auto-approve \
-            -target=aws_ecr_repository.web \
             -target=aws_ecr_repository.pipeline \
-            -var "aws_region=${AWS_REGION}"
+            -target=aws_ecr_lifecycle_policy.pipeline \
+            -var "aws_region=${AWS_REGION}" \
+            -var "enable_web=${ENABLE_WEB}"
+          if [ "${ENABLE_WEB}" = "true" ]; then
+            terraform -chdir=infra/aws apply -auto-approve \
+              -target='aws_ecr_repository.web[0]' \
+              -target='aws_ecr_lifecycle_policy.web[0]' \
+              -var "aws_region=${AWS_REGION}" \
+              -var "enable_web=true"
+          fi
 
       - name: Read ECR repository URLs
         id: ecr
         run: |
-          echo "web_repository_url=$(terraform -chdir=infra/aws output -raw web_ecr_repository_url)" >> "$GITHUB_OUTPUT"
+          if [ "${ENABLE_WEB}" = "true" ]; then
+            echo "web_repository_url=$(terraform -chdir=infra/aws output -raw web_ecr_repository_url)" >> "$GITHUB_OUTPUT"
+          fi
           echo "pipeline_repository_url=$(terraform -chdir=infra/aws output -raw pipeline_ecr_repository_url)" >> "$GITHUB_OUTPUT"
 
       - name: Login to ECR
@@ -79,13 +90,17 @@ jobs:
           WEB_IMAGE_URI: ${{ steps.ecr.outputs.web_repository_url }}:${{ github.sha }}
           PIPELINE_IMAGE_URI: ${{ steps.ecr.outputs.pipeline_repository_url }}:${{ github.sha }}
         run: |
-          WEB_REPOSITORY="${{ steps.ecr.outputs.web_repository_url }}"
-          WEB_REPOSITORY="${WEB_REPOSITORY##*/}"
-          if aws ecr describe-images --repository-name "$WEB_REPOSITORY" --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
-            echo "Reusing immutable web image $WEB_IMAGE_URI"
+          if [ "${ENABLE_WEB}" = "true" ]; then
+            WEB_REPOSITORY="${{ steps.ecr.outputs.web_repository_url }}"
+            WEB_REPOSITORY="${WEB_REPOSITORY##*/}"
+            if aws ecr describe-images --repository-name "$WEB_REPOSITORY" --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
+              echo "Reusing immutable web image $WEB_IMAGE_URI"
+            else
+              docker build --build-arg "GIT_SHA=${GITHUB_SHA}" -f Dockerfile.web -t "$WEB_IMAGE_URI" .
+              docker push "$WEB_IMAGE_URI"
+            fi
           else
-            docker build --build-arg "GIT_SHA=${GITHUB_SHA}" -f Dockerfile.web -t "$WEB_IMAGE_URI" .
-            docker push "$WEB_IMAGE_URI"
+            WEB_IMAGE_URI=bootstrap
           fi
 
           PIPELINE_REPOSITORY="${{ steps.ecr.outputs.pipeline_repository_url }}"
@@ -122,6 +137,7 @@ jobs:
             -var "build_git_sha=${GITHUB_SHA}" \
             -var "web_image_uri=${{ steps.images.outputs.web_image_uri }}" \
             -var "pipeline_image_uri=${{ steps.images.outputs.pipeline_image_uri }}" \
+            -var "enable_web=${ENABLE_WEB}" \
             -var "enable_pipeline_schedule=${ENABLE_PIPELINE_SCHEDULE}" \
             -var "enable_published_scoring_schedule=${ENABLE_PUBLISHED_SCORING_SCHEDULE}" \
             -var "alert_email_endpoint=${ALERT_EMAIL_ENDPOINT}"

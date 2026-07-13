@@ -219,7 +219,7 @@ def _import_chronos() -> Any:
         raise ImportError(
             "Chronos zero-shot comparison models require the optional Chronos dependency. "
             'Install it with `pip install -e ".[chronos]"` or '
-            "`pip install 'chronos-forecasting[extras]>=2.2'`."
+            "`pip install 'chronos-forecasting>=2.2' 'peft>=0.18.1'`."
         ) from exc
     return chronos
 

@@ -74,6 +74,8 @@ jobs:
           test "$(docker run --rm --entrypoint id dk-energy-forecasts-pipeline:ci -u)" = "10001"
           test "$(docker run --rm --entrypoint printenv dk-energy-forecasts-web:ci DKENERGY_BUILD_GIT_SHA)" = "${GITHUB_SHA}"
           test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' dk-energy-forecasts-pipeline:ci)" = "${GITHUB_SHA}"
+          docker run --rm --entrypoint python dk-energy-forecasts-pipeline:ci -c \
+            "import torch; assert torch.__version__.startswith('2.8.0'); assert torch.version.cuda is None"
 
       - name: Smoke-test pipeline command wiring
         run: >-

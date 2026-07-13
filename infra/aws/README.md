@@ -1,10 +1,11 @@
 # AWS MVP Infrastructure
 
-This Terraform stack deploys the production MVP:
+This Terraform stack can deploy the production system in stages. Start with the
+beginner-oriented [deployment plan](../../docs/aws-deployment-plan.md).
 
 - private S3 artifact bucket with versioning and SSE
-- separate ECR image repositories for the web and pipeline images
-- ECS/Fargate Streamlit web service behind an ALB and CloudFront
+- a pipeline ECR image repository, plus an optional web image repository
+- optional ECS/Fargate Streamlit web service behind an ALB and CloudFront
 - ECS/Fargate scheduled pipeline task
 - EventBridge Scheduler daily trigger
 - IAM roles and CloudWatch log groups
@@ -34,16 +35,16 @@ terraform -chdir=infra/aws init \
   -backend-config="key=dk-energy-forecasts/production.tfstate" \
   -backend-config="region=eu-central-1"
 terraform -chdir=infra/aws apply \
-  -target=aws_ecr_repository.web \
-  -target=aws_ecr_repository.pipeline
+  -target=aws_ecr_repository.pipeline \
+  -target=aws_ecr_lifecycle_policy.pipeline
 ```
 
-Build and push the two images, then apply the stack once with the schedule
-disabled. This is the default so the dashboard can come up before the trained
-Chronos artifact has been uploaded:
+Build and push the pipeline image, then apply with schedules and the web tier
+disabled. These are the safe defaults:
 
 ```bash
 export TF_STATE_BUCKET=<terraform-state-bucket>
+export AWS_PROFILE=dkenergy-production
 make aws-deploy
 ```
 
@@ -71,7 +72,7 @@ The default schedule is 10:00 `Europe/Copenhagen`, leaving two hours before the
 repository's noon decision cutoff. It downloads the production inference state
 from S3, refreshes data, runs the live path with `--skip-backtest`, publishes a
 transactional immutable forecast run, and updates
-`latest/forecast_dashboard.json` last. Historical raw data remains in S3; the
+the root `latest.json` pointer last. Historical raw data remains in S3; the
 container runtime only hydrates the slice it needs for inference.
 
 Recent diagnostics and published-history scoring are separate jobs. Schedule
@@ -82,3 +83,8 @@ not delay or replace a valid live publication.
 The dashboard reads latest S3 artifacts plus published forecast performance
 history. Notebook/backtest artifact folders are disabled in ECS via
 `DKENERGY_ENABLE_LEGACY_BACKTESTS=0`.
+
+The dashboard ECR repository, ECS service, ALB, and CloudFront distribution are
+not created unless `enable_web=true`. A historical smoke run must use
+`--run-kind replay`, an explicit `--information-cutoff-utc`, and a separate
+artifact-store prefix so it cannot update the production `latest.json`.

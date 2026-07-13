@@ -310,7 +310,24 @@ def load_lora_artifact_manifest(model_artifact_path: str | Path) -> dict[str, An
             f"{schema_version!r}; expected {CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION}"
         )
     _validate_artifact_file_hashes(artifact_path, manifest)
+    _validate_base_model_revision(artifact_path, manifest)
     return manifest
+
+
+def _validate_base_model_revision(artifact_path: Path, manifest: dict[str, Any]) -> None:
+    expected = manifest.get("base_model_revision")
+    if not expected:
+        raise ValueError("Chronos artifact manifest must pin base_model_revision")
+    adapter_config_path = artifact_path / "adapter_config.json"
+    if not adapter_config_path.is_file():
+        raise ValueError(f"Chronos artifact file is missing: {adapter_config_path}")
+    adapter_config = json.loads(adapter_config_path.read_text(encoding="utf-8"))
+    observed = adapter_config.get("revision")
+    if observed != expected:
+        raise ValueError(
+            "Chronos adapter base revision does not match its manifest: "
+            f"adapter={observed!r}, manifest={expected!r}"
+        )
 
 
 def _validate_artifact_file_hashes(
@@ -683,7 +700,7 @@ def _import_chronos() -> Any:
         raise ImportError(
             "Chronos production models require the optional Chronos dependency. "
             'Install it with `pip install -e ".[chronos]"` or '
-            "`pip install 'chronos-forecasting[extras]>=2.2'`."
+            "`pip install 'chronos-forecasting>=2.2' 'peft>=0.18.1'`."
         ) from exc
     return chronos
 
@@ -694,6 +711,6 @@ def _chronos2_pipeline_class() -> Any:
     if pipeline_cls is None:
         raise ImportError(
             "Chronos-2 LoRA production models require a chronos package exposing "
-            "Chronos2Pipeline. Install `chronos-forecasting[extras]>=2.2`."
+            "Chronos2Pipeline. Install `chronos-forecasting>=2.2` and `peft>=0.18.1`."
         )
     return pipeline_cls

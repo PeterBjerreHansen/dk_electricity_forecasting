@@ -118,6 +118,7 @@ def main() -> None:
         report_to="none",
     )
     lora_pipeline.save_pretrained(output_dir)
+    pin_adapter_base_revision(output_dir, args.base_model_revision)
     shutil.rmtree(trainer_dir, ignore_errors=True)
 
     manifest = make_manifest(
@@ -188,6 +189,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-incomplete-panel", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
+
+
+def pin_adapter_base_revision(output_dir: Path, revision: str | None) -> None:
+    """Persist the immutable base revision where PEFT reads it at inference."""
+
+    if not revision:
+        raise ValueError("Production Chronos exports require --base-model-revision")
+    config_path = output_dir / "adapter_config.json"
+    if not config_path.exists():
+        raise FileNotFoundError(f"Chronos export is missing {config_path}")
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["revision"] = revision
+    config_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def make_lora_training_frame(

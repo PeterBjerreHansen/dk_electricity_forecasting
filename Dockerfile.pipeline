@@ -7,23 +7,32 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     DKENERGY_BUILD_GIT_SHA=${GIT_SHA} \
     HOME=/home/app \
-    XDG_CACHE_HOME=/home/app/.cache
+    XDG_CACHE_HOME=/home/app/.cache \
+    PYTHONPATH=/app/src
 
 LABEL org.opencontainers.image.revision=${GIT_SHA}
 
 WORKDIR /app
 
-COPY pyproject.toml README.md constraints-production.txt ./
-COPY src ./src
-COPY scripts ./scripts
-COPY config ./config
+COPY constraints-production.txt ./
 
 RUN groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --create-home --shell /usr/sbin/nologin app \
     && python -m pip install --upgrade pip \
-    && python -m pip install -c constraints-production.txt ".[chronos,aws]" \
+    && python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.8.0" \
+    && python -m pip install -c constraints-production.txt \
+        "pandas>=2.0" \
+        "pyarrow>=12.0" \
+        "requests>=2.31" \
+        "chronos-forecasting>=2.2" \
+        "peft>=0.18.1" \
+        "boto3>=1.34" \
     && mkdir -p /home/app/.cache /var/lib/dkenergy /var/lib/dkenergy-scoring \
     && chown -R app:app /home/app /var/lib/dkenergy /var/lib/dkenergy-scoring
+
+COPY src ./src
+COPY scripts ./scripts
+COPY config ./config
 
 USER app
 

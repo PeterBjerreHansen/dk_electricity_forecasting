@@ -46,6 +46,8 @@ class CloudPipelineConfig:
     python: str = sys.executable
     with_weather: bool = True
     score_max_origins: int | None = None
+    run_kind: str = "live"
+    information_cutoff_utc: str | None = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,13 @@ def run_cloud_pipeline(
     dry_run: bool = False,
     command_runner: CommandRunner = subprocess.run,
 ) -> list[str]:
+    if config.run_kind == "replay" and not config.information_cutoff_utc:
+        raise ValueError("Replay cloud runs require information_cutoff_utc")
+    if config.run_kind == "live" and config.information_cutoff_utc:
+        raise ValueError("Live cloud runs cannot set information_cutoff_utc")
+    if config.run_kind not in {"live", "replay"}:
+        raise ValueError(f"Unsupported cloud run_kind: {config.run_kind!r}")
+
     store = ArtifactStore(config.artifact_store_uri)
     workdir = config.workdir
     workdir.mkdir(parents=True, exist_ok=True)
@@ -89,7 +98,11 @@ def run_cloud_pipeline(
         config.python,
         str(PROJECT_ROOT / "scripts" / "run_daily_pipeline.py"),
         "--skip-backtest",
+        "--run-kind",
+        config.run_kind,
     ]
+    if config.information_cutoff_utc:
+        command.extend(["--information-cutoff-utc", config.information_cutoff_utc])
     if config.with_weather:
         command.append("--with-weather")
     if dry_run:
@@ -287,7 +300,11 @@ def _require_fresh_weather_features(path: Path) -> None:
     timestamp_column = next(
         (
             column
-            for column in ("forecast_available_at_utc", "forecast_reference_time", "ds_utc")
+            for column in (
+                "forecast_available_at_utc",
+                "forecast_reference_time",
+                "ds_utc",
+            )
             if column in weather.columns
         ),
         None,

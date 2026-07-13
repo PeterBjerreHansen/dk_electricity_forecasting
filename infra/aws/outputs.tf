@@ -11,7 +11,7 @@ output "model_artifact_uri" {
 }
 
 output "web_ecr_repository_url" {
-  value = aws_ecr_repository.web.repository_url
+  value = try(aws_ecr_repository.web[0].repository_url, null)
 }
 
 output "pipeline_ecr_repository_url" {
@@ -19,11 +19,11 @@ output "pipeline_ecr_repository_url" {
 }
 
 output "cloudfront_domain_name" {
-  value = aws_cloudfront_distribution.web.domain_name
+  value = try(aws_cloudfront_distribution.web[0].domain_name, null)
 }
 
 output "alb_dns_name" {
-  value = aws_lb.web.dns_name
+  value = try(aws_lb.web[0].dns_name, null)
 }
 
 output "ecs_cluster_name" {

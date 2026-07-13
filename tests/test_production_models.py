@@ -526,10 +526,15 @@ def _chronos_artifact(
 ) -> Path:
     artifact_path = tmp_path / "chronos_artifact"
     artifact_path.mkdir()
+    (artifact_path / "adapter_config.json").write_text(
+        json.dumps({"revision": "test-base-revision"}),
+        encoding="utf-8",
+    )
     (artifact_path / "manifest.json").write_text(
         json.dumps(
             {
                 "artifact_schema_version": CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION,
+                "base_model_revision": "test-base-revision",
                 "release_id": "test-release",
                 "covariates": covariates,
                 "weather_covariate_mode": weather_covariate_mode,

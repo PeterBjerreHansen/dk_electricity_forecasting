@@ -393,7 +393,7 @@ def make_forecast_run_manifest(
     run_id: str,
     forecast_origin_utc: object,
     predictions: pd.DataFrame,
-    scores: pd.DataFrame,
+    scores: pd.DataFrame | None,
     artifact_paths: dict[str, str],
     dataset_version: list[str] | str | None,
     git_commit_value: str | None,
@@ -581,14 +581,14 @@ def write_latest_pointer(
 def build_dashboard_payload(
     *,
     predictions: pd.DataFrame,
-    scores: pd.DataFrame,
+    scores: pd.DataFrame | None,
     manifest: dict[str, Any],
     score_predictions: pd.DataFrame | None = None,
     published_history_predictions: pd.DataFrame | None = None,
     published_history_scores: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     prediction_rows = normalize_published_predictions(predictions).to_dict(orient="records")
-    score_rows = scores.to_dict(orient="records")
+    score_rows = [] if scores is None else scores.to_dict(orient="records")
     payload = {
         "generated_at_utc": datetime.now(timezone.utc),
         "run": manifest,

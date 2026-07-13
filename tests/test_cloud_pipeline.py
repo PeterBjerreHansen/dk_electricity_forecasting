@@ -86,6 +86,45 @@ def test_cloud_pipeline_fails_when_model_manifest_is_missing(tmp_path) -> None:
         )
 
 
+def test_cloud_pipeline_passes_replay_contract_to_daily_pipeline(tmp_path) -> None:
+    store = tmp_path / "store"
+    model = store / "models" / "chronos_weather"
+    model.mkdir(parents=True)
+    (model / "manifest.json").write_text("{}", encoding="utf-8")
+    workdir = tmp_path / "workdir"
+
+    def fake_runner(command, *, cwd, env, check):
+        assert "--run-kind" in command
+        assert command[command.index("--run-kind") + 1] == "replay"
+        assert command[command.index("--information-cutoff-utc") + 1] == "2026-07-01T08:00:00Z"
+        _write_pipeline_outputs(workdir)
+        return subprocess.CompletedProcess(command, 0)
+
+    run_cloud_pipeline(
+        CloudPipelineConfig(
+            artifact_store_uri=f"file://{store}",
+            workdir=workdir,
+            model_artifact_uri=f"file://{model}",
+            run_kind="replay",
+            information_cutoff_utc="2026-07-01T08:00:00Z",
+        ),
+        command_runner=fake_runner,
+    )
+
+
+def test_cloud_pipeline_rejects_replay_without_cutoff(tmp_path) -> None:
+    with pytest.raises(ValueError, match="require information_cutoff_utc"):
+        run_cloud_pipeline(
+            CloudPipelineConfig(
+                artifact_store_uri=f"file://{tmp_path / 'store'}",
+                workdir=tmp_path / "workdir",
+                model_artifact_uri=f"file://{tmp_path / 'model'}",
+                run_kind="replay",
+            ),
+            dry_run=True,
+        )
+
+
 def test_cloud_pipeline_fails_when_weather_artifact_is_missing(tmp_path) -> None:
     store = tmp_path / "store"
     model = store / "models" / "chronos_weather"
