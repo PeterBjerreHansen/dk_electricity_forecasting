@@ -4,6 +4,7 @@ This Terraform stack can deploy the production system in stages. Start with the
 beginner-oriented [deployment plan](../../docs/aws-deployment-plan.md).
 
 - private S3 artifact bucket with versioning and SSE
+- optional dedicated public S3 website for a prebuilt static dashboard
 - a pipeline ECR image repository, plus an optional web image repository
 - optional ECS/Fargate Streamlit web service behind an ALB and CloudFront
 - ECS/Fargate pipeline task for manual or scheduled runs
@@ -53,6 +54,26 @@ At this manual-runtime stage, the disabled schedules are strict feature
 boundaries. Terraform does not create scoring, Scheduler, SNS, deadline-check,
 alarm, or web resources until the corresponding stage is enabled.
 
+For the cheapest public demonstration, set `enable_static_site=true`. This
+creates a separate bucket that contains only public site files; the artifact
+bucket and Chronos model remain private. Build and upload the page with:
+
+```bash
+make static-dashboard STATIC_DASHBOARD_INPUT=/path/to/forecast_dashboard.json
+aws s3 cp build/static-dashboard/index.html \
+  "$(terraform -chdir=infra/aws output -raw static_site_s3_uri)/index.html" \
+  --content-type 'text/html; charset=utf-8' \
+  --cache-control 'public,max-age=300'
+```
+
+S3 website endpoints are HTTP-only. Upgrade to CloudFront or another HTTPS
+static host when the AWS account is verified for CloudFront; do not enable the
+always-on Streamlit tier merely to obtain HTTPS.
+
+Once deployed, keep `enable_static_site=true` in every full Terraform apply.
+The production GitHub workflow reads this from the `ENABLE_STATIC_SITE`
+environment variable.
+
 `dkenergy-terraform` is a process-credential profile that delegates to the
 temporary `aws login` session in `dkenergy-production`; it does not store
 long-lived access keys. See the deployment plan for its one-time setup.
@@ -88,6 +109,11 @@ Recent diagnostics and published-history scoring are separate jobs. Schedule
 `scripts/run_recent_diagnostics.py` and `scripts/score_published_forecasts.py`
 independently when those operational views should refresh; their failure must
 not delay or replace a valid live publication.
+
+The pipeline Dockerfile pins the Python patch release, Debian Bookworm, and the
+base-image digest. Update that digest intentionally, rebuild for `linux/amd64`,
+run the import smoke test, and compare ECR scan counts before deploying the new
+Git-SHA image.
 
 The dashboard reads latest S3 artifacts plus published forecast performance
 history. Notebook/backtest artifact folders are disabled in ECS via

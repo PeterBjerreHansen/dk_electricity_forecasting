@@ -22,6 +22,14 @@ output "cloudfront_domain_name" {
   value = try(aws_cloudfront_distribution.web[0].domain_name, null)
 }
 
+output "static_site_domain_name" {
+  value = try(aws_s3_bucket_website_configuration.static_site[0].website_endpoint, null)
+}
+
+output "static_site_s3_uri" {
+  value = try("s3://${aws_s3_bucket.static_site[0].bucket}", null)
+}
+
 output "alb_dns_name" {
   value = try(aws_lb.web[0].dns_name, null)
 }

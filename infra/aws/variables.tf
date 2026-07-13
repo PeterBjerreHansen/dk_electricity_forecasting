@@ -40,6 +40,18 @@ variable "enable_web" {
   default     = false
 }
 
+variable "enable_static_site" {
+  type        = bool
+  description = "Whether to provision the low-cost public S3 website used for the prebuilt dashboard MVP."
+  default     = false
+}
+
+variable "static_site_bucket_name" {
+  type        = string
+  description = "Optional globally unique static-site bucket name. Defaults to a deterministic account-specific name."
+  default     = ""
+}
+
 variable "pipeline_image_uri" {
   type        = string
   description = "Container image URI deployed to the scheduled pipeline ECS task."

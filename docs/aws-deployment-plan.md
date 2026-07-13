@@ -34,7 +34,7 @@ flowchart LR
     D --> E["Stage 5: optional dashboard"]
 ```
 
-## Current deployment status (2026-07-13)
+## Current deployment status (2026-07-14)
 
 Stages 0–2 are complete in the production account in region `eu-central-1`:
 
@@ -43,19 +43,34 @@ Stages 0–2 are complete in the production account in region `eu-central-1`:
 - The private artifact bucket and immutable pipeline ECR repository exist.
 - Pipeline image commit `65a4ae25842ceb27df2913769916c21b85c971c9`
   is deployed as ECS task definition revision 1.
-- Terraform reports no drift with web, pipeline scheduling, and independent
-  scoring disabled. No ECS service, EventBridge schedule, deadline Lambda, SNS
-  topic, or web tier exists.
+- Pipeline scheduling, independent scoring, alerts, and the always-on
+  Streamlit tier remain disabled. No ECS service or EventBridge schedule is
+  running.
 - Historical replay `replay_20260713T211418Z` completed with exit code 0. It
   published 48 ordered, finite Chronos forecasts (24 each for DK1 and DK2) to
   the isolated `dk-energy-forecasts/smoke` sub-prefix. Artifact hashes match,
   and neither the smoke nor production root contains `latest.json`.
+- A static replay dashboard is live from the dedicated public site bucket at
+  `http://dk-energy-forecasts-site-653044339519.s3-website.eu-central-1.amazonaws.com/`.
+  The public bucket contains only `index.html`; the model and pipeline artifacts
+  remain in the separate private bucket.
+- CloudFront creation was attempted but AWS rejected it until the new account
+  is verified. The temporary origin access control was removed cleanly. The S3
+  website is the intentional HTTP-only MVP until that account restriction is
+  lifted.
+- The pipeline Dockerfile now pins Python 3.11.15 on Debian 12 Bookworm by
+  multi-platform digest. The Linux x86-64 image builds and imports the complete
+  Chronos runtime as non-root UID 10001. An ECR base-image comparison reduced
+  the scanner result from 2 critical / 7 high findings on Debian 13 to 1
+  critical / 4 high on Bookworm. All five remaining findings are in Perl and
+  AWS reports no fixed package version. The pinned image becomes active on the
+  next task-definition deployment; the successful replay remains reproducible
+  from its original image SHA.
 
-The next gate is one manual **live** run started before the Copenhagen noon
-deadline. Do not enable Stage 3 scheduling until that run and its production
-`latest.json` have been inspected. The current base image scan also has
-unfixed Debian findings; rescan and review them before enabling unattended
-daily execution.
+The next forecasting gate is one manual **live** run started before the
+Copenhagen noon deadline. Do not enable Stage 3 scheduling until that run and
+its production `latest.json` have been inspected. The public demonstration no
+longer depends on that gate because it is explicitly labelled as a replay.
 
 ## Stage 0 — account safety and local tools
 
@@ -231,7 +246,19 @@ This stage does **not** retrain Chronos and does not select or promote a champio
 
 ## Stage 5 — optional public dashboard
 
-Run Streamlit locally first. If a public portfolio view is worthwhile, prefer a static site backed by S3 and CloudFront. It is cheaper and operationally simpler than an always-on Python server.
+The first public portfolio view is a self-contained HTML export in a dedicated
+S3 website bucket. It has no server process and effectively no idle compute
+cost. Build it with `scripts/build_static_dashboard.py` or `make
+static-dashboard`, then upload `index.html` to the `static_site_s3_uri`
+Terraform output.
+
+Keep `enable_static_site=true` (or the GitHub environment variable
+`ENABLE_STATIC_SITE=true`) in later full-stack Terraform applies. Setting the
+feature flag back to false intentionally removes the site infrastructure.
+
+The MVP endpoint is HTTP-only. Once AWS verifies the account for new CloudFront
+resources, put CloudFront in front of the private/static origin to add HTTPS and
+caching. This upgrade does not require moving to an application server.
 
 The existing Streamlit/Fargate/ALB/CloudFront path is retained but opt-in through `enable_web=true`. Treat it as a later choice: an always-on Fargate task, public IPv4 addresses, and an ALB can plausibly cost **EUR 50–100/month** before meaningful traffic. Calculate it for the chosen region before enabling it.
 

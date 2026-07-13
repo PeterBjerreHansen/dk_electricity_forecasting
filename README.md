@@ -318,6 +318,8 @@ container is an artifact reader; the pipeline container owns mutation.
 [`infra/aws/`](infra/aws/) deploys:
 
 - Private, versioned, encrypted S3 artifact storage.
+- An optional near-zero-idle-cost public S3 website for a prebuilt forecast
+  dashboard.
 - Immutable ECR repositories for separate web and pipeline images.
 - A read-only Streamlit task behind ALB and CloudFront HTTPS.
 - A write-capable scheduled Chronos pipeline task.
@@ -329,6 +331,19 @@ container is an artifact reader; the pipeline container owns mutation.
 Schedules are disabled by default. Upload a compatible Chronos artifact before
 enabling production. Deployment details are in the
 [AWS guide](infra/aws/README.md).
+
+For the small public portfolio view, build one self-contained HTML file from a
+dashboard payload and upload it to the dedicated site bucket:
+
+```bash
+make static-dashboard
+aws s3 cp build/static-dashboard/index.html \
+  "$(terraform -chdir=infra/aws output -raw static_site_s3_uri)/index.html" \
+  --content-type 'text/html; charset=utf-8'
+```
+
+The static page has no Python server and cannot read private S3 data at request
+time. Rebuild and upload it after selecting a newer dashboard payload.
 
 ## Quality checks
 
