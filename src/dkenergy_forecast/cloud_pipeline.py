@@ -46,6 +46,8 @@ class CloudPipelineConfig:
     python: str = sys.executable
     with_weather: bool = True
     score_max_origins: int | None = None
+    run_kind: str = "live"
+    information_cutoff_utc: str | None = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,13 @@ def run_cloud_pipeline(
     dry_run: bool = False,
     command_runner: CommandRunner = subprocess.run,
 ) -> list[str]:
+    if config.run_kind == "replay" and not config.information_cutoff_utc:
+        raise ValueError("Replay cloud runs require information_cutoff_utc")
+    if config.run_kind == "live" and config.information_cutoff_utc:
+        raise ValueError("Live cloud runs cannot set information_cutoff_utc")
+    if config.run_kind not in {"live", "replay"}:
+        raise ValueError(f"Unsupported cloud run_kind: {config.run_kind!r}")
+
     store = ArtifactStore(config.artifact_store_uri)
     workdir = config.workdir
     workdir.mkdir(parents=True, exist_ok=True)
@@ -84,12 +93,17 @@ def run_cloud_pipeline(
     else:
         _download_runtime_state(store, workdir)
         _download_model_artifact(config.model_artifact_uri, workdir)
+    known_run_ids = _forecast_run_ids(runtime_layout(workdir).forecast_runs)
 
     command = [
         config.python,
         str(PROJECT_ROOT / "scripts" / "run_daily_pipeline.py"),
         "--skip-backtest",
+        "--run-kind",
+        config.run_kind,
     ]
+    if config.information_cutoff_utc:
+        command.extend(["--information-cutoff-utc", config.information_cutoff_utc])
     if config.with_weather:
         command.append("--with-weather")
     if dry_run:
@@ -103,7 +117,12 @@ def run_cloud_pipeline(
         return []
     if config.with_weather:
         _require_fresh_weather_features(workdir / WEATHER_FEATURES_RELATIVE_PATH)
-    return _upload_runtime_outputs(store, workdir)
+    return _upload_runtime_outputs(
+        store,
+        workdir,
+        run_kind=config.run_kind,
+        known_run_ids=known_run_ids,
+    )
 
 
 def _pipeline_env(config: CloudPipelineConfig) -> dict[str, str]:
@@ -138,7 +157,13 @@ def _local_model_artifact_path(workdir: Path) -> Path:
     return workdir / "artifacts" / MODEL_ARTIFACT_RELATIVE_PATH
 
 
-def _upload_runtime_outputs(store: ArtifactStore, workdir: Path) -> list[str]:
+def _upload_runtime_outputs(
+    store: ArtifactStore,
+    workdir: Path,
+    *,
+    run_kind: str,
+    known_run_ids: set[str],
+) -> list[str]:
     paths = runtime_layout(workdir)
     uploaded: list[str] = []
     for source_relative, destination_prefix in STATE_UPLOAD_PREFIXES:
@@ -148,6 +173,10 @@ def _upload_runtime_outputs(store: ArtifactStore, workdir: Path) -> list[str]:
         _require_output(source)
         store.upload_file(source, key)
         uploaded.append(key)
+
+    if run_kind == "replay":
+        uploaded.extend(_upload_new_replay_run(store, paths.forecast_runs, known_run_ids))
+        return uploaded
 
     pointer = _read_latest_pointer(paths.latest_pointer)
     run_prefix = str(pointer["run_prefix"])
@@ -180,6 +209,43 @@ def _upload_runtime_outputs(store: ArtifactStore, workdir: Path) -> list[str]:
 
     store.upload_file(paths.latest_pointer, "latest.json")
     uploaded.append("latest.json")
+    return uploaded
+
+
+def _forecast_run_ids(forecast_runs: Path) -> set[str]:
+    if not forecast_runs.exists():
+        return set()
+    return {path.name for path in forecast_runs.iterdir() if path.is_dir()}
+
+
+def _upload_new_replay_run(
+    store: ArtifactStore,
+    forecast_runs: Path,
+    known_run_ids: set[str],
+) -> list[str]:
+    new_runs = sorted(
+        path
+        for path in forecast_runs.iterdir()
+        if path.is_dir() and path.name not in known_run_ids
+    )
+    if len(new_runs) != 1:
+        raise RuntimeError(f"Expected exactly one new replay run, found {len(new_runs)}")
+
+    run_dir = new_runs[0]
+    completion = run_dir / "COMPLETED.json"
+    _require_output(completion)
+    run_prefix = f"forecast_runs/{run_dir.name}"
+    uploaded: list[str] = []
+    for source in sorted(path for path in run_dir.iterdir() if path.name != "COMPLETED.json"):
+        if not source.is_file():
+            continue
+        key = f"{run_prefix}/{source.name}"
+        store.upload_file(source, key)
+        uploaded.append(key)
+
+    completion_key = f"{run_prefix}/COMPLETED.json"
+    store.upload_file(completion, completion_key)
+    uploaded.append(completion_key)
     return uploaded
 
 
@@ -287,7 +353,11 @@ def _require_fresh_weather_features(path: Path) -> None:
     timestamp_column = next(
         (
             column
-            for column in ("forecast_available_at_utc", "forecast_reference_time", "ds_utc")
+            for column in (
+                "forecast_available_at_utc",
+                "forecast_reference_time",
+                "ds_utc",
+            )
             if column in weather.columns
         ),
         None,

@@ -19,6 +19,10 @@ from dkenergy_forecast.cloud_pipeline import (  # noqa: E402
 
 def main() -> None:
     args = parse_args()
+    if args.run_kind == "replay" and not args.information_cutoff_utc:
+        raise SystemExit("--information-cutoff-utc is required with --run-kind replay")
+    if args.run_kind == "live" and args.information_cutoff_utc:
+        raise SystemExit("--information-cutoff-utc is only valid with --run-kind replay")
     artifact_store_uri = args.artifact_store_uri or os.environ.get("DKENERGY_ARTIFACT_STORE_URI")
     if not artifact_store_uri:
         raise SystemExit("Missing --artifact-store-uri or DKENERGY_ARTIFACT_STORE_URI")
@@ -35,6 +39,8 @@ def main() -> None:
             model_artifact_uri=model_artifact_uri,
             with_weather=not args.skip_weather,
             score_max_origins=args.score_max_origins,
+            run_kind=args.run_kind,
+            information_cutoff_utc=args.information_cutoff_utc,
         ),
         dry_run=args.dry_run,
     )
@@ -50,9 +56,26 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--artifact-store-uri", help="Artifact store root, e.g. s3://bucket/prefix.")
     parser.add_argument("--model-artifact-uri", help="Trained Chronos LoRA artifact directory URI.")
-    parser.add_argument("--workdir", help="Writable runtime directory. Defaults to DKENERGY_WORKDIR or /var/lib/dkenergy.")
+    parser.add_argument(
+        "--workdir",
+        help="Writable runtime directory. Defaults to DKENERGY_WORKDIR or /var/lib/dkenergy.",
+    )
     parser.add_argument("--score-max-origins", type=int, help="Override recent scoring origin count.")
-    parser.add_argument("--skip-weather", action="store_true", help="Do not refresh Open-Meteo before publishing.")
+    parser.add_argument(
+        "--run-kind",
+        choices=["live", "replay"],
+        default="live",
+        help="Use replay with a separate smoke-test artifact prefix for a non-live trial.",
+    )
+    parser.add_argument(
+        "--information-cutoff-utc",
+        help="Historical information cutoff passed to replay publishing.",
+    )
+    parser.add_argument(
+        "--skip-weather",
+        action="store_true",
+        help="Do not refresh Open-Meteo before publishing.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 

@@ -19,6 +19,7 @@ AWS_REGION ?= eu-central-1
 AWS_WEB_ECR_REPOSITORY ?= dk-energy-forecasts-web
 AWS_PIPELINE_ECR_REPOSITORY ?= dk-energy-forecasts-pipeline
 AWS_IMAGE_TAG ?= $(shell git rev-parse --short HEAD)
+AWS_GIT_SHA ?= $(shell git rev-parse HEAD)
 AWS_ACCOUNT_ID ?= $(shell aws sts get-caller-identity --query Account --output text 2>/dev/null)
 AWS_ECR_REGISTRY ?= $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com
 AWS_WEB_IMAGE_URI ?= $(AWS_ECR_REGISTRY)/$(AWS_WEB_ECR_REPOSITORY):$(AWS_IMAGE_TAG)
@@ -26,9 +27,11 @@ AWS_PIPELINE_IMAGE_URI ?= $(AWS_ECR_REGISTRY)/$(AWS_PIPELINE_ECR_REPOSITORY):$(A
 AWS_ARTIFACT_STORE_URI ?=
 AWS_MODEL_ARTIFACT_URI ?=
 AWS_ENABLE_PIPELINE_SCHEDULE ?= false
+AWS_ENABLE_WEB ?= false
 TF_STATE_BUCKET ?=
 TF_STATE_KEY ?= dk-energy-forecasts/production.tfstate
 TF_STATE_REGION ?= $(AWS_REGION)
+TF_STATE_USE_LOCKFILE ?= true
 
 EDS_END_ARG := $(if $(EDS_END),--end $(EDS_END),)
 PUBLISH_MODELS_ARG := $(if $(PUBLISH_MODELS),--models $(PUBLISH_MODELS),)
@@ -99,25 +102,26 @@ aws-ecr-login:
 
 aws-terraform-init:
 	@test -n "$(TF_STATE_BUCKET)" || (echo "TF_STATE_BUCKET is required for the Terraform S3 backend" && exit 1)
-	terraform -chdir=infra/aws init -backend-config="bucket=$(TF_STATE_BUCKET)" -backend-config="key=$(TF_STATE_KEY)" -backend-config="region=$(TF_STATE_REGION)"
+	terraform -chdir=infra/aws init -backend-config="bucket=$(TF_STATE_BUCKET)" -backend-config="key=$(TF_STATE_KEY)" -backend-config="region=$(TF_STATE_REGION)" -backend-config="use_lockfile=$(TF_STATE_USE_LOCKFILE)"
 
 aws-ensure-ecr: aws-terraform-init
-	terraform -chdir=infra/aws apply -auto-approve -target=aws_ecr_repository.web -target=aws_ecr_repository.pipeline -var "aws_region=$(AWS_REGION)"
+	terraform -chdir=infra/aws apply -target=aws_ecr_repository.pipeline -target=aws_ecr_lifecycle_policy.pipeline -var "aws_region=$(AWS_REGION)" -var "enable_web=$(AWS_ENABLE_WEB)"
+	@if [ "$(AWS_ENABLE_WEB)" = "true" ]; then terraform -chdir=infra/aws apply -target='aws_ecr_repository.web[0]' -target='aws_ecr_lifecycle_policy.web[0]' -var "aws_region=$(AWS_REGION)" -var "enable_web=true"; fi
 
 aws-image:
-	docker build -f Dockerfile.web -t $(AWS_WEB_IMAGE_URI) .
-	docker build -f Dockerfile.pipeline -t $(AWS_PIPELINE_IMAGE_URI) .
+	docker build --build-arg "GIT_SHA=$(AWS_GIT_SHA)" -f Dockerfile.pipeline -t $(AWS_PIPELINE_IMAGE_URI) .
+	@if [ "$(AWS_ENABLE_WEB)" = "true" ]; then docker build --build-arg "GIT_SHA=$(AWS_GIT_SHA)" -f Dockerfile.web -t $(AWS_WEB_IMAGE_URI) .; fi
 
 aws-push: aws-ecr-login aws-image
-	docker push $(AWS_WEB_IMAGE_URI)
 	docker push $(AWS_PIPELINE_IMAGE_URI)
+	@if [ "$(AWS_ENABLE_WEB)" = "true" ]; then docker push $(AWS_WEB_IMAGE_URI); fi
 
 aws-bootstrap-model:
 	@test -n "$(AWS_MODEL_ARTIFACT_URI)" || (echo "AWS_MODEL_ARTIFACT_URI=s3://... is required" && exit 1)
 	aws s3 sync $(PRODUCTION_MODEL_ARTIFACT_PATH)/ $(AWS_MODEL_ARTIFACT_URI) --region $(AWS_REGION)
 
 aws-deploy: aws-ensure-ecr aws-push
-	terraform -chdir=infra/aws apply -var "aws_region=$(AWS_REGION)" -var "web_image_uri=$(AWS_WEB_IMAGE_URI)" -var "pipeline_image_uri=$(AWS_PIPELINE_IMAGE_URI)" -var "enable_pipeline_schedule=$(AWS_ENABLE_PIPELINE_SCHEDULE)"
+	terraform -chdir=infra/aws apply -var "aws_region=$(AWS_REGION)" -var "build_git_sha=$(AWS_GIT_SHA)" -var "web_image_uri=$(AWS_WEB_IMAGE_URI)" -var "pipeline_image_uri=$(AWS_PIPELINE_IMAGE_URI)" -var "enable_web=$(AWS_ENABLE_WEB)" -var "enable_pipeline_schedule=$(AWS_ENABLE_PIPELINE_SCHEDULE)"
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .mypy_cache runtime cloud_store

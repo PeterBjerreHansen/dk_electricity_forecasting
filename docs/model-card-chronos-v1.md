@@ -1,10 +1,11 @@
-# Model card: Chronos-2 LoRA calendar-weather v1
+# Model card: Chronos-2 LoRA calendar-weather
 
 ## Intended use
 
-`chronos2_lora_calendar_weather_ctx1024_v1` produces DK1/DK2 hourly point and
-q10/q50/q90 forecasts for the next Danish local delivery day. `y_pred` is q50.
-The model is batch-published; it is not a request-time API model.
+`chronos_weather` produces DK1/DK2 hourly point and q10/q50/q90 forecasts for
+the next Danish local delivery day. `y_pred` is q50. The model is
+batch-published; it is not a request-time API model. The configured production
+release is `sha256-55814a7fd0d36973`.
 
 ## Inputs and artifact contract
 
@@ -13,23 +14,25 @@ The model is batch-published; it is not a request-time API model.
 - Availability-masked Open-Meteo weather covariates recorded by the artifact.
 - Full required future-weather cell coverage by default.
 
-Artifact schema v2 records the covariate list, role-specific fill policy,
-weather coverage/fallback policy, target contract, random seed, optional base
-revision, library versions, training interval, validation summary, source-data
-hashes, model-file hashes, and training code commit. Runtime rejects schema or
-weather-policy mismatches and verifies file hashes when present.
+Artifact schema v3 records the covariate list, role-specific fill policy,
+weather coverage/fallback policy, target contract, random seed, required pinned
+base-model revision, library versions, training interval, validation summary,
+source-data hashes, model-file hashes, and training code commit. Runtime rejects
+schema, base-revision, file-hash, covariate, or weather-policy mismatches.
 
-Training/context weather may carry earlier values forward within a series and
-then zero-fill leading gaps. Future weather never fills across valid times. A
-zero future fallback is opt-in and must match between artifact and runtime.
+The current release uses `no_temporal_fill_then_zero` for training, serving
+context, and serving future covariates. Weather coverage is measured before
+fill. A zero future-weather fallback is opt-in and must match between artifact
+and runtime.
 
 ## Evaluation
 
 The repository contains a reusable frozen evaluation arena rather than a
-hard-coded claim in this card. Promotion requires exactly paired rows, origin-
-block confidence intervals, probabilistic/calibration checks, and subgroup
-guardrails. Run and commit a reviewed report using [evaluation.md](evaluation.md)
-whenever the weights, data, covariates, or promotion thresholds change.
+hard-coded performance claim in this card. Diagnostics use exactly paired rows,
+origin-block confidence intervals, probabilistic/calibration checks, and
+subgroup views. Run and commit a reviewed report using
+[evaluation.md](evaluation.md) whenever weights, data, covariates, or the
+training recipe change.
 
 Local ignored artifacts have shown promising results, but ignored results are
 not a durable production claim. The committed report and its input/split hashes
@@ -54,7 +57,7 @@ Operational fallback should be an explicitly published and labeled baseline.
 - The target spans a native-product regime change.
 - Weather features omit more direct market fundamentals.
 - LoRA quality and calibration can drift by season and price regime.
-- The hard-coded public label remains stable, so the manifest content hash is
+- The public label remains stable, so the manifest content hash is
   required to distinguish actual trained artifacts.
 
 See [forecasting-contract.md](forecasting-contract.md),

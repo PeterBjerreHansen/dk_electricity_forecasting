@@ -39,14 +39,14 @@ live process fails instead of relabeling itself as a noon forecast.
 7. Hash its artifacts and atomically rename it into `forecast_runs/`.
 8. Atomically replace consumer files under a promotion lock; write the latest
    manifest last as the local commit marker.
-9. In cloud mode, upload `latest/forecast_dashboard.json` last.
+9. In cloud mode, upload the root `latest.json` pointer last.
 
 The stable live run ID makes concurrent attempts for one origin collide. An
 identical retry is idempotent; changed core artifacts under the same key fail.
 
 ## Before enabling a model
 
-1. Export a schema-v2 artifact with an immutable base revision if possible.
+1. Export a schema-v3 artifact with a required immutable base revision.
 2. Confirm its manifest has training-data and model-file hashes.
 3. Run the real-artifact adapter smoke test.
 4. Build the exact pipeline image using `constraints-production.txt`.

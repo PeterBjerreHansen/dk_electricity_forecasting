@@ -32,7 +32,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--eds-end", default=_env("EDS_END"))
     parser.add_argument(
         "--open-meteo-start",
-        default=_env("OPEN_METEO_START", _lookback_month_start_copenhagen(DEFAULT_WEATHER_LOOKBACK_DAYS)),
+        default=_env(
+            "OPEN_METEO_START",
+            _lookback_month_start_copenhagen(DEFAULT_WEATHER_LOOKBACK_DAYS),
+        ),
     )
     parser.add_argument("--open-meteo-end", default=_env("OPEN_METEO_END", _tomorrow_copenhagen()))
     parser.add_argument(
@@ -75,11 +78,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--production-config",
-        default=_env("DKENERGY_PRODUCTION_CONFIG", str(PROJECT_ROOT / "config" / "production.json")),
+        default=_env(
+            "DKENERGY_PRODUCTION_CONFIG",
+            str(PROJECT_ROOT / "config" / "production.json"),
+        ),
         help="Source-controlled live primary/fallback configuration.",
     )
+    parser.add_argument(
+        "--run-kind",
+        choices=["live", "replay"],
+        default=_env("DKENERGY_RUN_KIND", "live"),
+        help="Publish a live forecast or an explicitly historical replay.",
+    )
+    parser.add_argument(
+        "--information-cutoff-utc",
+        default=_env("DKENERGY_INFORMATION_CUTOFF_UTC"),
+        help="Historical information cutoff. Required by the publish command for replay runs.",
+    )
     parser.add_argument("--skip-price-ingest", action="store_true")
-    parser.add_argument("--skip-weather", action="store_true", help="Disable weather even when WITH_WEATHER is set.")
+    parser.add_argument(
+        "--skip-weather",
+        action="store_true",
+        help="Disable weather even when WITH_WEATHER is set.",
+    )
     parser.add_argument("--skip-backtest", action="store_true")
     parser.add_argument("--skip-publish", action="store_true")
     parser.add_argument(
@@ -104,6 +125,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def build_commands(args: argparse.Namespace) -> list[list[str]]:
+    run_kind = getattr(args, "run_kind", "live")
+    information_cutoff_utc = getattr(args, "information_cutoff_utc", None)
+    if run_kind == "replay" and not information_cutoff_utc:
+        raise ValueError("Replay daily runs require --information-cutoff-utc")
+    if run_kind == "live" and information_cutoff_utc:
+        raise ValueError("Live daily runs cannot set --information-cutoff-utc")
+
     python = sys.executable
     paths = _runtime_layout(args.runtime_root)
     weather_features_long_path = args.weather_features_long_path or str(paths.weather_features_long)
@@ -214,6 +242,9 @@ def build_commands(args: argparse.Namespace) -> list[list[str]]:
             str(args.min_train_days),
         ]
         publish.extend(["--weather-features-long-path", weather_features_long_path])
+        publish.extend(["--run-kind", run_kind])
+        if information_cutoff_utc:
+            publish.extend(["--information-cutoff-utc", information_cutoff_utc])
         if args.chronos_model_artifact_path:
             publish.extend(["--chronos-model-artifact-path", chronos_model_artifact_path])
         if not args.strict_panel:

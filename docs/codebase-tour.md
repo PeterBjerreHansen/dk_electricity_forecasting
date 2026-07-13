@@ -338,7 +338,7 @@ Fill behavior depends on the role of the frame:
 
 | Frame role | Weather fill policy |
 |---|---|
-| Training/context | Forward-fill within one series, then fill remaining missing covariates with zero. |
+| Training/context | Never carry values across valid times; fill remaining missing covariates with zero. |
 | Future | Never carry values across valid times; fill remaining missing covariates with zero only after coverage policy permits it. |
 
 There is no backward fill. In particular, a future hour cannot borrow a weather value from a later valid time.
@@ -458,11 +458,13 @@ Models may add q10/q50/q90 and target-contract metadata.
 
 | Label | Family | Forecast |
 |---|---|---|
-| `same_hour_last_week` | Baseline | Same UTC hour 168 hours earlier. |
-| `median_weekday_exp_hl4_floor10_42d__median_weekend_exp_hl28_floor20_56d` | Baseline | Separate weekday/weekend exponentially weighted seasonal medians. |
-| `chronos2_lora_calendar_weather_ctx1024_v1` | Chronos | LoRA-adapted probabilistic forecast with calendar and weather covariates. |
+| `chronos_weather` | Chronos | Primary LoRA-adapted probabilistic forecast with calendar and point-in-time weather covariates. |
+| `weighted_median_v1` | Baseline | Fixed, explicitly labeled operational fallback after a primary failure. |
 
-The registry records dependency extras, quantile support, weather requirements, default enablement, and whether a model may publish latest forecasts. Dependency checks fail before expensive work begins.
+The registry records dependency extras, quantile support, and weather
+requirements. The production orchestrator requests only the configured Chronos
+primary; it constructs the fixed baseline separately if the primary fails.
+Dependency checks fail before expensive work begins.
 
 ### Comparison registry
 
@@ -495,9 +497,10 @@ Training performs the following steps:
 5. Join availability-safe weather using the same join code used in serving.
 6. Select calendar plus configured weather covariates.
 7. Require weather signal, apply the declared training fill policy, and fit LoRA weights.
-8. Export a self-contained model directory and schema-v2 `manifest.json`.
+8. Export the LoRA adapter directory and schema-v3 `manifest.json`, with the
+   immutable base-model revision written into both contracts.
 
-The manifest records the base model and optional immutable revision, random seed,
+The manifest records the base model and required immutable revision, random seed,
 training settings, covariate names, target contract, price and weather
 availability policies, weather vintage semantics, coverage/fallback policy, fill
 policy, optional validation evidence, dependency versions, Git commit, hashes of
@@ -510,7 +513,9 @@ Daily publication never updates weights. Retraining and artifact export are expl
 
 For one forecast origin, the adapter:
 
-1. Loads the artifact manifest, rejects unsupported schema versions, and verifies declared model-file hashes.
+1. Loads the artifact manifest, rejects unsupported schema versions, verifies
+   declared model-file hashes, and requires the adapter and manifest to pin the
+   same base-model revision.
 2. Requires runtime weather coverage/fallback settings to equal the trained manifest.
 3. Selects exactly `context_length` eligible target rows per series.
 4. Requires both series to share a final context timestamp.
@@ -765,8 +770,8 @@ either evidence product on the live path.
 [`infra/aws/main.tf`](../infra/aws/main.tf) provisions:
 
 - A private, encrypted, versioned S3 artifact bucket.
-- Separate ECR repositories for web and pipeline images.
-- A Streamlit ECS/Fargate service behind an ALB and CloudFront.
+- A pipeline ECR repository and an opt-in web repository.
+- An opt-in Streamlit ECS/Fargate service behind an ALB and CloudFront.
 - A scheduled ECS/Fargate pipeline task.
 - IAM roles and CloudWatch log groups.
 - An EventBridge Scheduler trigger in the Copenhagen timezone.

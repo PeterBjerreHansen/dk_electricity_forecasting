@@ -32,6 +32,7 @@ locals {
 }
 
 resource "aws_ecr_repository" "web" {
+  count                = var.enable_web ? 1 : 0
   name                 = "${var.project_name}-web"
   image_tag_mutability = "IMMUTABLE"
 
@@ -50,7 +51,8 @@ resource "aws_ecr_repository" "pipeline" {
 }
 
 resource "aws_ecr_lifecycle_policy" "web" {
-  repository = aws_ecr_repository.web.name
+  count      = var.enable_web ? 1 : 0
+  repository = aws_ecr_repository.web[0].name
   policy     = local.ecr_lifecycle_policy
 }
 
@@ -156,10 +158,12 @@ resource "aws_route_table_association" "public" {
 }
 
 data "aws_ec2_managed_prefix_list" "cloudfront_origin_facing" {
-  name = "com.amazonaws.global.cloudfront.origin-facing"
+  count = var.enable_web ? 1 : 0
+  name  = "com.amazonaws.global.cloudfront.origin-facing"
 }
 
 resource "aws_security_group" "alb" {
+  count       = var.enable_web ? 1 : 0
   name        = "${local.name}-alb"
   description = "CloudFront-only HTTP ingress for dashboard ALB"
   vpc_id      = aws_vpc.main.id
@@ -168,7 +172,7 @@ resource "aws_security_group" "alb" {
     from_port       = 80
     to_port         = 80
     protocol        = "tcp"
-    prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront_origin_facing.id]
+    prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront_origin_facing[0].id]
   }
 
   egress {
@@ -180,6 +184,7 @@ resource "aws_security_group" "alb" {
 }
 
 resource "aws_security_group" "web_tasks" {
+  count       = var.enable_web ? 1 : 0
   name        = "${local.name}-web-tasks"
   description = "Streamlit ECS task security group"
   vpc_id      = aws_vpc.main.id
@@ -188,7 +193,7 @@ resource "aws_security_group" "web_tasks" {
     from_port       = 8501
     to_port         = 8501
     protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
+    security_groups = [aws_security_group.alb[0].id]
   }
 
   egress {
@@ -213,13 +218,15 @@ resource "aws_security_group" "pipeline_tasks" {
 }
 
 resource "aws_lb" "web" {
+  count              = var.enable_web ? 1 : 0
   name               = replace(substr(local.name, 0, 32), "_", "-")
   load_balancer_type = "application"
-  security_groups    = [aws_security_group.alb.id]
+  security_groups    = [aws_security_group.alb[0].id]
   subnets            = aws_subnet.public[*].id
 }
 
 resource "aws_lb_target_group" "web" {
+  count       = var.enable_web ? 1 : 0
   name        = replace(substr("${local.name}-web", 0, 32), "_", "-")
   port        = 8501
   protocol    = "HTTP"
@@ -238,23 +245,25 @@ resource "aws_lb_target_group" "web" {
 }
 
 resource "aws_lb_listener" "web" {
-  load_balancer_arn = aws_lb.web.arn
+  count             = var.enable_web ? 1 : 0
+  load_balancer_arn = aws_lb.web[0].arn
   port              = 80
   protocol          = "HTTP"
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.web.arn
+    target_group_arn = aws_lb_target_group.web[0].arn
   }
 }
 
 resource "aws_cloudfront_distribution" "web" {
+  count           = var.enable_web ? 1 : 0
   enabled         = true
   is_ipv6_enabled = true
   comment         = "${local.name} Streamlit dashboard"
 
   origin {
-    domain_name = aws_lb.web.dns_name
+    domain_name = aws_lb.web[0].dns_name
     origin_id   = "alb"
 
     custom_origin_config {
@@ -295,6 +304,7 @@ resource "aws_cloudfront_distribution" "web" {
 }
 
 resource "aws_cloudwatch_log_group" "web" {
+  count             = var.enable_web ? 1 : 0
   name              = "/ecs/${local.name}/web"
   retention_in_days = 14
 }
@@ -305,6 +315,7 @@ resource "aws_cloudwatch_log_group" "pipeline" {
 }
 
 resource "aws_cloudwatch_log_group" "scoring" {
+  count             = var.enable_published_scoring_schedule ? 1 : 0
   name              = "/ecs/${local.name}/scoring"
   retention_in_days = 14
 }
@@ -335,7 +346,8 @@ resource "aws_iam_role_policy_attachment" "ecs_execution" {
 }
 
 resource "aws_iam_role" "web_task" {
-  name = "${local.name}-web-task"
+  count = var.enable_web ? 1 : 0
+  name  = "${local.name}-web-task"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -351,8 +363,9 @@ resource "aws_iam_role" "web_task" {
 }
 
 resource "aws_iam_role_policy" "web_task_s3" {
-  name = "${local.name}-s3-read"
-  role = aws_iam_role.web_task.id
+  count = var.enable_web ? 1 : 0
+  name  = "${local.name}-s3-read"
+  role  = aws_iam_role.web_task[0].id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -421,13 +434,19 @@ resource "aws_iam_role_policy" "pipeline_task_s3" {
 }
 
 resource "aws_ecs_task_definition" "web" {
+  count                    = var.enable_web ? 1 : 0
   family                   = "${local.name}-web"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = var.web_cpu
   memory                   = var.web_memory
   execution_role_arn       = aws_iam_role.ecs_execution.arn
-  task_role_arn            = aws_iam_role.web_task.arn
+  task_role_arn            = aws_iam_role.web_task[0].arn
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
 
   container_definitions = jsonencode([
     {
@@ -455,7 +474,7 @@ resource "aws_ecs_task_definition" "web" {
       logConfiguration = {
         logDriver = "awslogs"
         options = {
-          awslogs-group         = aws_cloudwatch_log_group.web.name
+          awslogs-group         = aws_cloudwatch_log_group.web[0].name
           awslogs-region        = var.aws_region
           awslogs-stream-prefix = "web"
         }
@@ -465,15 +484,16 @@ resource "aws_ecs_task_definition" "web" {
 }
 
 resource "aws_ecs_service" "web" {
+  count           = var.enable_web ? 1 : 0
   name            = "${local.name}-web"
   cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.web.arn
+  task_definition = aws_ecs_task_definition.web[0].arn
   desired_count   = 1
   launch_type     = "FARGATE"
 
   network_configuration {
     subnets          = aws_subnet.public[*].id
-    security_groups  = [aws_security_group.web_tasks.id]
+    security_groups  = [aws_security_group.web_tasks[0].id]
     assign_public_ip = true
   }
 
@@ -485,7 +505,7 @@ resource "aws_ecs_service" "web" {
   health_check_grace_period_seconds = 60
 
   load_balancer {
-    target_group_arn = aws_lb_target_group.web.arn
+    target_group_arn = aws_lb_target_group.web[0].arn
     container_name   = "web"
     container_port   = 8501
   }
@@ -501,6 +521,11 @@ resource "aws_ecs_task_definition" "pipeline" {
   memory                   = var.pipeline_memory
   execution_role_arn       = aws_iam_role.ecs_execution.arn
   task_role_arn            = aws_iam_role.pipeline_task.arn
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
 
   ephemeral_storage {
     size_in_gib = var.pipeline_ephemeral_storage_gib
@@ -540,6 +565,7 @@ resource "aws_ecs_task_definition" "pipeline" {
 }
 
 resource "aws_ecs_task_definition" "published_scoring" {
+  count                    = var.enable_published_scoring_schedule ? 1 : 0
   family                   = "${local.name}-published-scoring"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
@@ -547,6 +573,11 @@ resource "aws_ecs_task_definition" "published_scoring" {
   memory                   = var.scoring_memory
   execution_role_arn       = aws_iam_role.ecs_execution.arn
   task_role_arn            = aws_iam_role.pipeline_task.arn
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
 
   container_definitions = jsonencode([
     {
@@ -568,7 +599,7 @@ resource "aws_ecs_task_definition" "published_scoring" {
       logConfiguration = {
         logDriver = "awslogs"
         options = {
-          awslogs-group         = aws_cloudwatch_log_group.scoring.name
+          awslogs-group         = aws_cloudwatch_log_group.scoring[0].name
           awslogs-region        = var.aws_region
           awslogs-stream-prefix = "published-scoring"
         }
@@ -578,7 +609,8 @@ resource "aws_ecs_task_definition" "published_scoring" {
 }
 
 resource "aws_iam_role" "scheduler" {
-  name = "${local.name}-scheduler"
+  count = local.enable_scheduled_operations ? 1 : 0
+  name  = "${local.name}-scheduler"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -594,18 +626,17 @@ resource "aws_iam_role" "scheduler" {
 }
 
 resource "aws_iam_role_policy" "scheduler" {
+  count = local.enable_scheduled_operations ? 1 : 0
+
   name = "${local.name}-run-task"
-  role = aws_iam_role.scheduler.id
+  role = aws_iam_role.scheduler[0].id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
-        Action = ["ecs:RunTask"]
-        Resource = [
-          aws_ecs_task_definition.pipeline.arn,
-          aws_ecs_task_definition.published_scoring.arn
-        ]
+        Effect   = "Allow"
+        Action   = ["ecs:RunTask"]
+        Resource = local.scheduled_task_definition_arns
       },
       {
         Effect = "Allow"
@@ -632,7 +663,7 @@ resource "aws_scheduler_schedule" "pipeline" {
 
   target {
     arn      = aws_ecs_cluster.main.arn
-    role_arn = aws_iam_role.scheduler.arn
+    role_arn = aws_iam_role.scheduler[0].arn
 
     ecs_parameters {
       task_definition_arn = aws_ecs_task_definition.pipeline.arn
@@ -666,10 +697,10 @@ resource "aws_scheduler_schedule" "published_scoring" {
 
   target {
     arn      = aws_ecs_cluster.main.arn
-    role_arn = aws_iam_role.scheduler.arn
+    role_arn = aws_iam_role.scheduler[0].arn
 
     ecs_parameters {
-      task_definition_arn = aws_ecs_task_definition.published_scoring.arn
+      task_definition_arn = aws_ecs_task_definition.published_scoring[0].arn
       launch_type         = "FARGATE"
 
       network_configuration {

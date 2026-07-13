@@ -30,7 +30,8 @@ tuning = [
   "optuna>=4.0",
 ]
 chronos = [
-  "chronos-forecasting[extras]>=2.2",
+  "chronos-forecasting>=2.2",
+  "peft>=0.18.1",
 ]
 aws = [
   "boto3>=1.34",

@@ -34,6 +34,12 @@ variable "web_image_uri" {
   default     = "bootstrap"
 }
 
+variable "enable_web" {
+  type        = bool
+  description = "Whether to provision the always-on Streamlit service, ALB, and CloudFront distribution. Keep false for the low-cost pipeline-only stages."
+  default     = false
+}
+
 variable "pipeline_image_uri" {
   type        = string
   description = "Container image URI deployed to the scheduled pipeline ECS task."
