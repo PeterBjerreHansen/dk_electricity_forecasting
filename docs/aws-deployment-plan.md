@@ -48,10 +48,12 @@ Stages 0–2 are complete in the production account in region `eu-central-1`:
 - Pipeline scheduling, independent scoring, alerts, and the always-on
   Streamlit tier remain disabled. No ECS service or EventBridge schedule is
   running.
-- Historical replay `replay_20260713T211418Z` completed with exit code 0. It
-  published 48 ordered, finite Chronos forecasts (24 each for DK1 and DK2) to
-  the isolated `dk-energy-forecasts/smoke` sub-prefix. Artifact hashes match,
-  and neither the smoke nor production root contains `latest.json`.
+- Historical replays `replay_20260713T211418Z` (revision 1) and
+  `replay_20260713T230104Z` (revision 2) completed with exit code 0. The latter
+  published 48 ordered, finite Chronos forecasts for 2026-07-03 (24 each for
+  DK1 and DK2) to the isolated `dk-energy-forecasts/smoke` sub-prefix. Its
+  artifact and completion-manifest hashes match, and neither the smoke nor
+  production root contains `latest.json`.
 - A static replay dashboard is live from the dedicated public site bucket at
   `http://dk-energy-forecasts-site-653044339519.s3-website.eu-central-1.amazonaws.com/`.
   The public bucket contains only `index.html`; the model and pipeline artifacts
