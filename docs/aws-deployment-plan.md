@@ -41,8 +41,10 @@ Stages 0–2 are complete in the production account in region `eu-central-1`:
 - Terraform state is versioned, encrypted, publicly blocked, and natively
   locked in the dedicated state bucket.
 - The private artifact bucket and immutable pipeline ECR repository exist.
-- Pipeline image commit `65a4ae25842ceb27df2913769916c21b85c971c9`
-  is deployed as ECS task definition revision 1.
+- Pipeline image commit `91138677635c482cb86090d87046ce2bb8916213`
+  is deployed as ECS task definition revision 2. The earlier successful replay
+  remains reproducible from image commit
+  `65a4ae25842ceb27df2913769916c21b85c971c9`.
 - Pipeline scheduling, independent scoring, alerts, and the always-on
   Streamlit tier remain disabled. No ECS service or EventBridge schedule is
   running.
@@ -63,9 +65,8 @@ Stages 0–2 are complete in the production account in region `eu-central-1`:
   Chronos runtime as non-root UID 10001. An ECR base-image comparison reduced
   the scanner result from 2 critical / 7 high findings on Debian 13 to 1
   critical / 4 high on Bookworm. All five remaining findings are in Perl and
-  AWS reports no fixed package version. The pinned image becomes active on the
-  next task-definition deployment; the successful replay remains reproducible
-  from its original image SHA.
+  AWS reports no fixed package version. The full deployed image has the same
+  scan counts.
 
 The next forecasting gate is one manual **live** run started before the
 Copenhagen noon deadline. Do not enable Stage 3 scheduling until that run and
