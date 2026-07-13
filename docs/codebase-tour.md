@@ -747,9 +747,16 @@ The four tabs show:
 
 The dashboard warns when a latest artifact is stale, when the visible run is not live, or when a run is score-ineligible. The JSON payload is a convenient preassembled view; parquet fallbacks keep individual artifacts independently inspectable.
 
+[`static_dashboard.py`](../src/dkenergy_forecast/static_dashboard.py) is the
+smaller public-display path. It converts one reviewed dashboard JSON payload
+into a self-contained HTML document with inline styles, JavaScript, SVG charts,
+and no third-party browser dependencies. [`build_static_dashboard.py`](../scripts/build_static_dashboard.py)
+is its thin command-line wrapper. The exporter deliberately selects public
+provenance fields instead of copying private artifact paths into the page.
+
 ### Containers
 
-[`Dockerfile.web`](../Dockerfile.web) installs the lightweight app/AWS dependencies and runs Streamlit through [container_entrypoint.py](../scripts/container_entrypoint.py). [`Dockerfile.pipeline`](../Dockerfile.pipeline) installs Chronos and AWS dependencies and runs [run_cloud_pipeline.py](../scripts/run_cloud_pipeline.py). Both container builds apply the exact direct-production pins in [`constraints-production.txt`](../constraints-production.txt); `pyproject.toml` remains the more flexible development/package declaration.
+[`Dockerfile.web`](../Dockerfile.web) installs the lightweight app/AWS dependencies and runs Streamlit through [container_entrypoint.py](../scripts/container_entrypoint.py). [`Dockerfile.pipeline`](../Dockerfile.pipeline) installs Chronos and AWS dependencies and runs [run_cloud_pipeline.py](../scripts/run_cloud_pipeline.py). The pipeline base pins the Python patch, Debian generation, and multi-platform image digest so rebuilding cannot silently cross operating-system releases. Both container builds apply the exact direct-production pins in [`constraints-production.txt`](../constraints-production.txt); `pyproject.toml` remains the more flexible development/package declaration.
 
 [`docker-compose.yml`](../docker-compose.yml) connects both images to local `cloud_store/` and `runtime/` directories so the same storage layout can be exercised without AWS.
 
@@ -770,6 +777,7 @@ either evidence product on the live path.
 [`infra/aws/main.tf`](../infra/aws/main.tf) provisions:
 
 - A private, encrypted, versioned S3 artifact bucket.
+- An opt-in, separate public S3 website for the self-contained static dashboard.
 - A pipeline ECR repository and an opt-in web repository.
 - An opt-in Streamlit ECS/Fargate service behind an ALB and CloudFront.
 - A scheduled ECS/Fargate pipeline task.

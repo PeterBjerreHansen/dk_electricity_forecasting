@@ -70,6 +70,11 @@ The Streamlit dashboard warns about stale artifacts, non-live runs, and
 score-ineligible runs, but dashboard warnings are not a substitute for job and
 log alerts.
 
+The static public dashboard is a point-in-time export. Rebuild it from a
+reviewed `forecast_dashboard.json` and replace `index.html` in the dedicated
+site bucket; never make the private artifact bucket public. A replay export
+must retain the visible historical-replay warning.
+
 ## Recovery and rollback
 
 - Never edit an immutable forecast run.

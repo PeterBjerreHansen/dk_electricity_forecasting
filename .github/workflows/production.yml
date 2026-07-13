@@ -15,6 +15,7 @@ env:
   AWS_REGION: eu-central-1
   ENABLE_PIPELINE_SCHEDULE: ${{ vars.ENABLE_PIPELINE_SCHEDULE || 'false' }}
   ENABLE_PUBLISHED_SCORING_SCHEDULE: ${{ vars.ENABLE_PUBLISHED_SCORING_SCHEDULE || 'false' }}
+  ENABLE_STATIC_SITE: ${{ vars.ENABLE_STATIC_SITE || 'false' }}
   ENABLE_WEB: ${{ vars.ENABLE_WEB || 'false' }}
   ALERT_EMAIL_ENDPOINT: ${{ vars.ALERT_EMAIL_ENDPOINT || '' }}
 
@@ -139,6 +140,7 @@ jobs:
             -var "web_image_uri=${{ steps.images.outputs.web_image_uri }}" \
             -var "pipeline_image_uri=${{ steps.images.outputs.pipeline_image_uri }}" \
             -var "enable_web=${ENABLE_WEB}" \
+            -var "enable_static_site=${ENABLE_STATIC_SITE}" \
             -var "enable_pipeline_schedule=${ENABLE_PIPELINE_SCHEDULE}" \
             -var "enable_published_scoring_schedule=${ENABLE_PUBLISHED_SCORING_SCHEDULE}" \
             -var "alert_email_endpoint=${ALERT_EMAIL_ENDPOINT}"
