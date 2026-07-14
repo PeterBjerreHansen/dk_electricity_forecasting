@@ -9,9 +9,11 @@ import pytest
 from dkenergy_forecast.cloud_pipeline import (
     CloudPipelineConfig,
     CloudScoringConfig,
+    _publish_static_dashboard,
     run_cloud_pipeline,
     run_cloud_scoring,
 )
+from dkenergy_forecast.storage import ArtifactStore
 
 
 def test_cloud_pipeline_syncs_state_runs_daily_and_uploads_latest_last(tmp_path) -> None:
@@ -52,7 +54,6 @@ def test_cloud_pipeline_syncs_state_runs_daily_and_uploads_latest_last(tmp_path)
             artifact_store_uri=f"file://{store}",
             workdir=workdir,
             model_artifact_uri=f"file://{model}",
-            score_max_origins=1,
         ),
         command_runner=fake_runner,
     )
@@ -225,6 +226,66 @@ def test_cloud_scoring_is_independent_from_live_publication(tmp_path) -> None:
     )
 
     assert uploaded == ["published_forecast_history/model_scores.parquet"]
+
+
+def test_static_dashboard_publication_updates_history_and_site(tmp_path) -> None:
+    workdir = tmp_path / "workdir"
+    store = tmp_path / "store"
+    site = tmp_path / "site"
+    run_dir = workdir / "artifacts" / "forecast_runs" / "run_1"
+    panel_dir = workdir / "data" / "model_ready"
+    run_dir.mkdir(parents=True)
+    panel_dir.mkdir(parents=True)
+    (workdir / "artifacts" / "latest.json").write_text(
+        '{"schema_version":1,"status":"completed","run_id":"run_1",'
+        '"run_prefix":"forecast_runs/run_1","completion_key":'
+        '"forecast_runs/run_1/COMPLETED.json","delivery_date_local":"2026-07-07",'
+        '"information_cutoff_utc":"2026-07-06T08:00:00Z",'
+        '"decision_deadline_utc":"2026-07-06T10:00:00Z",'
+        '"committed_at_utc":"2026-07-06T08:30:00Z"}',
+        encoding="utf-8",
+    )
+    predictions = pd.DataFrame(
+        {
+            "forecast_origin_utc": ["2026-07-06T08:00:00Z"],
+            "ds_utc": ["2026-07-06T22:00:00Z"],
+            "ds_local": ["2026-07-07T00:00:00+02:00"],
+            "area": ["DK1"],
+            "model_label": ["chronos_weather"],
+            "y_pred": [100.0],
+            "q10": [80.0],
+            "q50": [100.0],
+            "q90": [120.0],
+        }
+    )
+    predictions.to_parquet(run_dir / "diagnostic_predictions.parquet", index=False)
+    pd.DataFrame(
+        {
+            "area": ["DK1"],
+            "ds_utc": ["2026-07-06T22:00:00Z"],
+            "y": [105.0],
+        }
+    ).to_parquet(panel_dir / "price_panel_hourly_v1.parquet", index=False)
+    (run_dir / "forecast_dashboard.json").write_text(
+        '{"generated_at_utc":"2026-07-06T08:30:00Z","run":'
+        '{"run_id":"run_1","run_kind":"live","delivery_date_local":"2026-07-07",'
+        '"model":{"published_model":"chronos_weather"}},"predictions":'
+        '[{"area":"DK1","ds_utc":"2026-07-06T22:00:00Z",'
+        '"model_label":"chronos_weather","y_pred":100,"q10":80,"q50":100,"q90":120}]}',
+        encoding="utf-8",
+    )
+
+    uploaded = _publish_static_dashboard(
+        ArtifactStore(store),
+        static_site_uri=f"file://{site}",
+        workdir=workdir,
+    )
+
+    assert uploaded == ["dashboard/forecast_history.parquet", "static-site/index.html"]
+    assert (store / "dashboard" / "forecast_history.parquet").exists()
+    assert "Recent model performance" in (site / "index.html").read_text(
+        encoding="utf-8"
+    )
 
 
 def _write_pipeline_outputs(

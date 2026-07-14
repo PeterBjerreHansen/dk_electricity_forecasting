@@ -38,7 +38,8 @@ def main() -> None:
             workdir=workdir,
             model_artifact_uri=model_artifact_uri,
             with_weather=not args.skip_weather,
-            score_max_origins=args.score_max_origins,
+            static_site_uri=args.static_site_uri
+            or os.environ.get("DKENERGY_STATIC_SITE_URI"),
             run_kind=args.run_kind,
             information_cutoff_utc=args.information_cutoff_utc,
         ),
@@ -60,7 +61,10 @@ def parse_args() -> argparse.Namespace:
         "--workdir",
         help="Writable runtime directory. Defaults to DKENERGY_WORKDIR or /var/lib/dkenergy.",
     )
-    parser.add_argument("--score-max-origins", type=int, help="Override recent scoring origin count.")
+    parser.add_argument(
+        "--static-site-uri",
+        help="Static site root URI, e.g. s3://bucket. Omit to skip page publication.",
+    )
     parser.add_argument(
         "--run-kind",
         choices=["live", "replay"],

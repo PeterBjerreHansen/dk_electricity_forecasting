@@ -6,8 +6,37 @@ locals {
   )
 }
 
+moved {
+  from = aws_s3_bucket.static_site[0]
+  to   = aws_s3_bucket.static_site
+}
+
+moved {
+  from = aws_s3_bucket_ownership_controls.static_site[0]
+  to   = aws_s3_bucket_ownership_controls.static_site
+}
+
+moved {
+  from = aws_s3_bucket_public_access_block.static_site[0]
+  to   = aws_s3_bucket_public_access_block.static_site
+}
+
+moved {
+  from = aws_s3_bucket_server_side_encryption_configuration.static_site[0]
+  to   = aws_s3_bucket_server_side_encryption_configuration.static_site
+}
+
+moved {
+  from = aws_s3_bucket_website_configuration.static_site[0]
+  to   = aws_s3_bucket_website_configuration.static_site
+}
+
+moved {
+  from = aws_s3_bucket_policy.static_site[0]
+  to   = aws_s3_bucket_policy.static_site
+}
+
 resource "aws_s3_bucket" "static_site" {
-  count  = var.enable_static_site ? 1 : 0
   bucket = local.static_site_bucket_name
 
   tags = {
@@ -18,8 +47,7 @@ resource "aws_s3_bucket" "static_site" {
 }
 
 resource "aws_s3_bucket_ownership_controls" "static_site" {
-  count  = var.enable_static_site ? 1 : 0
-  bucket = aws_s3_bucket.static_site[0].id
+  bucket = aws_s3_bucket.static_site.id
 
   rule {
     object_ownership = "BucketOwnerEnforced"
@@ -27,8 +55,7 @@ resource "aws_s3_bucket_ownership_controls" "static_site" {
 }
 
 resource "aws_s3_bucket_public_access_block" "static_site" {
-  count  = var.enable_static_site ? 1 : 0
-  bucket = aws_s3_bucket.static_site[0].id
+  bucket = aws_s3_bucket.static_site.id
 
   block_public_acls       = true
   ignore_public_acls      = true
@@ -36,9 +63,16 @@ resource "aws_s3_bucket_public_access_block" "static_site" {
   restrict_public_buckets = false
 }
 
+resource "aws_s3_bucket_versioning" "static_site" {
+  bucket = aws_s3_bucket.static_site.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
 resource "aws_s3_bucket_server_side_encryption_configuration" "static_site" {
-  count  = var.enable_static_site ? 1 : 0
-  bucket = aws_s3_bucket.static_site[0].id
+  bucket = aws_s3_bucket.static_site.id
 
   rule {
     apply_server_side_encryption_by_default {
@@ -48,8 +82,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "static_site" {
 }
 
 resource "aws_s3_bucket_website_configuration" "static_site" {
-  count  = var.enable_static_site ? 1 : 0
-  bucket = aws_s3_bucket.static_site[0].id
+  bucket = aws_s3_bucket.static_site.id
 
   index_document {
     suffix = "index.html"
@@ -61,12 +94,10 @@ resource "aws_s3_bucket_website_configuration" "static_site" {
 }
 
 data "aws_iam_policy_document" "static_site" {
-  count = var.enable_static_site ? 1 : 0
-
   statement {
     sid       = "PublicReadStaticDashboard"
     actions   = ["s3:GetObject"]
-    resources = ["${aws_s3_bucket.static_site[0].arn}/*"]
+    resources = ["${aws_s3_bucket.static_site.arn}/index.html"]
 
     principals {
       type        = "*"
@@ -76,10 +107,8 @@ data "aws_iam_policy_document" "static_site" {
 }
 
 resource "aws_s3_bucket_policy" "static_site" {
-  count = var.enable_static_site ? 1 : 0
-
-  bucket = aws_s3_bucket.static_site[0].id
-  policy = data.aws_iam_policy_document.static_site[0].json
+  bucket = aws_s3_bucket.static_site.id
+  policy = data.aws_iam_policy_document.static_site.json
 
   depends_on = [aws_s3_bucket_public_access_block.static_site]
 }

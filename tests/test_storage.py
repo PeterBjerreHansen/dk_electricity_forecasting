@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dkenergy_forecast.storage import ArtifactStore, join_uri, materialize_uri, parse_uri
+from dkenergy_forecast.storage import ArtifactStore, join_uri, parse_uri
 
 
 def test_parse_uri_supports_local_file_and_s3() -> None:
@@ -38,10 +38,3 @@ def test_local_artifact_store_uploads_and_downloads_prefixes(tmp_path) -> None:
     assert uploaded == ["state/data/nested/artifact.txt"]
     assert [path.relative_to(destination).as_posix() for path in downloaded] == ["nested/artifact.txt"]
     assert (destination / "nested" / "artifact.txt").read_text(encoding="utf-8") == "ok"
-
-
-def test_materialize_uri_returns_local_file_path(tmp_path) -> None:
-    path = tmp_path / "artifact.json"
-    path.write_text("{}", encoding="utf-8")
-
-    assert materialize_uri(f"file://{path}", required=True) == path

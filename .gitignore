@@ -17,3 +17,4 @@ artifacts/
 app_data/
 runtime/
 cloud_store/
+build/

@@ -5,7 +5,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from dkenergy_forecast.layout import CHRONOS_LORA_WEATHER_MODEL_LABEL
-from dkenergy_forecast.models.baselines import LagNaive, WeekdayWeekendWeightedMedian
+from dkenergy_forecast.models.baselines import (
+    LagNaive,
+    SeasonalRollingMedian,
+    WeekdayWeekendWeightedMedian,
+)
 from dkenergy_forecast.models.chronos_production import (
     PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG,
     Chronos2LoRAWeatherDayAhead,
@@ -16,6 +20,7 @@ from dkenergy_forecast.types import ForecastModel
 
 WEIGHTED_MEDIAN_MODEL_LABEL = "weighted_median_v1"
 SAME_HOUR_LAST_WEEK_MODEL_LABEL = "same_hour_last_week"
+ROLLING_MEDIAN_MODEL_LABEL = "rolling_median_local_hour_28d"
 
 
 @dataclass(frozen=True)
@@ -50,6 +55,16 @@ def baseline_model_specs() -> dict[str, ProductionModelSpec]:
             family="baseline",
             factory=lambda: LagNaive(lag_hours=168),
             description="Same UTC hour one week earlier.",
+        ),
+        ROLLING_MEDIAN_MODEL_LABEL: ProductionModelSpec(
+            label=ROLLING_MEDIAN_MODEL_LABEL,
+            family="baseline",
+            factory=lambda: SeasonalRollingMedian(
+                lookback_days=28,
+                seasonal_keys=("local_hour",),
+                min_periods=7,
+            ),
+            description="Local-hour rolling median over the previous 28 days.",
         ),
         WEIGHTED_MEDIAN_MODEL_LABEL: _weighted_median_spec(),
     }

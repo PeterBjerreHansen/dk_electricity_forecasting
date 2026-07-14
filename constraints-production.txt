@@ -1,4 +1,4 @@
-# Direct production dependency pins used by both container images.
+# Direct dependency pins for the production pipeline image.
 #
 # Regenerate deliberately after compatibility tests; application development
 # dependencies remain flexible in pyproject.toml.
@@ -8,5 +8,4 @@ peft==0.19.1
 pandas==2.2.3
 pyarrow==24.0.0
 requests==2.32.3
-streamlit==1.58.0
 torch==2.8.0

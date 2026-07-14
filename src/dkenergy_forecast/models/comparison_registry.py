@@ -3,16 +3,20 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from dkenergy_forecast.models.baselines import SeasonalRollingMedian
-from dkenergy_forecast.models.catboost_production import (
-    PRODUCTION_CATBOOST_CONFIG,
-    ProductionCatBoostDayAhead,
+from dkenergy_forecast.models.catboost_experimental import (
+    CATBOOST_EXPERIMENT_CONFIG,
+    ExperimentalCatBoostDayAhead,
     ensure_catboost_available,
 )
 from dkenergy_forecast.models.chronos_zero_shot import (
     ChronosZeroShotDayAhead,
     ensure_chronos_zero_shot_available,
 )
-from dkenergy_forecast.models.registry import ProductionModelSpec
+from dkenergy_forecast.models.registry import (
+    ROLLING_MEDIAN_MODEL_LABEL,
+    ProductionModelSpec,
+    baseline_model_specs,
+)
 from dkenergy_forecast.types import ForecastModel
 
 
@@ -28,16 +32,9 @@ def comparison_model_specs() -> dict[str, ProductionModelSpec]:
 
 def comparison_baseline_model_specs() -> dict[str, ProductionModelSpec]:
     return {
-        "rolling_median_local_hour_28d": ProductionModelSpec(
-            label="rolling_median_local_hour_28d",
-            family="baseline",
-            factory=lambda: SeasonalRollingMedian(
-                lookback_days=28,
-                seasonal_keys=("local_hour",),
-                min_periods=7,
-            ),
-            description="Comparison local-hour seasonal rolling median over the previous 28 days.",
-        ),
+        ROLLING_MEDIAN_MODEL_LABEL: baseline_model_specs()[
+            ROLLING_MEDIAN_MODEL_LABEL
+        ],
         "rolling_median_hour_weekend_56d": ProductionModelSpec(
             label="rolling_median_hour_weekend_56d",
             family="baseline",
@@ -56,12 +53,12 @@ def comparison_catboost_model_specs() -> dict[str, ProductionModelSpec]:
         "catboost_price_manual_v1": ProductionModelSpec(
             label="catboost_price_manual_v1",
             family="catboost",
-            factory=lambda: ProductionCatBoostDayAhead(PRODUCTION_CATBOOST_CONFIG),
+            factory=lambda: ExperimentalCatBoostDayAhead(CATBOOST_EXPERIMENT_CONFIG),
             description=(
                 "Manually selected fixed-parameter CatBoost day-ahead price model "
-                f"({PRODUCTION_CATBOOST_CONFIG.feature_set}, "
-                f"{PRODUCTION_CATBOOST_CONFIG.target_mode}, "
-                f"{PRODUCTION_CATBOOST_CONFIG.training_origin_days}d training window)."
+                f"({CATBOOST_EXPERIMENT_CONFIG.feature_set}, "
+                f"{CATBOOST_EXPERIMENT_CONFIG.target_mode}, "
+                f"{CATBOOST_EXPERIMENT_CONFIG.training_origin_days}d training window)."
             ),
             required_extra="catboost",
             emits_quantiles=False,

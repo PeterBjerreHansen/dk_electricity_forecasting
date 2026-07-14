@@ -44,11 +44,11 @@ DEFAULT_CATBOOST_PARAMS: dict[str, Any] = {
 
 
 @dataclass(frozen=True)
-class CatBoostProductionConfig:
-    """Source-controlled production CatBoost policy.
+class CatBoostExperimentConfig:
+    """Source-controlled CatBoost comparison policy.
 
-    This is intentionally fixed-parameter production code. Optuna and notebook
-    policy search stay in the development path.
+    The fixed parameters make notebook comparisons reproducible; this model is
+    not part of live publication.
     """
 
     feature_set: str = "price_full_engineered"
@@ -63,13 +63,15 @@ class CatBoostProductionConfig:
     price_feature_config: PriceFeatureConfig = field(default_factory=PriceFeatureConfig)
 
 
-PRODUCTION_CATBOOST_CONFIG = CatBoostProductionConfig()
+CATBOOST_EXPERIMENT_CONFIG = CatBoostExperimentConfig()
 
 
 @dataclass
-class ProductionCatBoostDayAhead(ForecastModel):
-    config: CatBoostProductionConfig = field(default_factory=lambda: PRODUCTION_CATBOOST_CONFIG)
-    model_name: str = "production_catboost_day_ahead"
+class ExperimentalCatBoostDayAhead(ForecastModel):
+    config: CatBoostExperimentConfig = field(
+        default_factory=lambda: CATBOOST_EXPERIMENT_CONFIG
+    )
+    model_name: str = "experimental_catboost_day_ahead"
     model_version: str = "v1"
 
     def __post_init__(self) -> None:
@@ -83,7 +85,7 @@ class ProductionCatBoostDayAhead(ForecastModel):
             raise ValueError("recency_floor must be between 0 and 1")
         self._history: pd.DataFrame | None = None
 
-    def fit(self, history: pd.DataFrame) -> "ProductionCatBoostDayAhead":
+    def fit(self, history: pd.DataFrame) -> "ExperimentalCatBoostDayAhead":
         self._history = _prepare_history(history)
         return self
 
@@ -199,7 +201,7 @@ def _resolve_history(
 def _single_forecast_origin(future: pd.DataFrame) -> pd.Timestamp:
     origins = future["forecast_origin_utc"].drop_duplicates().tolist()
     if len(origins) != 1:
-        raise ValueError("ProductionCatBoostDayAhead expects exactly one forecast_origin_utc")
+            raise ValueError("ExperimentalCatBoostDayAhead expects exactly one forecast_origin_utc")
     return to_utc_timestamp(origins[0])
 
 

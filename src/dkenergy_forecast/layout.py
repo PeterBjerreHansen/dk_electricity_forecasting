@@ -18,13 +18,6 @@ WEATHER_FEATURES_LONG_PROJECT_RELATIVE_PATH = Path("data") / "features" / WEATHE
 
 
 @dataclass(frozen=True)
-class ProjectLayout:
-    root: Path
-    src: Path
-    scripts: Path
-
-
-@dataclass(frozen=True)
 class RuntimeLayout:
     root: Path
     eds_raw: Path
@@ -39,19 +32,10 @@ class RuntimeLayout:
     baseline_results: Path
     forecast_runs: Path
     latest_pointer: Path
-    latest_forecast: Path
     recent_scores: Path
     published_history: Path
-    dashboard_json: Path
-
-
-def project_layout(root: str | Path = PROJECT_ROOT) -> ProjectLayout:
-    project_root = Path(root)
-    return ProjectLayout(
-        root=project_root,
-        src=project_root / "src",
-        scripts=project_root / "scripts",
-    )
+    dashboard_history: Path
+    static_dashboard: Path
 
 
 def runtime_layout(root: str | Path = PROJECT_ROOT) -> RuntimeLayout:
@@ -73,8 +57,8 @@ def runtime_layout(root: str | Path = PROJECT_ROOT) -> RuntimeLayout:
         baseline_results=results / "baseline_v1",
         forecast_runs=runtime_root / "artifacts" / "forecast_runs",
         latest_pointer=runtime_root / "artifacts" / "latest.json",
-        latest_forecast=results / "latest_forecast",
         recent_scores=results / "recent_scores",
         published_history=results / "published_forecast_history",
-        dashboard_json=runtime_root / "app_data" / "forecast_dashboard.json",
+        dashboard_history=runtime_root / "dashboard" / "forecast_history.parquet",
+        static_dashboard=runtime_root / "dashboard" / "index.html",
     )

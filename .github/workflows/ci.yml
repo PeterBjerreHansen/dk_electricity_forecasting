@@ -29,7 +29,7 @@ jobs:
         run: python -m pytest
 
       - name: Compile importable Python sources
-        run: python -m compileall -q src scripts app
+        run: python -m compileall -q src scripts
 
   terraform:
     runs-on: ubuntu-latest
@@ -52,14 +52,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build dashboard image
-        run: >-
-          docker build
-          --build-arg GIT_SHA=${GITHUB_SHA}
-          --file Dockerfile.web
-          --tag dk-energy-forecasts-web:ci
-          .
-
       - name: Build production pipeline image
         run: >-
           docker build
@@ -70,9 +62,8 @@ jobs:
 
       - name: Verify container identity and provenance
         run: |
-          test "$(docker run --rm --entrypoint id dk-energy-forecasts-web:ci -u)" = "10001"
           test "$(docker run --rm --entrypoint id dk-energy-forecasts-pipeline:ci -u)" = "10001"
-          test "$(docker run --rm --entrypoint printenv dk-energy-forecasts-web:ci DKENERGY_BUILD_GIT_SHA)" = "${GITHUB_SHA}"
+          test "$(docker run --rm --entrypoint printenv dk-energy-forecasts-pipeline:ci DKENERGY_BUILD_GIT_SHA)" = "${GITHUB_SHA}"
           test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' dk-energy-forecasts-pipeline:ci)" = "${GITHUB_SHA}"
           docker run --rm --entrypoint python dk-energy-forecasts-pipeline:ci -c \
             "import torch; assert torch.__version__.startswith('2.8.0'); assert torch.version.cuda is None"

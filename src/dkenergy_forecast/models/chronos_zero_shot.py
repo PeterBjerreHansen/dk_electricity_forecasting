@@ -15,7 +15,7 @@ from dkenergy_forecast.types import (
 
 
 @dataclass(frozen=True)
-class ChronosProductionConfig:
+class ChronosZeroShotConfig:
     model_id: str = "amazon/chronos-2"
     context_length: int = 24 * 365
     quantile_levels: tuple[float, float, float] = (0.10, 0.50, 0.90)
@@ -23,12 +23,12 @@ class ChronosProductionConfig:
     torch_dtype: str | None = None
 
 
-PRODUCTION_CHRONOS_CONFIG = ChronosProductionConfig()
+DEFAULT_CHRONOS_ZERO_SHOT_CONFIG = ChronosZeroShotConfig()
 
 
 @dataclass
 class ChronosZeroShotDayAhead:
-    config: ChronosProductionConfig = PRODUCTION_CHRONOS_CONFIG
+    config: ChronosZeroShotConfig = DEFAULT_CHRONOS_ZERO_SHOT_CONFIG
     pipeline: Any | None = None
     model_name: str = "chronos_zero_shot_day_ahead"
     model_version: str = "v1"
@@ -99,7 +99,7 @@ def ensure_chronos_zero_shot_available() -> None:
     _chronos_pipeline_class()
 
 
-def load_chronos_pipeline(config: ChronosProductionConfig) -> Any:
+def load_chronos_pipeline(config: ChronosZeroShotConfig) -> Any:
     pipeline_cls = _chronos_pipeline_class()
     kwargs: dict[str, Any] = {"device_map": config.device_map}
     if config.torch_dtype:

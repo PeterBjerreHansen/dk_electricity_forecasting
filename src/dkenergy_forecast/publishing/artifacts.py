@@ -434,6 +434,7 @@ def write_forecast_run_artifacts(
     scores: pd.DataFrame | None,
     manifest: dict[str, Any],
     score_predictions: pd.DataFrame | None = None,
+    diagnostic_predictions: pd.DataFrame | None = None,
     dashboard: dict[str, Any] | None = None,
 ) -> dict[str, Path]:
     """Transactionally publish one immutable run directory.
@@ -453,6 +454,12 @@ def write_forecast_run_artifacts(
     if score_predictions is not None:
         score_predictions_out = normalize_published_predictions(score_predictions)
         validate_evaluated_prediction_artifact_schema(score_predictions_out)
+    diagnostic_predictions_out = None
+    if diagnostic_predictions is not None:
+        diagnostic_predictions_out = normalize_published_predictions(
+            diagnostic_predictions
+        )
+        validate_prediction_artifact_schema(diagnostic_predictions_out)
 
     idempotency_key = manifest.get("idempotency_key")
     if idempotency_key is not None and (
@@ -470,6 +477,7 @@ def write_forecast_run_artifacts(
         temp_path,
         include_model_scores=scores is not None,
         include_score_predictions=score_predictions_out is not None,
+        include_diagnostic_predictions=diagnostic_predictions_out is not None,
         include_dashboard=dashboard is not None,
     )
     try:
@@ -478,6 +486,11 @@ def write_forecast_run_artifacts(
             scores.to_parquet(temp_paths["model_scores"], index=False)
         if score_predictions_out is not None:
             score_predictions_out.to_parquet(temp_paths["score_predictions"], index=False)
+        if diagnostic_predictions_out is not None:
+            diagnostic_predictions_out.to_parquet(
+                temp_paths["diagnostic_predictions"],
+                index=False,
+            )
         if dashboard is not None:
             _write_json_direct(temp_paths["dashboard"], dashboard)
 
@@ -524,6 +537,7 @@ def write_forecast_run_artifacts(
             run_path,
             include_model_scores=scores is not None,
             include_score_predictions=score_predictions_out is not None,
+            include_diagnostic_predictions=diagnostic_predictions_out is not None,
             include_dashboard=dashboard is not None,
         )
     finally:
@@ -733,6 +747,7 @@ def _forecast_run_paths(
     *,
     include_model_scores: bool,
     include_score_predictions: bool,
+    include_diagnostic_predictions: bool,
     include_dashboard: bool,
 ) -> dict[str, Path]:
     paths = {
@@ -744,6 +759,8 @@ def _forecast_run_paths(
         paths["model_scores"] = run_path / "model_scores.parquet"
     if include_score_predictions:
         paths["score_predictions"] = run_path / "score_predictions.parquet"
+    if include_diagnostic_predictions:
+        paths["diagnostic_predictions"] = run_path / "diagnostic_predictions.parquet"
     if include_dashboard:
         paths["dashboard"] = run_path / "forecast_dashboard.json"
     return paths
@@ -753,7 +770,13 @@ def _artifact_identity_sha256(artifact_hashes: dict[str, str]) -> str:
     identity_hashes = {
         name: digest
         for name, digest in artifact_hashes.items()
-        if name in {"predictions", "model_scores", "score_predictions"}
+        if name
+        in {
+            "predictions",
+            "model_scores",
+            "score_predictions",
+            "diagnostic_predictions",
+        }
     }
     canonical = json.dumps(identity_hashes, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -786,6 +809,7 @@ def _resolve_existing_idempotent_run(
         run_path,
         include_model_scores="model_scores" in expected_paths,
         include_score_predictions="score_predictions" in expected_paths,
+        include_diagnostic_predictions="diagnostic_predictions" in expected_paths,
         include_dashboard="dashboard" in expected_paths,
     )
     missing = [str(path) for path in final_paths.values() if not path.exists()]

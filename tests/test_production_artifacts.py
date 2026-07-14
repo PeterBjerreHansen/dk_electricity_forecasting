@@ -441,6 +441,11 @@ def test_production_registry_contains_only_deployed_models(monkeypatch, tmp_path
     specs = production_model_specs()
 
     assert default_production_model_labels() == ["chronos_weather"]
+    assert set(baseline_model_factories()) == {
+        "same_hour_last_week",
+        "rolling_median_local_hour_28d",
+        "weighted_median_v1",
+    }
     assert set(specs) == {"chronos_weather", "weighted_median_v1"}
     assert specs["chronos_weather"].family == "chronos"
     assert specs["chronos_weather"].required_extra == "chronos"

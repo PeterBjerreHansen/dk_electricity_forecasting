@@ -17,3 +17,5 @@ def test_runtime_layout_centralizes_runtime_paths(tmp_path) -> None:
     assert layout.weather_features_long == tmp_path / "data" / "features" / WEATHER_FEATURES_LONG_FILENAME
     assert layout.chronos_model_artifact == tmp_path / "artifacts" / "models" / CHRONOS_LORA_ARTIFACT_ID
     assert layout.published_history == tmp_path / "results" / "published_forecast_history"
+    assert layout.dashboard_history == tmp_path / "dashboard" / "forecast_history.parquet"
+    assert layout.static_dashboard == tmp_path / "dashboard" / "index.html"

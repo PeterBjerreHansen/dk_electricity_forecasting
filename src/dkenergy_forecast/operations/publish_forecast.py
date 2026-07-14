@@ -20,6 +20,7 @@ from dkenergy_forecast.models.chronos_production import (
 )
 from dkenergy_forecast.models.registry import (
     WEIGHTED_MEDIAN_MODEL_LABEL,
+    baseline_model_factories,
     latest_publish_model_factories,
     production_model_specs,
 )
@@ -139,6 +140,14 @@ def run_publish_forecast(
         delivery_date_local=request.delivery_date_local,
     )
     predictions["run_id"] = run_id
+    diagnostic_predictions, diagnostic_error = _dashboard_diagnostic_predictions(
+        predictions,
+        request=request,
+        panel=panel,
+        min_train_days=args.min_train_days,
+        published_model=published_model,
+    )
+    diagnostic_predictions["run_id"] = run_id
 
     empty_scores = _empty_scores()
     run_dir = Path(args.artifact_root) / run_id
@@ -147,6 +156,7 @@ def run_publish_forecast(
         "manifest": str(run_dir / "manifest.json"),
         "completion": str(run_dir / "COMPLETED.json"),
         "dashboard": str(run_dir / "forecast_dashboard.json"),
+        "diagnostic_predictions": str(run_dir / "diagnostic_predictions.parquet"),
     }
     idempotency_key = (
         f"{request.run_kind}:{request.delivery_date_local.isoformat()}:"
@@ -189,6 +199,7 @@ def run_publish_forecast(
             "min_train_days": int(args.min_train_days),
             "model": model_metadata,
             "primary_failure": primary_error,
+            "diagnostic_failure": diagnostic_error,
             **_weather_metadata(published_model, args.weather_features_long_path),
         },
     )
@@ -202,6 +213,7 @@ def run_publish_forecast(
         predictions=predictions,
         scores=empty_scores,
         manifest=manifest,
+        diagnostic_predictions=diagnostic_predictions,
         dashboard=dashboard,
     )
 
@@ -325,6 +337,45 @@ def publish_predictions_for_origins(
     if not prediction_frames:
         raise ValueError("No production model was selected")
     return pd.concat(prediction_frames, ignore_index=True)
+
+
+def _dashboard_diagnostic_predictions(
+    published_predictions: pd.DataFrame,
+    *,
+    request: ForecastRequest,
+    panel: pd.DataFrame,
+    min_train_days: int,
+    published_model: str,
+) -> tuple[pd.DataFrame, dict[str, str] | None]:
+    """Add three cheap baselines without making them publication candidates."""
+
+    factories = baseline_model_factories()
+    factories.pop(published_model, None)
+    try:
+        baselines = publish_predictions_for_origins(
+            panel=panel,
+            origins=request.origin_frame(),
+            factories=factories,
+            min_train_days=min_train_days,
+            delivery_date_local=request.delivery_date_local,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        return published_predictions.copy(), {
+            "type": type(exc).__name__,
+            "message": str(exc)[:2000],
+        }
+
+    baselines = add_prediction_diagnostics(baselines)
+    baselines = baselines[baselines["y_pred"].notna()].copy()
+    baselines["forecast_status"] = "diagnostic"
+    frames = [
+        frame.dropna(axis="columns", how="all")
+        for frame in [published_predictions, baselines]
+    ]
+    return (
+        pd.concat(frames, ignore_index=True, sort=False),
+        None,
+    )
 
 
 def model_release_metadata(

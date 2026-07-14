@@ -14,23 +14,18 @@ MIN_TRAIN_DAYS ?= 60
 SCORE_DAYS ?= 14
 SCORE_MAX_ORIGINS ?= 7
 SCORE_HOLDOUT_DAYS ?= 2
-STREAMLIT_PORT ?= 8501
 AWS_REGION ?= eu-central-1
-AWS_WEB_ECR_REPOSITORY ?= dk-energy-forecasts-web
 AWS_PIPELINE_ECR_REPOSITORY ?= dk-energy-forecasts-pipeline
 AWS_IMAGE_TAG ?= $(shell git rev-parse --short HEAD)
 AWS_GIT_SHA ?= $(shell git rev-parse HEAD)
 AWS_ACCOUNT_ID ?= $(shell aws sts get-caller-identity --query Account --output text 2>/dev/null)
 AWS_ECR_REGISTRY ?= $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com
-AWS_WEB_IMAGE_URI ?= $(AWS_ECR_REGISTRY)/$(AWS_WEB_ECR_REPOSITORY):$(AWS_IMAGE_TAG)
 AWS_PIPELINE_IMAGE_URI ?= $(AWS_ECR_REGISTRY)/$(AWS_PIPELINE_ECR_REPOSITORY):$(AWS_IMAGE_TAG)
 AWS_ARTIFACT_STORE_URI ?=
 AWS_MODEL_ARTIFACT_URI ?=
 AWS_ENABLE_PIPELINE_SCHEDULE ?= false
-AWS_ENABLE_WEB ?= false
-AWS_ENABLE_STATIC_SITE ?= false
-STATIC_DASHBOARD_INPUT ?= app_data/forecast_dashboard.json
 STATIC_DASHBOARD_OUTPUT ?= build/static-dashboard/index.html
+STATIC_DASHBOARD_HISTORY_OUTPUT ?= build/static-dashboard/forecast_history.parquet
 TF_STATE_BUCKET ?=
 TF_STATE_KEY ?= dk-energy-forecasts/production.tfstate
 TF_STATE_REGION ?= $(AWS_REGION)
@@ -41,16 +36,13 @@ PUBLISH_MODELS_ARG := $(if $(PUBLISH_MODELS),--models $(PUBLISH_MODELS),)
 FORECAST_AT_HOUR_UTC_ARG := $(if $(FORECAST_AT_HOUR_UTC),--at-hour-utc $(FORECAST_AT_HOUR_UTC),)
 PRODUCTION_MODEL_ARTIFACT_PATH := $(shell $(PYTHON) -c 'import json; print(json.load(open("config/production.json"))["primary"]["artifact_path"])')
 
-.PHONY: install install-app install-production test data-prices data-weather backtest-baseline publish diagnostics score-published daily daily-weather dashboard static-dashboard docker-build docker-dashboard docker-pipeline dry-run dry-run-weather aws-terraform-init aws-ensure-ecr aws-ecr-login aws-image aws-push aws-bootstrap-model aws-deploy clean
+.PHONY: install install-production test data-prices data-weather backtest-baseline publish diagnostics score-published daily daily-weather static-dashboard docker-build dry-run dry-run-weather aws-terraform-init aws-ensure-ecr aws-ecr-login aws-image aws-push aws-bootstrap-model aws-deploy clean
 
 install:
 	$(PYTHON) -m pip install -e ".[dev]"
 
-install-app:
-	$(PYTHON) -m pip install -e ".[dev,app]"
-
 install-production:
-	$(PYTHON) -m pip install -e ".[dev,app,chronos,aws]"
+	$(PYTHON) -m pip install -e ".[dev,chronos,aws]"
 
 test:
 	$(PYTHON) -m pytest
@@ -87,20 +79,11 @@ dry-run:
 dry-run-weather:
 	$(PYTHON) scripts/run_daily_pipeline.py --dry-run --with-weather
 
-dashboard:
-	$(PYTHON) -m streamlit run app/streamlit_app.py --server.port $(STREAMLIT_PORT)
-
 static-dashboard:
-	$(PYTHON) scripts/build_static_dashboard.py --input $(STATIC_DASHBOARD_INPUT) --output $(STATIC_DASHBOARD_OUTPUT)
+	$(PYTHON) scripts/build_static_dashboard.py --output $(STATIC_DASHBOARD_OUTPUT) --history-output $(STATIC_DASHBOARD_HISTORY_OUTPUT)
 
 docker-build:
-	docker compose build
-
-docker-dashboard:
-	docker compose up dashboard
-
-docker-pipeline:
-	docker compose --profile jobs run --rm pipeline
+	docker build --platform linux/amd64 --build-arg "GIT_SHA=$(AWS_GIT_SHA)" -f Dockerfile.pipeline -t dk-energy-forecasts-pipeline:local .
 
 aws-ecr-login:
 	@test -n "$(AWS_ACCOUNT_ID)" || (echo "AWS_ACCOUNT_ID is required or AWS CLI must be authenticated" && exit 1)
@@ -111,23 +94,20 @@ aws-terraform-init:
 	terraform -chdir=infra/aws init -backend-config="bucket=$(TF_STATE_BUCKET)" -backend-config="key=$(TF_STATE_KEY)" -backend-config="region=$(TF_STATE_REGION)" -backend-config="use_lockfile=$(TF_STATE_USE_LOCKFILE)"
 
 aws-ensure-ecr: aws-terraform-init
-	terraform -chdir=infra/aws apply -target=aws_ecr_repository.pipeline -target=aws_ecr_lifecycle_policy.pipeline -var "aws_region=$(AWS_REGION)" -var "enable_web=$(AWS_ENABLE_WEB)"
-	@if [ "$(AWS_ENABLE_WEB)" = "true" ]; then terraform -chdir=infra/aws apply -target='aws_ecr_repository.web[0]' -target='aws_ecr_lifecycle_policy.web[0]' -var "aws_region=$(AWS_REGION)" -var "enable_web=true"; fi
+	terraform -chdir=infra/aws apply -target=aws_ecr_repository.pipeline -target=aws_ecr_lifecycle_policy.pipeline -var "aws_region=$(AWS_REGION)"
 
 aws-image:
-	docker build --build-arg "GIT_SHA=$(AWS_GIT_SHA)" -f Dockerfile.pipeline -t $(AWS_PIPELINE_IMAGE_URI) .
-	@if [ "$(AWS_ENABLE_WEB)" = "true" ]; then docker build --build-arg "GIT_SHA=$(AWS_GIT_SHA)" -f Dockerfile.web -t $(AWS_WEB_IMAGE_URI) .; fi
+	docker build --platform linux/amd64 --build-arg "GIT_SHA=$(AWS_GIT_SHA)" -f Dockerfile.pipeline -t $(AWS_PIPELINE_IMAGE_URI) .
 
 aws-push: aws-ecr-login aws-image
 	docker push $(AWS_PIPELINE_IMAGE_URI)
-	@if [ "$(AWS_ENABLE_WEB)" = "true" ]; then docker push $(AWS_WEB_IMAGE_URI); fi
 
 aws-bootstrap-model:
 	@test -n "$(AWS_MODEL_ARTIFACT_URI)" || (echo "AWS_MODEL_ARTIFACT_URI=s3://... is required" && exit 1)
 	aws s3 sync $(PRODUCTION_MODEL_ARTIFACT_PATH)/ $(AWS_MODEL_ARTIFACT_URI) --region $(AWS_REGION)
 
 aws-deploy: aws-ensure-ecr aws-push
-	terraform -chdir=infra/aws apply -var "aws_region=$(AWS_REGION)" -var "build_git_sha=$(AWS_GIT_SHA)" -var "web_image_uri=$(AWS_WEB_IMAGE_URI)" -var "pipeline_image_uri=$(AWS_PIPELINE_IMAGE_URI)" -var "enable_web=$(AWS_ENABLE_WEB)" -var "enable_static_site=$(AWS_ENABLE_STATIC_SITE)" -var "enable_pipeline_schedule=$(AWS_ENABLE_PIPELINE_SCHEDULE)"
+	terraform -chdir=infra/aws apply -var "aws_region=$(AWS_REGION)" -var "build_git_sha=$(AWS_GIT_SHA)" -var "pipeline_image_uri=$(AWS_PIPELINE_IMAGE_URI)" -var "enable_pipeline_schedule=$(AWS_ENABLE_PIPELINE_SCHEDULE)"
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .mypy_cache runtime cloud_store

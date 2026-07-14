@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,10 +21,6 @@ class ParsedUri:
     @property
     def is_local(self) -> bool:
         return self.scheme in {"", "file"}
-
-
-class StorageError(RuntimeError):
-    """Raised when artifact storage cannot read or write a requested object."""
 
 
 def parse_uri(value: str | Path) -> ParsedUri:
@@ -54,46 +49,6 @@ def join_uri(base_uri: str | Path, *parts: str) -> str:
         key = _join_key(parsed.key, *clean_parts)
         return f"s3://{parsed.bucket}/{key}" if key else f"s3://{parsed.bucket}"
     return str(Path(parsed.path, *clean_parts))
-
-
-def materialize_uri(
-    uri: str | Path,
-    *,
-    cache_dir: str | Path | None = None,
-    required: bool = False,
-) -> Path:
-    """Return a local path for a local, file://, or s3:// object URI."""
-
-    parsed = parse_uri(uri)
-    if parsed.is_local:
-        path = Path(parsed.path).expanduser()
-        if required and not path.exists():
-            raise FileNotFoundError(f"Missing local artifact: {path}")
-        return path
-
-    cache_root = Path(cache_dir or "/tmp/dkenergy-artifact-cache")
-    cache_root.mkdir(parents=True, exist_ok=True)
-    filename = Path(parsed.key).name or "artifact"
-    digest = hashlib.sha256(str(uri).encode("utf-8")).hexdigest()[:16]
-    destination = cache_root / f"{digest}-{filename}"
-    try:
-        _s3_client().download_file(parsed.bucket, parsed.key, str(destination))
-    except Exception as exc:  # pragma: no cover - exercised with real AWS only
-        if required:
-            raise FileNotFoundError(f"Missing S3 artifact: {uri}") from exc
-        return destination
-    return destination
-
-
-def resource_exists(uri: str | Path) -> bool:
-    parsed = parse_uri(uri)
-    if parsed.is_local:
-        return Path(parsed.path).expanduser().exists()
-    try:
-        _s3_client().head_object(Bucket=parsed.bucket, Key=parsed.key)
-        return True
-    except Exception:  # pragma: no cover - exercised with real AWS only
-        return False
 
 
 class ArtifactStore:
@@ -190,7 +145,14 @@ class ArtifactStore:
                 raise FileNotFoundError(f"Missing S3 artifact: {self.uri_for(key)}") from exc
         return destination_path
 
-    def upload_file(self, source: str | Path, key: str) -> str:
+    def upload_file(
+        self,
+        source: str | Path,
+        key: str,
+        *,
+        content_type: str | None = None,
+        cache_control: str | None = None,
+    ) -> str:
         source_path = Path(source)
         if self.root.is_local:
             destination = Path(self.root.path).expanduser() / key
@@ -198,7 +160,21 @@ class ArtifactStore:
             shutil.copy2(source_path, destination)
             return str(destination)
         remote_key = self._remote_key(key)
-        _s3_client().upload_file(str(source_path), self.root.bucket, remote_key)
+        metadata = {
+            name: value
+            for name, value in {
+                "ContentType": content_type,
+                "CacheControl": cache_control,
+            }.items()
+            if value is not None
+        }
+        kwargs = {"ExtraArgs": metadata} if metadata else {}
+        _s3_client().upload_file(
+            str(source_path),
+            self.root.bucket,
+            remote_key,
+            **kwargs,
+        )
         return f"s3://{self.root.bucket}/{remote_key}"
 
     def _remote_key(self, key: str) -> str:

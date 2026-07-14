@@ -15,8 +15,14 @@ from dkenergy_forecast.layout import (
     WEATHER_FEATURES_LONG_PROJECT_RELATIVE_PATH,
     runtime_layout,
 )
+from dkenergy_forecast.dashboard import (
+    dashboard_records,
+    evaluated_dashboard_history,
+    update_forecast_history,
+)
+from dkenergy_forecast.static_dashboard import build_static_dashboard
 from dkenergy_forecast.storage import ArtifactStore, join_uri
-from dkenergy_forecast.publishing import atomic_write_json
+from dkenergy_forecast.publishing import atomic_write_json, atomic_write_parquet
 from dkenergy_forecast.types import to_utc_timestamp
 
 
@@ -45,7 +51,7 @@ class CloudPipelineConfig:
     model_artifact_uri: str
     python: str = sys.executable
     with_weather: bool = True
-    score_max_origins: int | None = None
+    static_site_uri: str | None = None
     run_kind: str = "live"
     information_cutoff_utc: str | None = None
 
@@ -117,12 +123,21 @@ def run_cloud_pipeline(
         return []
     if config.with_weather:
         _require_fresh_weather_features(workdir / WEATHER_FEATURES_RELATIVE_PATH)
-    return _upload_runtime_outputs(
+    uploaded = _upload_runtime_outputs(
         store,
         workdir,
         run_kind=config.run_kind,
         known_run_ids=known_run_ids,
     )
+    if config.run_kind == "live" and config.static_site_uri:
+        uploaded.extend(
+            _publish_static_dashboard(
+                store,
+                static_site_uri=config.static_site_uri,
+                workdir=workdir,
+            )
+        )
+    return uploaded
 
 
 def _pipeline_env(config: CloudPipelineConfig) -> dict[str, str]:
@@ -140,6 +155,12 @@ def _download_runtime_state(store: ArtifactStore, workdir: Path) -> None:
         store.download_prefix(prefix, workdir / relative, required=False)
     store.download_prefix("forecast_runs", workdir / "artifacts" / "forecast_runs", required=False)
     store.download_file("latest.json", workdir / "artifacts" / "latest.json", required=False)
+    paths = runtime_layout(workdir)
+    store.download_file(
+        "dashboard/forecast_history.parquet",
+        paths.dashboard_history,
+        required=False,
+    )
 
 
 def _download_model_artifact(model_artifact_uri: str, workdir: Path) -> None:
@@ -286,6 +307,58 @@ def _read_latest_pointer(path: Path) -> dict[str, object]:
     if run_prefix.is_absolute() or ".." in run_prefix.parts:
         raise ValueError(f"Latest forecast run_prefix must be relative: {run_prefix}")
     return payload
+
+
+def _publish_static_dashboard(
+    store: ArtifactStore,
+    *,
+    static_site_uri: str,
+    workdir: Path,
+) -> list[str]:
+    """Refresh private history, then atomically replace the public HTML page."""
+
+    paths = runtime_layout(workdir)
+    pointer = _read_latest_pointer(paths.latest_pointer)
+    run_dir = paths.latest_pointer.parent / str(pointer["run_prefix"])
+    predictions_path = run_dir / "diagnostic_predictions.parquet"
+    if not predictions_path.exists():
+        predictions_path = run_dir / "predictions.parquet"
+    dashboard_path = run_dir / "forecast_dashboard.json"
+    for path in [predictions_path, dashboard_path, paths.price_panel]:
+        _require_output(path)
+
+    import pandas as pd
+
+    existing = (
+        pd.read_parquet(paths.dashboard_history)
+        if paths.dashboard_history.exists()
+        else pd.DataFrame()
+    )
+    history = update_forecast_history(
+        existing,
+        pd.read_parquet(predictions_path),
+        pd.read_parquet(paths.price_panel),
+    )
+    paths.dashboard_history.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_parquet(paths.dashboard_history, history)
+    store.upload_file(paths.dashboard_history, "dashboard/forecast_history.parquet")
+
+    payload = json.loads(dashboard_path.read_text(encoding="utf-8"))
+    evaluated = evaluated_dashboard_history(history)
+    html = build_static_dashboard(
+        payload,
+        history_predictions=dashboard_records(evaluated),
+    )
+    if len(html) < 10_000 or "<!doctype html>" not in html:
+        raise ValueError("Refusing to publish an incomplete static dashboard")
+    paths.static_dashboard.write_text(html, encoding="utf-8")
+    ArtifactStore(static_site_uri).upload_file(
+        paths.static_dashboard,
+        "index.html",
+        content_type="text/html; charset=utf-8",
+        cache_control="public,max-age=300",
+    )
+    return ["dashboard/forecast_history.parquet", "static-site/index.html"]
 
 
 def run_cloud_scoring(

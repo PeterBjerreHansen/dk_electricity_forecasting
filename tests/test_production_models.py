@@ -14,9 +14,9 @@ from dkenergy_forecast.features.price_features import (
     WEIGHTED_MEDIAN_BASELINE_COLUMN,
     build_price_feature_frame,
 )
-from dkenergy_forecast.models.catboost_production import (
-    CatBoostProductionConfig,
-    ProductionCatBoostDayAhead,
+from dkenergy_forecast.models.catboost_experimental import (
+    CatBoostExperimentConfig,
+    ExperimentalCatBoostDayAhead,
 )
 from dkenergy_forecast.models.chronos_production import (
     CALENDAR_COVARIATES,
@@ -33,7 +33,7 @@ from dkenergy_forecast.features.weather_features import (
     WEATHER_SELECTION_POLICY,
 )
 from dkenergy_forecast.models.chronos_zero_shot import (
-    ChronosProductionConfig,
+    ChronosZeroShotConfig,
     ChronosZeroShotDayAhead,
 )
 from dkenergy_forecast.types import add_copenhagen_calendar
@@ -42,7 +42,7 @@ from scripts.train_chronos_lora import make_lora_training_frame
 
 def test_production_catboost_residual_adapter_returns_publishable_predictions(monkeypatch) -> None:
     monkeypatch.setattr(
-        "dkenergy_forecast.models.catboost_production.load_catboost",
+        "dkenergy_forecast.models.catboost_experimental.load_catboost",
         lambda: (FakeCatBoostRegressor, FakePool),
     )
     panel = _panel(periods=24 * 70)
@@ -50,7 +50,7 @@ def test_production_catboost_residual_adapter_returns_publishable_predictions(mo
     history = panel.copy()
     future = make_danish_delivery_day_horizon(panel, origin)
     future["y"] = 999999.0
-    config = CatBoostProductionConfig(
+    config = CatBoostExperimentConfig(
         feature_set="price_baseline_calendar",
         target_mode="residual_baseline",
         training_origin_days=30,
@@ -59,7 +59,7 @@ def test_production_catboost_residual_adapter_returns_publishable_predictions(mo
         params={"iterations": 1},
     )
 
-    predictions = ProductionCatBoostDayAhead(config=config).fit(history).predict(future)
+    predictions = ExperimentalCatBoostDayAhead(config=config).fit(history).predict(future)
     future_features = build_price_feature_frame(
         history,
         future,
@@ -86,7 +86,7 @@ def test_production_catboost_residual_adapter_returns_publishable_predictions(mo
 def test_production_catboost_module_does_not_import_optuna() -> None:
     sys.modules.pop("optuna", None)
 
-    __import__("dkenergy_forecast.models.catboost_production")
+    __import__("dkenergy_forecast.models.catboost_experimental")
 
     assert "optuna" not in sys.modules
 
@@ -96,7 +96,7 @@ def test_chronos_zero_shot_adapter_emits_quantiles_and_uses_q50_as_point_forecas
     origin = pd.Timestamp("2024-01-09T00:00:00Z")
     history = panel[panel["ds_utc"] < origin].copy()
     future = make_danish_delivery_day_horizon(panel, origin).head(4)
-    config = ChronosProductionConfig(context_length=48)
+    config = ChronosZeroShotConfig(context_length=48)
 
     predictions = ChronosZeroShotDayAhead(
         config=config,

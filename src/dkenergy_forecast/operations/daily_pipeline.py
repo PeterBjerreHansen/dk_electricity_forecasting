@@ -41,7 +41,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--runtime-root",
         default=_env("DKENERGY_RUNTIME_ROOT"),
-        help="Optional root for data/results/artifacts/app_data. Defaults to the repository root.",
+        help="Optional root for generated data, results, and artifacts. Defaults to the repository root.",
     )
     parser.add_argument(
         "--at-hour-utc",

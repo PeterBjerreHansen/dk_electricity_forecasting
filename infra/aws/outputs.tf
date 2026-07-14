@@ -10,36 +10,20 @@ output "model_artifact_uri" {
   value = local.model_artifact_uri
 }
 
-output "web_ecr_repository_url" {
-  value = try(aws_ecr_repository.web[0].repository_url, null)
-}
-
 output "pipeline_ecr_repository_url" {
   value = aws_ecr_repository.pipeline.repository_url
 }
 
-output "cloudfront_domain_name" {
-  value = try(aws_cloudfront_distribution.web[0].domain_name, null)
-}
-
 output "static_site_domain_name" {
-  value = try(aws_s3_bucket_website_configuration.static_site[0].website_endpoint, null)
+  value = aws_s3_bucket_website_configuration.static_site.website_endpoint
 }
 
 output "static_site_s3_uri" {
-  value = try("s3://${aws_s3_bucket.static_site[0].bucket}", null)
-}
-
-output "alb_dns_name" {
-  value = try(aws_lb.web[0].dns_name, null)
+  value = "s3://${aws_s3_bucket.static_site.bucket}"
 }
 
 output "ecs_cluster_name" {
   value = aws_ecs_cluster.main.name
-}
-
-output "production_alert_topic_arn" {
-  value = try(aws_sns_topic.production_alerts[0].arn, null)
 }
 
 output "publication_marker_s3_uri" {

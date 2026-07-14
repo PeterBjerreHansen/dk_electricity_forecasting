@@ -57,9 +57,11 @@ def test_chronos_failure_publishes_a_labeled_fixed_fallback(tmp_path, monkeypatc
     assert result.forecast_status == "degraded"
     assert result.published_model == "weighted_median_v1"
     predictions = pd.read_parquet(result.paths["predictions"])
+    diagnostics = pd.read_parquet(result.paths["diagnostic_predictions"])
     assert predictions["requested_model"].eq("chronos_weather").all()
     assert predictions["forecast_status"].eq("degraded").all()
     assert predictions["model_release_id"].eq("weighted_median_v1").all()
+    assert "weighted_median_v1" in set(diagnostics["model_label"])
     manifest = json.loads(result.paths["manifest"].read_text(encoding="utf-8"))
     pointer = json.loads(result.paths["latest_pointer"].read_text(encoding="utf-8"))
     assert manifest["primary_failure"] == {

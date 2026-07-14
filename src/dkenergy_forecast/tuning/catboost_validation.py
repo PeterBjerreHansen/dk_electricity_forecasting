@@ -1298,13 +1298,6 @@ def validate_operation_config(config: CatBoostValidationConfig) -> None:
         raise ValueError("training_origin_days must be positive when provided")
 
 
-def safe_label(value: str) -> str:
-    return "".join(
-        character if character.isalnum() or character in {"-", "_"} else "_"
-        for character in value
-    )
-
-
 def json_safe_json(value: dict[str, Any]) -> str:
     return json.dumps(json_safe(value), indent=2, sort_keys=True) + "\n"
 
