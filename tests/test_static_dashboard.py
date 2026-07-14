@@ -248,9 +248,7 @@ def test_static_dashboard_accepts_a_point_only_fallback_forecast() -> None:
     assert _embedded_data(html)["outlook"]["DK1"]["show_interval"] is False
 
 
-def test_static_dashboard_removes_unhelpful_summary_cards_and_aligns_separator() -> (
-    None
-):
+def test_static_dashboard_keeps_the_outlook_focused_and_marks_timing() -> None:
     html = build_static_dashboard(
         _payload(),
         history_predictions=_delivery_rows("2026-07-01", with_actual=True),
@@ -259,5 +257,8 @@ def test_static_dashboard_removes_unhelpful_summary_cards_and_aligns_separator()
     assert "Forecast avg · DKK/MWh" not in html
     assert "Forecast min · DKK/MWh" not in html
     assert "Forecast max · DKK/MWh" not in html
-    assert "Previous MAE · DKK/MWh" in html
+    assert "Previous MAE · DKK/MWh" not in html
     assert "scale.x(evaluated.length-1)" in html
+    assert "Forecast made" in html
+    assert 'shiftedPolyline(rows,"y_pred",0,scale)' in html
+    assert 'shiftedPolyline(forecast,"y_pred",evaluated.length,scale)' not in html

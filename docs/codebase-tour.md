@@ -297,9 +297,9 @@ sessions.
 The page shows:
 
 - the last evaluated production day flowing into tomorrow’s forecast;
+- separate markers for when the forecast was made and when its delivery begins;
 - uncertainty on both sides of the separator only when a complete interval is
   available on both sides;
-- the preceding day’s MAE;
 - up to 30 evaluated days for Chronos and each baseline;
 - MAE, RMSE, bias, and interval coverage where relevant;
 - run provenance and hourly forecast values.

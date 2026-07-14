@@ -477,7 +477,6 @@ _TEMPLATE = r"""<!doctype html>
     .lede, .muted { color: var(--muted); }
     .lede { margin: 0; font-size: 1rem; }
     .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 24px 0; }
-    #forecast-metrics { grid-template-columns: minmax(220px, 280px); }
     .metric, .panel { border: 1px solid var(--line); background: var(--card); box-shadow: var(--shadow); }
     .metric { min-height: 104px; padding: 18px; border-radius: 14px; }
     .metric.compact { min-height: 88px; box-shadow: none; }
@@ -536,7 +535,6 @@ _TEMPLATE = r"""<!doctype html>
         <span id="forecast-legend"><i class="swatch" style="background:var(--forecast)"></i>Production forecast</span>
         <span id="interval-legend"><i class="swatch" style="height:10px;background:var(--band)"></i>10–90% interval</span>
       </div>
-      <div id="forecast-metrics" class="metrics"></div>
     </section>
     <div class="section-head"><h2>Recent model performance</h2></div>
     <section id="performance" class="performance"></section>
@@ -655,8 +653,11 @@ _TEMPLATE = r"""<!doctype html>
       const labels = rows.map((row,index) => index % 6 === 0 ? `<text x="${scale.x(index)}" y="${height-20}" text-anchor="middle" transform="rotate(-30 ${scale.x(index)} ${height-20})" fill="#667085" font-size="11">${esc(localHour(row.ds_utc))}</text>` : "").join("");
       const boundaryX = evaluated.length ? scale.x(evaluated.length-1) : null;
       const separator = boundaryX === null ? "" : `<line x1="${boundaryX}" x2="${boundaryX}" y1="${padding.top}" y2="${height-padding.bottom}" stroke="#7d8799" stroke-width="1.5" stroke-dasharray="6 5"/><text x="${boundaryX+8}" y="${padding.top+15}" fill="#667085" font-size="12">Forecast begins</text>`;
+      const originIndex = run.forecast_origin_utc ? (new Date(run.forecast_origin_utc) - new Date(rows[0].ds_utc)) / 3600000 : null;
+      const originX = Number.isFinite(originIndex) && originIndex >= 0 && originIndex <= evaluated.length-1 ? scale.x(originIndex) : null;
+      const originMarker = originX === null ? "" : `<line x1="${originX}" x2="${originX}" y1="${padding.top}" y2="${height-padding.bottom}" stroke="#98a2b3" stroke-width="1.25" stroke-dasharray="2 5"/><text x="${originX+8}" y="${padding.top+15}" fill="#7d8799" font-size="12">Forecast made</text>`;
       document.getElementById("interval-legend").hidden = !showInterval;
-      return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(selectedArea)} evaluated and forecast prices">${gridSvg(scale,width,height,padding)}${bands}<polyline points="${shiftedPolyline(evaluated,"y_pred",0,scale)}" fill="none" stroke="#d97706" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><polyline points="${shiftedPolyline(forecast,"y_pred",evaluated.length,scale)}" fill="none" stroke="#d97706" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><polyline points="${shiftedPolyline(evaluated,"actual",0,scale)}" fill="none" stroke="#172b4d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>${separator}${labels}<text x="18" y="${height/2}" transform="rotate(-90 18 ${height/2})" text-anchor="middle" fill="#667085" font-size="12">DKK / MWh</text></svg>`;
+      return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(selectedArea)} evaluated and forecast prices">${gridSvg(scale,width,height,padding)}${bands}<polyline points="${shiftedPolyline(rows,"y_pred",0,scale)}" fill="none" stroke="#d97706" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><polyline points="${shiftedPolyline(evaluated,"actual",0,scale)}" fill="none" stroke="#172b4d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>${originMarker}${separator}${labels}<text x="18" y="${height/2}" transform="rotate(-90 18 ${height/2})" text-anchor="middle" fill="#667085" font-size="12">DKK / MWh</text></svg>`;
     }
 
     function performanceSvg(rows) {
@@ -701,9 +702,6 @@ _TEMPLATE = r"""<!doctype html>
       const generated = run.created_at_utc || run.generated_at_utc || DATA.generated_at_utc;
       metricCards("top-metrics", [["Evaluated day", deliveryLabel(evaluatedDate)],["Forecast day",deliveryLabel(forecastDate)],["Production model",productionName],["Generated · UTC",utcDateLabel(generated)]]);
       document.getElementById("hero-chart").innerHTML = heroSvg(evaluated, forecast, showInterval);
-      const errors = evaluated.map(row => Number(row.y_pred) - actual(row));
-      const mae = errors.length ? errors.reduce((sum,value) => sum + Math.abs(value), 0) / errors.length : null;
-      metricCards("forecast-metrics", [["Previous MAE · DKK/MWh",number(mae)]], true);
       modelHistory();
       document.getElementById("forecast-table").innerHTML = forecast.map(row => `<tr><td>${esc(localHour(row.ds_utc))}</td><td>${number(row.y_pred)}</td><td>${number(row.q10)}</td><td>${number(row.q50)}</td><td>${number(row.q90)}</td></tr>`).join("");
       const origin = run.forecast_origin_utc ? `${dateLabel(run.forecast_origin_utc)} ${shortHour(run.forecast_origin_utc)}` : "—";
