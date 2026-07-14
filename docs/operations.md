@@ -18,7 +18,8 @@ latest.json
 dashboard/forecast_history.parquet
 ```
 
-The public site bucket should contain a new version of `index.html`.
+The private site bucket should contain a new version of `index.html`; CloudFront
+should serve it over HTTPS within the five-minute cache lifetime.
 
 ## Quick health check
 
@@ -57,6 +58,14 @@ aws s3api head-object \
 
 Confirm that the delivery date is tomorrow in Copenhagen, the run status is
 completed, and `ContentType` is `text/html; charset=utf-8`.
+
+Confirm the public page independently:
+
+```bash
+curl --fail --silent --show-error \
+  "$(terraform -chdir=infra/aws output -raw static_site_url)" \
+  >/dev/null
+```
 
 ## Failure interpretation
 
@@ -123,6 +132,15 @@ aws s3 cp build/static-dashboard/index.html \
 
 S3 versioning preserves the previous page.
 
+CloudFront normally refreshes within five minutes. For an immediate manual
+cutover, invalidate both public paths:
+
+```bash
+aws cloudfront create-invalidation \
+  --distribution-id "$(terraform -chdir=infra/aws output -raw static_site_cloudfront_distribution_id)" \
+  --paths / /index.html
+```
+
 ## Disable and re-enable automation
 
 Apply Terraform with `enable_pipeline_schedule=false` to stop future daily
@@ -140,6 +158,10 @@ successfully.
 6. Apply Terraform with the schedule enabled.
 
 Never deploy uncommitted source under an unrelated image tag.
+
+The GitHub Production Deploy workflow follows the same sequence using OIDC.
+Its AWS trust is restricted to the repository's `production` environment and
+does not use stored AWS access keys.
 
 ## Model changes
 

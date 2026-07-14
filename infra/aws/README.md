@@ -4,7 +4,8 @@ This directory contains one static-first production stack:
 
 - private S3 storage for data state, immutable forecast runs, dashboard history,
   and the Chronos LoRA artifact;
-- a public S3 website containing one generated `index.html`;
+- a private S3 origin containing one generated `index.html`;
+- CloudFront for HTTPS, compression, and five-minute edge caching;
 - ECR for one pipeline image;
 - ECS/Fargate for a short-lived daily task;
 - CloudWatch logs;
@@ -93,18 +94,20 @@ aws ecs run-task \
 
 Watch `/ecs/dk-energy-forecasts-production/pipeline` in CloudWatch. A successful
 task exits with code zero after uploading the immutable run, `latest.json`, the
-private dashboard history, and public `index.html`.
+private dashboard history, and the site `index.html`.
 
 ## Static site
 
-The site bucket is always part of this stack. Its website endpoint is:
+The site bucket is private and readable only by the CloudFront distribution.
+The public HTTPS URL is:
 
 ```bash
-terraform -chdir=infra/aws output -raw static_site_domain_name
+terraform -chdir=infra/aws output -raw static_site_url
 ```
 
-The bucket is versioned for simple rollback. Public read access and the pipeline
-task's write access are both restricted to `index.html`.
+The bucket is versioned for simple rollback. CloudFront and the pipeline task
+can access only `index.html`. CloudFront redirects HTTP to HTTPS, compresses the
+page with Gzip or Brotli, and caches it for at most five minutes.
 
 For a manual local page replacement:
 
@@ -116,14 +119,27 @@ aws s3 cp build/static-dashboard/index.html \
   --region "$AWS_REGION"
 ```
 
-The S3 website endpoint is HTTP-only. HTTPS with CloudFront and a private origin
-is intentionally deferred until the daily product is stable.
+After a manual replacement, wait at most five minutes or invalidate `/` and
+`/index.html` using the `static_site_cloudfront_distribution_id` output.
+
+## GitHub deployment identity
+
+Terraform creates a GitHub Actions OIDC provider and deploy role. Its trust
+policy accepts tokens only from this repository's `production` environment, so
+GitHub does not store a long-lived AWS access key. The role has PowerUser access
+for project resources plus narrowly scoped IAM permissions for the runtime
+roles; it cannot modify its own trust or permissions.
+
+Store `github_deploy_role_arn` as the production environment secret
+`AWS_DEPLOY_ROLE_ARN`. Store the Terraform-state bucket as `TF_STATE_BUCKET` and
+set `ENABLE_PIPELINE_SCHEDULE=true` before running the manual Production Deploy
+workflow.
 
 ## Permissions
 
 The task may read the private project prefix. It may write only runtime state,
 forecast runs, published-history outputs, the dashboard history, and pointers.
-The model prefix is read-only. In the public bucket it may write only
+The model prefix is read-only. In the site bucket it may write only
 `index.html`.
 
 ## Schedule

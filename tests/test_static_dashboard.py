@@ -97,9 +97,11 @@ def test_static_dashboard_is_self_contained_and_omits_private_fields() -> None:
     html = build_static_dashboard(_payload())
 
     assert html.startswith("<!doctype html>")
+    assert "<title>Danish Electricity Price Forecasts</title>" in html
     assert "replay_demo" in html
     assert "chronos_weather" in html
-    assert "https://" not in html
+    assert "https://github.com/PeterBjerreHansen/dk_electricity_forecasting" in html
+    assert "<script src=" not in html
     assert "/var/lib/private" not in html
     assert "const DATA" in html
 

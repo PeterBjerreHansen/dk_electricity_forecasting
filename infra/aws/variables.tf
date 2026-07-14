@@ -34,6 +34,18 @@ variable "static_site_bucket_name" {
   default     = ""
 }
 
+variable "github_repository" {
+  type        = string
+  description = "GitHub repository allowed to assume the production deployment role."
+  default     = "PeterBjerreHansen/dk_electricity_forecasting"
+}
+
+variable "github_environment" {
+  type        = string
+  description = "GitHub environment allowed to assume the production deployment role."
+  default     = "production"
+}
+
 variable "pipeline_image_uri" {
   type        = string
   description = "Immutable container image URI for the forecast task."

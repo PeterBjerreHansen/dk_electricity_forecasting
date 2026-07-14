@@ -57,7 +57,7 @@ PREDICTION_FIELDS = (
 def build_static_dashboard(
     payload: Mapping[str, Any],
     *,
-    title: str = "Danish Electricity Forecasts",
+    title: str = "Danish Electricity Price Forecasts",
     history_predictions: Iterable[Mapping[str, Any]] | None = None,
 ) -> str:
     public_payload = _public_payload(payload, history_predictions=history_predictions)
@@ -453,6 +453,7 @@ _TEMPLATE = r"""<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
+  <meta name="description" content="Daily day-ahead electricity price forecasts for the Danish DK1 and DK2 bidding zones.">
   <title>__TITLE_HTML__</title>
   <style>
     :root {
@@ -507,6 +508,8 @@ _TEMPLATE = r"""<!doctype html>
     th:first-child, td:first-child { text-align: left; }
     th { color: var(--muted); font-size: .7rem; letter-spacing: .05em; text-transform: uppercase; }
     footer { margin-top: 28px; color: var(--muted); font-size: .82rem; line-height: 1.6; }
+    footer a { color: var(--ink); text-decoration-color: var(--line); text-underline-offset: 3px; }
+    footer a:hover { text-decoration-color: var(--ink); }
     code { padding: .1rem .3rem; border-radius: 5px; background: #eef1f5; }
     @media (max-width: 820px) {
       main { padding-top: 30px; }
@@ -549,6 +552,7 @@ _TEMPLATE = r"""<!doctype html>
       <div class="table-wrap"><table><thead><tr><th>Local hour</th><th>Forecast</th><th>p10</th><th>p50</th><th>p90</th></tr></thead><tbody id="forecast-table"></tbody></table></div>
       <footer id="provenance"></footer>
     </details>
+    <footer>Source code, methodology, and model documentation are available on <a href="https://github.com/PeterBjerreHansen/dk_electricity_forecasting">GitHub</a>.</footer>
   </main>
   <script>
     const PAGE_TITLE = __TITLE_JSON__;

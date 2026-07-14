@@ -1,4 +1,4 @@
-# Danish electricity forecasts
+# Danish electricity price forecasts
 
 This project produces daily day-ahead electricity-price forecasts for the DK1
 and DK2 bidding zones. The production model is a weather-aware Chronos-2 model
@@ -16,7 +16,10 @@ one short-lived ECS/Fargate task
                     │
           ┌─────────┴─────────┐
           ▼                   ▼
-private S3 artifacts     public S3 index.html
+private S3 artifacts     private S3 index.html
+                                  │
+                                  ▼
+                         CloudFront HTTPS page
 ```
 
 There is no continuously running web server, load balancer, model-promotion
@@ -164,9 +167,10 @@ dependencies, non-root user, and Git revision are pinned or verified.
 
 ## AWS in one paragraph
 
-Terraform creates a private versioned artifact bucket, a public versioned S3
-website bucket, one ECR repository, one ECS cluster/task definition, a small
-public VPC, CloudWatch logs, and—when enabled—one EventBridge schedule. The task
-has read access to the private artifact prefix, narrowly scoped write access to
-runtime outputs, and permission to replace only the public `index.html`. See
+Terraform creates private versioned artifact and site buckets, one CloudFront
+HTTPS distribution, one ECR repository, one ECS cluster/task definition, a
+small public VPC, CloudWatch logs, and—when enabled—one EventBridge schedule.
+The task has read access to the private artifact prefix, narrowly scoped write
+access to runtime outputs, and permission to replace only the site
+`index.html`. See
 [infra/aws/README.md](infra/aws/README.md) for exact commands.

@@ -331,7 +331,8 @@ the browser receives the correct content type and short cache lifetime.
 Terraform creates:
 
 - one private, encrypted, versioned artifact bucket;
-- one public, encrypted, versioned S3 website bucket containing `index.html`;
+- one private, encrypted, versioned S3 origin containing `index.html`;
+- one CloudFront distribution providing HTTPS, compression, and short caching;
 - one ECR repository retaining five recent images;
 - one ECS cluster and Fargate task definition;
 - two public subnets, an internet gateway, and an outbound-only task security
@@ -339,15 +340,14 @@ Terraform creates:
 - one 14-day CloudWatch log group;
 - optionally, one EventBridge Scheduler rule at 10:00 Europe/Copenhagen.
 
-There is deliberately no Streamlit service, ALB, CloudFront distribution,
-Lambda renderer, database, automatic tuning job, or model-promotion service.
-HTTPS through CloudFront with a private origin is a reasonable later addition,
-but it is not needed to validate the product.
+There is deliberately no Streamlit service, ALB, Lambda renderer, database,
+automatic tuning job, or model-promotion service. CloudFront is a delivery
+layer, not an application server: the page remains one generated static file.
 
 The task role may read the private project prefix. Its writes are limited to
 runtime state, forecast runs, dashboard history, and pointers; it cannot
-overwrite the model artifact. In the public bucket it may replace only
-`index.html`.
+overwrite the model artifact. In the site bucket it may replace only
+`index.html`. Visitors can read that file only through CloudFront.
 
 ## 14. Tests and what they protect
 

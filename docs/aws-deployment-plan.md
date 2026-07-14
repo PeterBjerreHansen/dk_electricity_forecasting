@@ -15,13 +15,15 @@ one HTML file, uploads it, and exits.
 flowchart LR
     S["EventBridge Scheduler"] --> F["one Fargate task"]
     F --> A["private S3 artifacts"]
-    F --> H["public S3 index.html"]
+    F --> H["private S3 index.html"]
+    H --> C["CloudFront HTTPS page"]
     F --> L["CloudWatch logs"]
 ```
 
 This is the smallest architecture that automates the real product. It avoids an
-always-on Streamlit process, ALB, CloudFront, database, automatic retraining,
-load balancing, and model promotion.
+always-on Streamlit process, ALB, database, automatic retraining, load
+balancing, and model promotion. CloudFront only delivers the generated static
+file.
 
 ## Stage 0 — local and account foundations
 
@@ -42,14 +44,15 @@ daily CLI work.
 Terraform creates:
 
 - the private artifact bucket;
-- the public static-site bucket;
+- the private static-site origin bucket;
+- the CloudFront HTTPS distribution;
 - the pipeline ECR repository.
 
 Upload the reviewed LoRA artifact to its content-addressed private prefix. Build
 the dashboard locally, seed its private history from existing evaluation
 artifacts, and upload `index.html` manually.
 
-Success means the website endpoint displays the expected DK1/DK2 page and no
+Success means the CloudFront URL displays the expected DK1/DK2 page and no
 compute is running.
 
 ## Stage 2 — manual batch execution
@@ -65,7 +68,7 @@ Verify:
    completion receipt;
 4. `latest.json` points to that run and was uploaded last;
 5. private dashboard history has been refreshed;
-6. public `index.html` was replaced and has the correct content type;
+6. the site `index.html` was replaced and has the correct content type;
 7. Chronos or an explicitly marked degraded fallback is visible.
 
 The static build must also prove that DK1 and DK2 both have their complete
@@ -104,14 +107,14 @@ Only after the daily task is stable, decide whether a second cheap scheduled
 task is useful. Its outputs must remain diagnostic: a scoring failure must not
 alter `latest.json`, the configured model, or the published forecast.
 
-## Stage 5 — HTTPS and a friendly domain
+## Stage 5 — HTTPS and an optional friendly domain
 
-The initial S3 website is public HTTP. When the page is worth sharing more
-broadly, add CloudFront with origin access control in front of a private S3
-origin, then optionally Route 53 and an ACM certificate.
+CloudFront with origin access control now serves the private S3 origin over
+HTTPS and compresses the page. The default CloudFront hostname is the stable
+public URL.
 
-This is a delivery/security improvement, not a forecasting requirement. Add it
-after the batch product is stable.
+Route 53 and an ACM certificate remain optional if a custom domain is wanted
+later. They are presentation choices, not forecasting requirements.
 
 ## Explicitly deferred
 
