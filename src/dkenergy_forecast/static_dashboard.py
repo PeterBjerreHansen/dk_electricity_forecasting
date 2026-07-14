@@ -478,16 +478,12 @@ _TEMPLATE = r"""<!doctype html>
     h2 { margin: 0; font-size: 1.55rem; letter-spacing: -.025em; }
     h3 { margin: 0; font-size: 1.12rem; }
     .lede, .muted { color: var(--muted); }
-    .lede { margin: 0; font-size: 1rem; }
-    .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 24px 0; }
-    .metric, .panel { border: 1px solid var(--line); background: var(--card); box-shadow: var(--shadow); }
-    .metric { min-height: 104px; padding: 18px; border-radius: 14px; }
-    .metric.compact { min-height: 88px; box-shadow: none; }
-    .metric-label { color: var(--muted); font-size: .75rem; font-weight: 700; letter-spacing: .04em; }
-    .metric-value { margin-top: 9px; font-size: 1.75rem; line-height: 1.1; letter-spacing: -.035em; }
+    .lede { margin: 0; font-size: 1.05rem; line-height: 1.6; }
+    .panel { border: 1px solid var(--line); background: var(--card); box-shadow: var(--shadow); }
     .panel { margin-top: 18px; padding: 24px; border-radius: 18px; }
     .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
-    .outlook-explainer { max-width: 860px; margin: -4px 0 18px; color: var(--muted); line-height: 1.55; }
+    .outlook-context { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px 22px; color: var(--muted); font-size: .78rem; }
+    .outlook-context strong { display: block; margin-top: 3px; color: var(--ink); font-size: .92rem; }
     .section-head { margin: 46px 0 16px; }
     .tabs { display: flex; gap: 8px; }
     button { border: 1px solid var(--line); border-radius: 999px; padding: 8px 16px; background: white; color: var(--ink); font: inherit; font-weight: 700; cursor: pointer; }
@@ -514,26 +510,30 @@ _TEMPLATE = r"""<!doctype html>
     code { padding: .1rem .3rem; border-radius: 5px; background: #eef1f5; }
     @media (max-width: 820px) {
       main { padding-top: 30px; }
-      .metrics { grid-template-columns: repeat(2, 1fr); }
       .model-metrics { grid-template-columns: repeat(3, 1fr); }
       .panel { padding: 18px; }
       .panel-head { align-items: flex-start; flex-direction: column; }
+      .outlook-context { justify-content: flex-start; }
     }
-    @media (max-width: 520px) { .metrics, .model-metrics { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 520px) { .model-metrics { grid-template-columns: 1fr 1fr; } }
   </style>
 </head>
 <body>
   <main>
     <header>
       <h1>__TITLE_HTML__</h1>
-      <p class="lede">Day-ahead electricity-price forecasts for DK1 and DK2</p>
+      <p class="lede">Electricity is traded one day ahead, with a separate market price for every delivery hour. Each morning, before the day-ahead auction, this page produces and displays a new forecast for tomorrow and logs performance over the past 30 days for a battery of forecasting models.</p>
       <div id="notice" class="notice" hidden></div>
     </header>
     <div id="area-tabs" class="tabs" aria-label="Price area"></div>
-    <section id="top-metrics" class="metrics" aria-label="Forecast status"></section>
     <section class="panel">
-      <div class="panel-head"><h2 id="outlook-title">Latest outlook</h2></div>
-      <p class="outlook-explainer"><strong>How to read this chart.</strong> Electricity is traded one day ahead, with a separate market price for every delivery hour. Each morning, before the day-ahead auction, this system produces a new forecast for tomorrow. Amber shows the previous forecast against today’s official prices; teal shows the new forecast for tomorrow.</p>
+      <div class="panel-head">
+        <h2 id="outlook-title">Latest outlook</h2>
+        <div class="outlook-context" aria-label="Forecast context">
+          <span>Forecast day<strong id="outlook-date"></strong></span>
+          <span>Production model<strong id="outlook-model"></strong></span>
+        </div>
+      </div>
       <div id="hero-chart" class="chart-wrap"></div>
       <div class="legend">
         <span><i class="swatch" style="background:var(--actual)"></i>Official day-ahead price</span>
@@ -559,8 +559,12 @@ _TEMPLATE = r"""<!doctype html>
     const localHour = value => new Intl.DateTimeFormat("en-GB", {timeZone:"Europe/Copenhagen", weekday:"short", day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit", hour12:false}).format(new Date(value));
     const shortHour = value => new Intl.DateTimeFormat("en-GB", {timeZone:"Europe/Copenhagen", hour:"2-digit", minute:"2-digit", hour12:false}).format(new Date(value));
     const dateLabel = value => value ? new Intl.DateTimeFormat("en-GB", {timeZone:"Europe/Copenhagen", day:"2-digit", month:"short", year:"numeric"}).format(new Date(value)) : "—";
-    const utcDateLabel = value => value ? new Intl.DateTimeFormat("en-GB", {timeZone:"UTC", day:"2-digit", month:"short"}).format(new Date(value)) : "—";
     const deliveryLabel = value => value ? new Intl.DateTimeFormat("en-GB", {timeZone:"UTC", day:"2-digit", month:"short", year:"numeric"}).format(new Date(`${value}T12:00:00Z`)) : "—";
+    const markerDateTime = value => {
+      if (!value) return "—";
+      const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {timeZone:"Europe/Copenhagen", weekday:"short", day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit", hour12:false}).formatToParts(new Date(value)).map(part => [part.type, part.value]));
+      return `${parts.hour}:${parts.minute} ${parts.weekday} ${parts.day} ${parts.month} ${parts.year}`;
+    };
     const deliveryDate = row => {
       if (row.local_date) return String(row.local_date);
       const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {timeZone:"Europe/Copenhagen", year:"numeric", month:"2-digit", day:"2-digit"}).formatToParts(new Date(row.ds_utc)).map(part => [part.type, part.value]));
@@ -602,11 +606,10 @@ _TEMPLATE = r"""<!doctype html>
 
     function heroData() {
       const outlook = DATA.outlook?.[selectedArea];
-      if (!outlook) return {evaluated:[], forecast:[], evaluatedDate:null, forecastDate:null, showInterval:false};
+      if (!outlook) return {evaluated:[], forecast:[], forecastDate:null, showInterval:false};
       return {
         evaluated: outlook.evaluated || [],
         forecast: outlook.forecast || [],
-        evaluatedDate: outlook.evaluated_date || null,
         forecastDate: outlook.forecast_date || null,
         showInterval: Boolean(outlook.show_interval),
       };
@@ -671,10 +674,11 @@ _TEMPLATE = r"""<!doctype html>
       const bands = showInterval ? intervalBand(evaluated,0,scale,"#f6c679") + intervalBand(newForecast,newForecastOffset,scale,"#5eead4") : "";
       const labels = rows.map((row,index) => index % 6 === 0 ? `<text x="${scale.x(index)}" y="${height-20}" text-anchor="middle" transform="rotate(-30 ${scale.x(index)} ${height-20})" fill="#667085" font-size="11">${esc(localHour(row.ds_utc))}</text>` : "").join("");
       const boundaryX = evaluated.length ? scale.x(evaluated.length-1) : null;
-      const separator = boundaryX === null ? "" : `<line x1="${boundaryX}" x2="${boundaryX}" y1="${padding.top}" y2="${height-padding.bottom}" stroke="#7d8799" stroke-width="1.5" stroke-dasharray="6 5"/><text x="${boundaryX+8}" y="${padding.top+15}" fill="#667085" font-size="12">New forecast begins</text>`;
+      const forecastBegins = forecast[0]?.ds_utc;
+      const separator = boundaryX === null ? "" : `<line x1="${boundaryX}" x2="${boundaryX}" y1="${padding.top}" y2="${height-padding.bottom}" stroke="#7d8799" stroke-width="1.5" stroke-dasharray="6 5"/><text x="${boundaryX+8}" y="${padding.top+14}" fill="#667085" font-size="12" font-weight="700">New forecast begins</text><text x="${boundaryX+8}" y="${padding.top+30}" fill="#7d8799" font-size="10">${esc(markerDateTime(forecastBegins))}</text>`;
       const originIndex = run.forecast_origin_utc ? (new Date(run.forecast_origin_utc) - new Date(rows[0].ds_utc)) / 3600000 : null;
       const originX = Number.isFinite(originIndex) && originIndex >= 0 && originIndex <= evaluated.length-1 ? scale.x(originIndex) : null;
-      const originMarker = originX === null ? "" : `<line x1="${originX}" x2="${originX}" y1="${padding.top}" y2="${height-padding.bottom}" stroke="#7d8799" stroke-width="1.5" stroke-dasharray="6 5"/><text x="${originX+8}" y="${padding.top+15}" fill="#667085" font-size="12">New forecast made</text>`;
+      const originMarker = originX === null ? "" : `<line x1="${originX}" x2="${originX}" y1="${padding.top}" y2="${height-padding.bottom}" stroke="#7d8799" stroke-width="1.5" stroke-dasharray="6 5"/><text x="${originX+8}" y="${padding.top+14}" fill="#667085" font-size="12" font-weight="700">New forecast made</text><text x="${originX+8}" y="${padding.top+30}" fill="#7d8799" font-size="10">${esc(markerDateTime(run.forecast_origin_utc))}</text>`;
       document.getElementById("interval-legend").hidden = !showInterval;
       return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(selectedArea)} evaluated and forecast prices">${gridSvg(scale,width,height,padding)}${bands}<polyline points="${shiftedPolyline(evaluated,"y_pred",0,scale)}" fill="none" stroke="#d97706" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><polyline points="${shiftedPolyline(newForecast,"y_pred",newForecastOffset,scale)}" fill="none" stroke="#0f766e" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><polyline points="${shiftedPolyline(evaluated,"actual",0,scale)}" fill="none" stroke="#172b4d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>${originMarker}${separator}${labels}<text x="18" y="${height/2}" transform="rotate(-90 18 ${height/2})" text-anchor="middle" fill="#667085" font-size="12">DKK / MWh</text></svg>`;
     }
@@ -710,16 +714,12 @@ _TEMPLATE = r"""<!doctype html>
       }).join("");
     }
 
-    function metricCards(target, values, compact=false) {
-      document.getElementById(target).innerHTML = values.map(([label,value]) => `<article class="metric ${compact ? "compact" : ""}"><div class="metric-label">${esc(label)}</div><div class="metric-value">${esc(value)}</div></article>`).join("");
-    }
-
     function render() {
       renderTabs();
-      const {evaluated, forecast, evaluatedDate, forecastDate, showInterval} = heroData();
+      const {evaluated, forecast, forecastDate, showInterval} = heroData();
       document.getElementById("outlook-title").textContent = `Latest outlook · ${selectedArea}`;
-      const generated = run.created_at_utc || run.generated_at_utc || DATA.generated_at_utc;
-      metricCards("top-metrics", [["Evaluated day", deliveryLabel(evaluatedDate)],["Forecast day",deliveryLabel(forecastDate)],["Production model",productionName],["Generated · UTC",utcDateLabel(generated)]]);
+      document.getElementById("outlook-date").textContent = deliveryLabel(forecastDate);
+      document.getElementById("outlook-model").textContent = productionName;
       document.getElementById("hero-chart").innerHTML = heroSvg(evaluated, forecast, showInterval);
       modelHistory();
       document.getElementById("forecast-table").innerHTML = forecast.map(row => `<tr><td>${esc(localHour(row.ds_utc))}</td><td>${number(row.y_pred)}</td><td>${number(row.q10)}</td><td>${number(row.q50)}</td><td>${number(row.q90)}</td></tr>`).join("");

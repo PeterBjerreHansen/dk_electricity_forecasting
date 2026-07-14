@@ -263,7 +263,13 @@ def test_static_dashboard_keeps_the_outlook_focused_and_marks_timing() -> None:
     assert "New forecast begins" in html
     assert "Previous forecast · today" in html
     assert "New forecast · tomorrow" in html
-    assert "before the day-ahead auction" in html
+    assert "logs performance over the past 30 days" in html
+    assert "How to read this chart" not in html
+    assert 'id="top-metrics"' not in html
+    assert 'id="outlook-date"' in html
+    assert 'id="outlook-model"' in html
+    assert "markerDateTime(run.forecast_origin_utc)" in html
+    assert "markerDateTime(forecastBegins)" in html
     assert 'intervalBand(newForecast,newForecastOffset,scale,"#5eead4")' in html
     assert 'shiftedPolyline(newForecast,"y_pred",newForecastOffset,scale)' in html
     assert "stroke-dasharray=\"2 5\"" not in html
