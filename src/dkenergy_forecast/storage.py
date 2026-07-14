@@ -68,8 +68,10 @@ class ArtifactStore:
                 return bool(self._list_s3_keys(remote_key))
             _s3_client().head_object(Bucket=self.root.bucket, Key=remote_key)
             return True
-        except Exception:  # pragma: no cover - exercised with real AWS only
-            return False
+        except Exception as exc:  # pragma: no cover - exercised with real AWS only
+            if _is_s3_not_found(exc):
+                return False
+            raise
 
     def download_prefix(
         self,
@@ -107,7 +109,13 @@ class ArtifactStore:
             written.append(output)
         return written
 
-    def upload_prefix(self, source: str | Path, prefix: str) -> list[str]:
+    def upload_prefix(
+        self,
+        source: str | Path,
+        prefix: str,
+        *,
+        skip_existing: bool = False,
+    ) -> list[str]:
         source_path = Path(source)
         if not source_path.exists():
             return []
@@ -115,6 +123,8 @@ class ArtifactStore:
         for path in _iter_files(source_path):
             relative = path.relative_to(source_path).as_posix()
             key = _join_key(prefix, relative)
+            if skip_existing and self.exists(key):
+                continue
             self.upload_file(path, key)
             uploaded.append(key)
         return uploaded
@@ -141,8 +151,12 @@ class ArtifactStore:
         try:
             _s3_client().download_file(self.root.bucket, remote_key, str(destination_path))
         except Exception as exc:  # pragma: no cover - exercised with real AWS only
+            if not _is_s3_not_found(exc):
+                raise
             if required:
-                raise FileNotFoundError(f"Missing S3 artifact: {self.uri_for(key)}") from exc
+                raise FileNotFoundError(
+                    f"Missing S3 artifact: {self.uri_for(key)}"
+                ) from exc
         return destination_path
 
     def upload_file(
@@ -221,6 +235,16 @@ def _iter_files(path: Path) -> Iterable[Path]:
 
 def _join_key(*parts: str) -> str:
     return "/".join(part.strip("/") for part in parts if part and part.strip("/"))
+
+
+def _is_s3_not_found(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return False
+    error = response.get("Error")
+    if not isinstance(error, dict):
+        return False
+    return str(error.get("Code")) in {"404", "NoSuchKey", "NotFound"}
 
 
 def _s3_client():

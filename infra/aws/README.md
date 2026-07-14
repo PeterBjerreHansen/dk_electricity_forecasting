@@ -55,8 +55,10 @@ terraform -chdir=infra/aws plan \
 terraform -chdir=infra/aws apply deploy.tfplan
 ```
 
-Keep the schedule disabled for an infrastructure/image change until one manual
-task succeeds. Then plan and apply only `enable_pipeline_schedule=true`.
+For routine revisions, keep the already-proven schedule enabled. Use `false`
+for first-time commissioning, a new model release, a central data or
+infrastructure change, or failure investigation; run one manual task before
+re-enabling it.
 
 ## Build and push the image
 
@@ -126,14 +128,16 @@ After a manual replacement, wait at most five minutes or invalidate `/` and
 
 Terraform creates a GitHub Actions OIDC provider and deploy role. Its trust
 policy accepts tokens only from this repository's `production` environment, so
-GitHub does not store a long-lived AWS access key. The role has PowerUser access
-for project resources plus narrowly scoped IAM permissions for the runtime
-roles; it cannot modify its own trust or permissions.
+GitHub does not store a long-lived AWS access key. The role has broad non-IAM
+PowerUser access in this project-only account plus narrowly scoped IAM
+permissions for the runtime roles; it cannot modify its own trust or
+permissions.
 
 Store `github_deploy_role_arn` as the production environment secret
-`AWS_DEPLOY_ROLE_ARN`. Store the Terraform-state bucket as `TF_STATE_BUCKET` and
-set `ENABLE_PIPELINE_SCHEDULE=true` before running the manual Production Deploy
-workflow.
+`AWS_DEPLOY_ROLE_ARN` and the Terraform-state bucket as `TF_STATE_BUCKET`. The
+manual Production Deploy workflow exposes a boolean schedule input that
+defaults to enabled. Its broad non-IAM deployment role is acceptable only while
+this AWS account remains dedicated to the project.
 
 ## Permissions
 
@@ -146,5 +150,4 @@ The model prefix is read-only. In the site bucket it may write only
 
 The default expression is `cron(0 10 * * ? *)` with timezone
 `Europe/Copenhagen`. EventBridge Scheduler handles the timezone, including DST.
-Set `enable_pipeline_schedule=true` only after a manual task with the exact
-deployed revision succeeds.
+Pause it explicitly for high-risk changes; routine revisions leave it enabled.

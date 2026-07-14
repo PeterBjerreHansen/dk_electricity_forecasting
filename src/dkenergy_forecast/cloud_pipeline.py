@@ -35,10 +35,12 @@ STATE_DOWNLOAD_PREFIXES = (
     "state/data/model_ready",
     "state/data/features",
 )
-STATE_UPLOAD_PREFIXES = (
+MUTABLE_STATE_UPLOAD_PREFIXES = (
     ("data/model_ready", "state/data/model_ready"),
     ("data/features", "state/data/features"),
     ("data/normalized", "state/data/normalized"),
+)
+APPEND_ONLY_STATE_UPLOAD_PREFIXES = (
     ("data/raw/energi_data_service", "state/data/raw/energi_data_service"),
     ("data/raw/open_meteo", "state/data/raw/open_meteo"),
 )
@@ -187,8 +189,18 @@ def _upload_runtime_outputs(
 ) -> list[str]:
     paths = runtime_layout(workdir)
     uploaded: list[str] = []
-    for source_relative, destination_prefix in STATE_UPLOAD_PREFIXES:
-        uploaded.extend(store.upload_prefix(workdir / source_relative, destination_prefix))
+    for source_relative, destination_prefix in MUTABLE_STATE_UPLOAD_PREFIXES:
+        uploaded.extend(
+            store.upload_prefix(workdir / source_relative, destination_prefix)
+        )
+    for source_relative, destination_prefix in APPEND_ONLY_STATE_UPLOAD_PREFIXES:
+        uploaded.extend(
+            store.upload_prefix(
+                workdir / source_relative,
+                destination_prefix,
+                skip_existing=True,
+            )
+        )
 
     for source, key in _latest_data_artifacts(workdir):
         _require_output(source)

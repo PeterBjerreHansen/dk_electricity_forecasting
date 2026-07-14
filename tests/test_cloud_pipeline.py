@@ -78,6 +78,9 @@ def test_cloud_pipeline_syncs_state_runs_daily_and_uploads_latest_last(
         workdir / "artifacts" / "forecast_runs" / "previous_run" / "predictions.parquet"
     ).exists()
     assert not (workdir / "data" / "raw" / "old.json").exists()
+    assert (
+        "state/data/raw/energi_data_service/seed/batch.json" not in uploaded
+    )
     assert "forecast_runs/run_1/manifest.json" in uploaded
     assert "forecast_runs/run_1/COMPLETED.json" in uploaded
     assert uploaded[-1] == "latest.json"

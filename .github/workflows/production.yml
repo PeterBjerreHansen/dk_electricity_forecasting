@@ -2,6 +2,12 @@ name: Production Deploy
 
 on:
   workflow_dispatch:
+    inputs:
+      enable_pipeline_schedule:
+        description: Keep the proven daily forecast schedule enabled
+        required: true
+        default: true
+        type: boolean
 
 concurrency:
   group: production-deploy
@@ -13,7 +19,7 @@ permissions:
 
 env:
   AWS_REGION: eu-central-1
-  ENABLE_PIPELINE_SCHEDULE: ${{ vars.ENABLE_PIPELINE_SCHEDULE || 'true' }}
+  ENABLE_PIPELINE_SCHEDULE: ${{ inputs.enable_pipeline_schedule }}
 
 jobs:
   deploy:
@@ -89,7 +95,6 @@ jobs:
           echo "pipeline_image_uri=$PIPELINE_IMAGE_URI" >> "$GITHUB_OUTPUT"
 
       - name: Validate deployed Chronos artifact contract
-        if: env.ENABLE_PIPELINE_SCHEDULE == 'true'
         env:
           PIPELINE_IMAGE_URI: ${{ steps.images.outputs.pipeline_image_uri }}
         run: |

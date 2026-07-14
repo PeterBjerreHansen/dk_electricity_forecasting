@@ -58,19 +58,39 @@ def render_model_comparison_markdown(report: dict[str, Any]) -> str:
             f"`{_escape(reference)}` on `{interval['timestamp_column']}` in "
             f"`[{interval['start_utc']}, {interval['end_utc']})`."
         ),
-        "",
-        (
-            f"The comparison contains {pairing['paired_rows']} exactly paired rows "
-            f"across {pairing['origin_count']} forecast origins. Differences are "
-            "comparison minus reference; negative differences favor the comparison "
-            "for error and scoring metrics."
-        ),
-        "",
-        "## Overall metrics",
-        "",
-        "| Role | Model | MAE | RMSE | Bias | WIS | Calibration error | 80% coverage |",
-        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
+    releases = [
+        f"comparison `{_escape(report['comparison_release'])}`"
+        if report.get("comparison_release")
+        else None,
+        f"reference `{_escape(report['reference_release'])}`"
+        if report.get("reference_release")
+        else None,
+    ]
+    if any(releases):
+        lines.extend(
+            ["", "Releases: " + "; ".join(item for item in releases if item) + "."]
+        )
+    if report.get("source_sha256"):
+        lines.extend(
+            ["", f"Prediction source SHA-256: `{_escape(report['source_sha256'])}`."]
+        )
+    lines.extend(
+        [
+            "",
+            (
+                f"The comparison contains {pairing['paired_rows']} exactly paired rows "
+                f"across {pairing['origin_count']} forecast origins. Differences are "
+                "comparison minus reference; negative differences favor the comparison "
+                "for error and scoring metrics."
+            ),
+            "",
+            "## Overall metrics",
+            "",
+            "| Role | Model | MAE | RMSE | Bias | WIS | Calibration error | 80% coverage |",
+            "|---|---|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
     for role in ("reference", "comparison"):
         model = overall[role]
         metrics = model["metrics"]

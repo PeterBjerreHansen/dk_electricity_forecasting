@@ -141,34 +141,38 @@ aws cloudfront create-invalidation \
   --paths / /index.html
 ```
 
-## Disable and re-enable automation
+## Routine deployments and deliberate pauses
 
-Apply Terraform with `enable_pipeline_schedule=false` to stop future daily
-starts. This does not delete artifacts, the task definition, or the public
-site. Re-enable only after a manual task using the intended image revision exits
-successfully.
+The manually triggered GitHub Production Deploy workflow runs the full test
+suite, validates the configured model artifact, builds an immutable image, and
+updates the stack. Its visible `enable_pipeline_schedule` input defaults to
+`true`, so an ordinary revision leaves the proven daily schedule running.
+
+Choose `false` when commissioning a new model release, changing a central data
+or infrastructure contract, or investigating failures. This pauses future
+daily starts without deleting artifacts, the task definition, or the public
+site. Run and inspect one task manually before deploying again with the input
+set to `true`.
 
 ## Deploying a code revision
 
 1. Run the full quality gate.
 2. Commit the exact source revision.
-3. Build/push an image tagged by the full Git SHA.
-4. Apply Terraform with the schedule disabled.
-5. Run and verify one manual task.
-6. Apply Terraform with the schedule enabled.
+3. Trigger Production Deploy and review its Terraform apply.
+4. Confirm the workflow completed and the next scheduled run still exists.
 
 Never deploy uncommitted source under an unrelated image tag.
 
-The GitHub Production Deploy workflow follows the same sequence using OIDC.
-Its AWS trust is restricted to the repository's `production` environment and
-does not use stored AWS access keys.
+The workflow uses OIDC rather than stored AWS access keys. Its trust is
+restricted to this repository's `production` environment. The deployment role
+has broad non-IAM permissions inside this project-only AWS account.
 
 ## Model changes
 
 Training is not part of daily production. A new LoRA adapter is validated and
 uploaded under a new content-addressed prefix. Update `config/production.json`,
-create a new code/image revision, and perform a manual task. Existing model
-artifact prefixes are immutable.
+deploy with the schedule paused, and perform one manual task before re-enabling
+it. Existing model artifact prefixes are immutable.
 
 ## Retention and cleanup
 

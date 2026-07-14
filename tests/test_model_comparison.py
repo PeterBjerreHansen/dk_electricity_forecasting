@@ -250,6 +250,7 @@ def test_report_is_descriptive_paired_and_strict_json(tmp_path: Path) -> None:
     markdown = written["markdown"].read_text(encoding="utf-8")
     assert "Per-origin differences" in markdown
     assert "does not select or deploy a model" in markdown
+    assert "Prediction source SHA-256: `abc123`" in markdown
 
 
 def test_point_only_reference_keeps_available_descriptive_metrics() -> None:

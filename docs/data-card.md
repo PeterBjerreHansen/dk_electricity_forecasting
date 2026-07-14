@@ -73,13 +73,6 @@ before missing values are replaced with the artifact-declared zero value.
 
 See the [Open-Meteo processing contract](data-processing/open_meteo_weather_v1.md).
 
-## Direct DMI data
-
-Direct DMI ingestion is not implemented or used in production. The
-[DMI document](data-processing/dmi_weather_v1_plan.md) is a historical research
-plan for a possible future provenance source. It must not be read as a current
-data contract.
-
 ## Known limitations
 
 - The hourly post-transition target hides intrahour price structure.

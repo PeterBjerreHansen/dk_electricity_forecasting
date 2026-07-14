@@ -325,6 +325,9 @@ operations: exists, upload/download one file, and upload/download a prefix.
 The local implementation makes cloud orchestration testable with temporary
 directories. S3-specific metadata is used only when publishing `index.html` so
 the browser receives the correct content type and short cache lifetime.
+Optional S3 reads ignore only a genuine missing-object response; authentication,
+authorization, and transport failures stop the run. Timestamped raw responses
+are append-only, so an existing raw key is never uploaded as a new S3 version.
 
 ## 13. AWS architecture
 
@@ -395,7 +398,8 @@ be published.
 2. Produce a complete immutable artifact directory and manifest.
 3. Upload it under a new content-addressed S3 prefix.
 4. Change `config/production.json` explicitly.
-5. run contract tests and one manual cloud task before enabling the schedule.
+5. Deploy with the schedule paused and run one manual cloud task.
+6. Re-enable the schedule only after that task succeeds.
 
 Never replace files inside the currently configured artifact prefix.
 

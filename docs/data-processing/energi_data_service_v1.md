@@ -435,7 +435,7 @@ Shared UTC coverage check:
 3. Builds that intentionally use one area must pass an explicit one-area
    `--required-areas` value.
 
-## Implementation Checklist
+## Implementation map
 
 Implemented files:
 
@@ -447,7 +447,7 @@ scripts/build_price_panel.py
 tests/test_eds_prices_v1.py
 ```
 
-Checklist:
+The implementation provides:
 
 1. Add a small EDS client that can fetch metadata and data with explicit
    parameters, retries, and 429 handling.
@@ -461,14 +461,14 @@ Checklist:
    historical hours, and incomplete quarter-hour groups.
 7. Verify manifest raw hashes before normalization.
 8. Make incomplete recent drops visible in QA with dropped group samples.
-9. Add scripts matching the project plan:
+9. Thin command scripts for the two operations:
 
 ```text
 scripts/fetch_eds_prices.py
 scripts/build_price_panel.py
 ```
 
-Suggested commands once implemented:
+Current commands:
 
 ```text
 python scripts/fetch_eds_prices.py --areas DK1 DK2

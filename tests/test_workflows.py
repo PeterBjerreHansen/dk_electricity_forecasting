@@ -17,7 +17,10 @@ def test_production_deploy_workflow_serializes_runs() -> None:
     assert "cancel-in-progress: false" in workflow
     assert "id-token: write" in workflow
     assert "secrets.AWS_DEPLOY_ROLE_ARN" in workflow
-    assert "vars.ENABLE_PIPELINE_SCHEDULE || 'true'" in workflow
+    assert "enable_pipeline_schedule:" in workflow
+    assert "default: true" in workflow
+    assert "ENABLE_PIPELINE_SCHEDULE: ${{ inputs.enable_pipeline_schedule }}" in workflow
+    assert "if: env.ENABLE_PIPELINE_SCHEDULE" not in workflow
 
 
 def test_static_site_is_private_behind_compressed_https_cloudfront() -> None:
