@@ -297,7 +297,9 @@ sessions.
 The page shows:
 
 - the last evaluated production day flowing into tomorrow’s forecast;
-- separate markers for when the forecast was made and when its delivery begins;
+- matching markers for when the new forecast was made and when its delivery begins;
+- distinct colours for the previous forecast being evaluated and the new forecast
+  for tomorrow, with a short day-ahead-market explanation on the page;
 - uncertainty on both sides of the separator only when a complete interval is
   available on both sides;
 - up to 30 evaluated days for Chronos and each baseline;

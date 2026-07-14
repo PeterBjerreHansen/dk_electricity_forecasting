@@ -259,6 +259,12 @@ def test_static_dashboard_keeps_the_outlook_focused_and_marks_timing() -> None:
     assert "Forecast max · DKK/MWh" not in html
     assert "Previous MAE · DKK/MWh" not in html
     assert "scale.x(evaluated.length-1)" in html
-    assert "Forecast made" in html
-    assert 'shiftedPolyline(rows,"y_pred",0,scale)' in html
-    assert 'shiftedPolyline(forecast,"y_pred",evaluated.length,scale)' not in html
+    assert "New forecast made" in html
+    assert "New forecast begins" in html
+    assert "Previous forecast · today" in html
+    assert "New forecast · tomorrow" in html
+    assert "before the day-ahead auction" in html
+    assert 'intervalBand(newForecast,newForecastOffset,scale,"#5eead4")' in html
+    assert 'shiftedPolyline(newForecast,"y_pred",newForecastOffset,scale)' in html
+    assert "stroke-dasharray=\"2 5\"" not in html
+    assert "low = Math.min(dataLow, 0)" in html

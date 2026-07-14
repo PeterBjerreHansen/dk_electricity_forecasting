@@ -461,8 +461,11 @@ _TEMPLATE = r"""<!doctype html>
       --paper: #f7f8fa;
       --card: #ffffff;
       --actual: #172b4d;
-      --forecast: #d97706;
-      --band: #f6c679;
+      --previous-forecast: #d97706;
+      --previous-band: #f6c679;
+      --new-forecast: #0f766e;
+      --new-band: #5eead4;
+      --forecast: var(--previous-forecast);
       --grid: #e2e7ef;
       --line: #d4dae4;
       --shadow: 0 14px 40px rgba(23, 32, 51, .07);
@@ -484,6 +487,7 @@ _TEMPLATE = r"""<!doctype html>
     .metric-value { margin-top: 9px; font-size: 1.75rem; line-height: 1.1; letter-spacing: -.035em; }
     .panel { margin-top: 18px; padding: 24px; border-radius: 18px; }
     .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
+    .outlook-explainer { max-width: 860px; margin: -4px 0 18px; color: var(--muted); line-height: 1.55; }
     .section-head { margin: 46px 0 16px; }
     .tabs { display: flex; gap: 8px; }
     button { border: 1px solid var(--line); border-radius: 999px; padding: 8px 16px; background: white; color: var(--ink); font: inherit; font-weight: 700; cursor: pointer; }
@@ -529,11 +533,13 @@ _TEMPLATE = r"""<!doctype html>
     <section id="top-metrics" class="metrics" aria-label="Forecast status"></section>
     <section class="panel">
       <div class="panel-head"><h2 id="outlook-title">Latest outlook</h2></div>
+      <p class="outlook-explainer"><strong>How to read this chart.</strong> Electricity is traded one day ahead, with a separate market price for every delivery hour. Each morning, before the day-ahead auction, this system produces a new forecast for tomorrow. Amber shows the previous forecast against today’s official prices; teal shows the new forecast for tomorrow.</p>
       <div id="hero-chart" class="chart-wrap"></div>
       <div class="legend">
         <span><i class="swatch" style="background:var(--actual)"></i>Official day-ahead price</span>
-        <span id="forecast-legend"><i class="swatch" style="background:var(--forecast)"></i>Production forecast</span>
-        <span id="interval-legend"><i class="swatch" style="height:10px;background:var(--band)"></i>10–90% interval</span>
+        <span><i class="swatch" style="background:var(--previous-forecast)"></i>Previous forecast · today</span>
+        <span><i class="swatch" style="background:var(--new-forecast)"></i>New forecast · tomorrow</span>
+        <span id="interval-legend"><i class="swatch" style="height:10px;background:linear-gradient(90deg,var(--previous-band) 50%,var(--new-band) 50%)"></i>10–90% intervals</span>
       </div>
     </section>
     <div class="section-head"><h2>Recent model performance</h2></div>
@@ -586,8 +592,6 @@ _TEMPLATE = r"""<!doctype html>
       notice.hidden = false;
       notice.innerHTML = `<strong>Fallback forecast.</strong> The primary Chronos run failed, so this outlook uses ${esc(productionName)}.`;
     }
-    document.getElementById("forecast-legend").innerHTML = `<i class="swatch" style="background:var(--forecast)"></i>${esc(productionName)} forecast`;
-
     const areas = [...new Set(DATA.predictions.map(row => row.area))].sort();
     let selectedArea = areas[0];
     const tabs = document.getElementById("area-tabs");
@@ -608,14 +612,27 @@ _TEMPLATE = r"""<!doctype html>
       };
     }
 
+    function niceStep(span, targetIntervals=6) {
+      const rough = Math.max(span, 1) / targetIntervals;
+      const power = 10 ** Math.floor(Math.log10(rough));
+      const ratio = rough / power;
+      const multiple = ratio <= 1 ? 1 : ratio <= 2 ? 2 : ratio <= 2.5 ? 2.5 : ratio <= 5 ? 5 : 10;
+      return multiple * power;
+    }
+
     function scales(rows, valueKeys, width, height, padding) {
       const values = rows.flatMap(row => valueKeys.map(key => key === "actual" ? actual(row) : row[key])).filter(finite).map(Number);
-      let low = Math.min(...values), high = Math.max(...values);
-      const margin = Math.max((high - low) * .1, 10); low -= margin; high += margin;
+      const dataLow = Math.min(...values), dataHigh = Math.max(...values);
+      let low = Math.min(dataLow, 0), high = Math.max(dataHigh, 0);
+      const margin = Math.max((high - low) * .05, 10);
+      const step = niceStep(high - low + 2 * margin);
+      low = dataLow >= 0 ? 0 : Math.floor((low - margin) / step) * step;
+      high = dataHigh <= 0 ? 0 : Math.ceil((high + margin) / step) * step;
+      const ticks = Array.from({length:Math.round((high-low)/step)+1}, (_,index) => low + index * step);
       return {
         x: index => padding.left + index * (width - padding.left - padding.right) / Math.max(rows.length - 1, 1),
         y: value => padding.top + (high - Number(value)) * (height - padding.top - padding.bottom) / Math.max(high - low, 1),
-        low, high,
+        low, high, ticks,
       };
     }
 
@@ -624,17 +641,17 @@ _TEMPLATE = r"""<!doctype html>
     }
 
     function gridSvg(scale, width, height, padding) {
-      return Array.from({length:5}, (_, index) => {
-        const value = scale.high - index * (scale.high - scale.low) / 4, py = scale.y(value);
+      return [...scale.ticks].reverse().map(value => {
+        const py = scale.y(value);
         return `<line x1="${padding.left}" x2="${width-padding.right}" y1="${py}" y2="${py}" stroke="#e2e7ef"/><text x="${padding.left-10}" y="${py+4}" text-anchor="end" fill="#667085" font-size="12">${number(value)}</text>`;
       }).join("");
     }
 
-    function intervalBand(rows, offset, scale) {
+    function intervalBand(rows, offset, scale, fill) {
       if (!rows.length) return "";
       const upper = rows.map((row,index) => `${scale.x(offset+index)},${scale.y(row.q90)}`);
       const lower = rows.map((row,index) => `${scale.x(offset+index)},${scale.y(row.q10)}`).reverse();
-      return `<polygon points="${upper.concat(lower).join(" ")}" fill="#f6c679" opacity=".35"/>`;
+      return `<polygon points="${upper.concat(lower).join(" ")}" fill="${fill}" opacity=".35"/>`;
     }
 
     function shiftedPolyline(rows, key, offset, scale) {
@@ -649,15 +666,17 @@ _TEMPLATE = r"""<!doctype html>
       if (!rows.length) return `<p class="muted">No production forecast is available.</p>`;
       const width = 1040, height = 420, padding = {left:70,right:24,top:24,bottom:66};
       const scale = scales(rows, showInterval ? ["actual","y_pred","q10","q90"] : ["actual","y_pred"], width, height, padding);
-      const bands = showInterval ? intervalBand(evaluated,0,scale) + intervalBand(forecast,evaluated.length,scale) : "";
+      const newForecast = evaluated.length ? [evaluated[evaluated.length-1], ...forecast] : forecast;
+      const newForecastOffset = Math.max(evaluated.length-1, 0);
+      const bands = showInterval ? intervalBand(evaluated,0,scale,"#f6c679") + intervalBand(newForecast,newForecastOffset,scale,"#5eead4") : "";
       const labels = rows.map((row,index) => index % 6 === 0 ? `<text x="${scale.x(index)}" y="${height-20}" text-anchor="middle" transform="rotate(-30 ${scale.x(index)} ${height-20})" fill="#667085" font-size="11">${esc(localHour(row.ds_utc))}</text>` : "").join("");
       const boundaryX = evaluated.length ? scale.x(evaluated.length-1) : null;
-      const separator = boundaryX === null ? "" : `<line x1="${boundaryX}" x2="${boundaryX}" y1="${padding.top}" y2="${height-padding.bottom}" stroke="#7d8799" stroke-width="1.5" stroke-dasharray="6 5"/><text x="${boundaryX+8}" y="${padding.top+15}" fill="#667085" font-size="12">Forecast begins</text>`;
+      const separator = boundaryX === null ? "" : `<line x1="${boundaryX}" x2="${boundaryX}" y1="${padding.top}" y2="${height-padding.bottom}" stroke="#7d8799" stroke-width="1.5" stroke-dasharray="6 5"/><text x="${boundaryX+8}" y="${padding.top+15}" fill="#667085" font-size="12">New forecast begins</text>`;
       const originIndex = run.forecast_origin_utc ? (new Date(run.forecast_origin_utc) - new Date(rows[0].ds_utc)) / 3600000 : null;
       const originX = Number.isFinite(originIndex) && originIndex >= 0 && originIndex <= evaluated.length-1 ? scale.x(originIndex) : null;
-      const originMarker = originX === null ? "" : `<line x1="${originX}" x2="${originX}" y1="${padding.top}" y2="${height-padding.bottom}" stroke="#98a2b3" stroke-width="1.25" stroke-dasharray="2 5"/><text x="${originX+8}" y="${padding.top+15}" fill="#7d8799" font-size="12">Forecast made</text>`;
+      const originMarker = originX === null ? "" : `<line x1="${originX}" x2="${originX}" y1="${padding.top}" y2="${height-padding.bottom}" stroke="#7d8799" stroke-width="1.5" stroke-dasharray="6 5"/><text x="${originX+8}" y="${padding.top+15}" fill="#667085" font-size="12">New forecast made</text>`;
       document.getElementById("interval-legend").hidden = !showInterval;
-      return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(selectedArea)} evaluated and forecast prices">${gridSvg(scale,width,height,padding)}${bands}<polyline points="${shiftedPolyline(rows,"y_pred",0,scale)}" fill="none" stroke="#d97706" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><polyline points="${shiftedPolyline(evaluated,"actual",0,scale)}" fill="none" stroke="#172b4d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>${originMarker}${separator}${labels}<text x="18" y="${height/2}" transform="rotate(-90 18 ${height/2})" text-anchor="middle" fill="#667085" font-size="12">DKK / MWh</text></svg>`;
+      return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(selectedArea)} evaluated and forecast prices">${gridSvg(scale,width,height,padding)}${bands}<polyline points="${shiftedPolyline(evaluated,"y_pred",0,scale)}" fill="none" stroke="#d97706" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><polyline points="${shiftedPolyline(newForecast,"y_pred",newForecastOffset,scale)}" fill="none" stroke="#0f766e" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><polyline points="${shiftedPolyline(evaluated,"actual",0,scale)}" fill="none" stroke="#172b4d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>${originMarker}${separator}${labels}<text x="18" y="${height/2}" transform="rotate(-90 18 ${height/2})" text-anchor="middle" fill="#667085" font-size="12">DKK / MWh</text></svg>`;
     }
 
     function performanceSvg(rows) {
