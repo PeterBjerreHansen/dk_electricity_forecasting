@@ -30,7 +30,6 @@ def main() -> None:
         help="forecast_dashboard.json path; defaults to the run in artifacts/latest.json",
     )
     parser.add_argument("--output", required=True, help="HTML output path")
-    parser.add_argument("--title", default="Danish Electricity Forecasts")
     parser.add_argument(
         "--history-output",
         help="Optional parquet output for seeding the private forecast-history archive",
@@ -55,7 +54,6 @@ def main() -> None:
     destination.write_text(
         build_static_dashboard(
             payload,
-            title=args.title,
             history_predictions=dashboard_records(history),
         ),
         encoding="utf-8",
