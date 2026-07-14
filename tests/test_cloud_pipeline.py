@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -16,22 +18,32 @@ from dkenergy_forecast.cloud_pipeline import (
 from dkenergy_forecast.storage import ArtifactStore
 
 
-def test_cloud_pipeline_syncs_state_runs_daily_and_uploads_latest_last(tmp_path) -> None:
+def test_cloud_pipeline_syncs_state_runs_daily_and_uploads_latest_last(
+    tmp_path,
+) -> None:
     store = tmp_path / "store"
     model = store / "models" / "chronos_weather"
     model.mkdir(parents=True)
     (model / "manifest.json").write_text("{}", encoding="utf-8")
     (store / "state" / "data" / "model_ready").mkdir(parents=True)
-    (store / "state" / "data" / "model_ready" / "seed.json").write_text("seed", encoding="utf-8")
-    (store / "state" / "data" / "raw" / "energi_data_service" / "seed").mkdir(parents=True)
-    (store / "state" / "data" / "raw" / "energi_data_service" / "seed" / "batch.json").write_text(
+    (store / "state" / "data" / "model_ready" / "seed.json").write_text(
+        "seed", encoding="utf-8"
+    )
+    (store / "state" / "data" / "raw" / "energi_data_service" / "seed").mkdir(
+        parents=True
+    )
+    (
+        store / "state" / "data" / "raw" / "energi_data_service" / "seed" / "batch.json"
+    ).write_text(
         "{}",
         encoding="utf-8",
     )
     (store / "state" / "data" / "raw").mkdir(parents=True, exist_ok=True)
     (store / "state" / "data" / "raw" / "old.json").write_text("old", encoding="utf-8")
     (store / "forecast_runs" / "previous_run").mkdir(parents=True)
-    (store / "forecast_runs" / "previous_run" / "predictions.parquet").write_text("old-predictions", encoding="utf-8")
+    (store / "forecast_runs" / "previous_run" / "predictions.parquet").write_text(
+        "old-predictions", encoding="utf-8"
+    )
     workdir = tmp_path / "workdir"
     calls = []
 
@@ -39,9 +51,8 @@ def test_cloud_pipeline_syncs_state_runs_daily_and_uploads_latest_last(tmp_path)
         calls.append((command, cwd, env, check))
         assert env["DKENERGY_RUNTIME_ROOT"] == str(workdir)
         assert env["WITH_WEATHER"] == "1"
-        assert (
-            env["DKENERGY_CHRONOS_MODEL_ARTIFACT_PATH"]
-            == str(workdir / "artifacts" / "models" / "chronos_weather")
+        assert env["DKENERGY_CHRONOS_MODEL_ARTIFACT_PATH"] == str(
+            workdir / "artifacts" / "models" / "chronos_weather"
         )
         assert "--with-weather" in command
         assert "--skip-backtest" in command
@@ -60,8 +71,12 @@ def test_cloud_pipeline_syncs_state_runs_daily_and_uploads_latest_last(tmp_path)
 
     assert calls
     assert (workdir / "data" / "model_ready" / "seed.json").exists()
-    assert (workdir / "data" / "raw" / "energi_data_service" / "seed" / "batch.json").exists()
-    assert (workdir / "artifacts" / "forecast_runs" / "previous_run" / "predictions.parquet").exists()
+    assert (
+        workdir / "data" / "raw" / "energi_data_service" / "seed" / "batch.json"
+    ).exists()
+    assert (
+        workdir / "artifacts" / "forecast_runs" / "previous_run" / "predictions.parquet"
+    ).exists()
     assert not (workdir / "data" / "raw" / "old.json").exists()
     assert "forecast_runs/run_1/manifest.json" in uploaded
     assert "forecast_runs/run_1/COMPLETED.json" in uploaded
@@ -97,7 +112,10 @@ def test_cloud_pipeline_passes_replay_contract_to_daily_pipeline(tmp_path) -> No
     def fake_runner(command, *, cwd, env, check):
         assert "--run-kind" in command
         assert command[command.index("--run-kind") + 1] == "replay"
-        assert command[command.index("--information-cutoff-utc") + 1] == "2026-07-01T08:00:00Z"
+        assert (
+            command[command.index("--information-cutoff-utc") + 1]
+            == "2026-07-01T08:00:00Z"
+        )
         _write_pipeline_outputs(workdir, include_latest_pointer=False)
         return subprocess.CompletedProcess(command, 0)
 
@@ -152,7 +170,9 @@ def test_cloud_pipeline_fails_when_weather_artifact_is_missing(tmp_path) -> None
         )
 
 
-def test_cloud_pipeline_fails_when_weather_artifact_is_stale(tmp_path, monkeypatch) -> None:
+def test_cloud_pipeline_fails_when_weather_artifact_is_stale(
+    tmp_path, monkeypatch
+) -> None:
     store = tmp_path / "store"
     model = store / "models" / "chronos_weather"
     model.mkdir(parents=True)
@@ -228,7 +248,9 @@ def test_cloud_scoring_is_independent_from_live_publication(tmp_path) -> None:
     assert uploaded == ["published_forecast_history/model_scores.parquet"]
 
 
-def test_static_dashboard_publication_updates_history_and_site(tmp_path) -> None:
+def test_static_dashboard_publication_updates_history_and_site(
+    tmp_path, monkeypatch
+) -> None:
     workdir = tmp_path / "workdir"
     store = tmp_path / "store"
     site = tmp_path / "site"
@@ -236,6 +258,8 @@ def test_static_dashboard_publication_updates_history_and_site(tmp_path) -> None
     panel_dir = workdir / "data" / "model_ready"
     run_dir.mkdir(parents=True)
     panel_dir.mkdir(parents=True)
+    history_dir = workdir / "dashboard"
+    history_dir.mkdir(parents=True)
     (workdir / "artifacts" / "latest.json").write_text(
         '{"schema_version":1,"status":"completed","run_id":"run_1",'
         '"run_prefix":"forecast_runs/run_1","completion_key":'
@@ -245,33 +269,74 @@ def test_static_dashboard_publication_updates_history_and_site(tmp_path) -> None
         '"committed_at_utc":"2026-07-06T08:30:00Z"}',
         encoding="utf-8",
     )
-    predictions = pd.DataFrame(
-        {
-            "forecast_origin_utc": ["2026-07-06T08:00:00Z"],
-            "ds_utc": ["2026-07-06T22:00:00Z"],
-            "ds_local": ["2026-07-07T00:00:00+02:00"],
-            "area": ["DK1"],
-            "model_label": ["chronos_weather"],
-            "y_pred": [100.0],
-            "q10": [80.0],
-            "q50": [100.0],
-            "q90": [120.0],
-        }
+    timestamps = pd.date_range("2026-07-06T22:00:00Z", periods=24, freq="h")
+    predictions = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "forecast_origin_utc": "2026-07-06T08:00:00Z",
+                    "ds_utc": timestamps,
+                    "ds_local": timestamps.tz_convert("Europe/Copenhagen"),
+                    "local_date": "2026-07-07",
+                    "area": area,
+                    "model_label": "chronos_weather",
+                    "model_release_id": "release_1",
+                    "y_pred": 100.0,
+                    "q10": 80.0,
+                    "q50": 100.0,
+                    "q90": 120.0,
+                }
+            )
+            for area in ("DK1", "DK2")
+        ],
+        ignore_index=True,
     )
     predictions.to_parquet(run_dir / "diagnostic_predictions.parquet", index=False)
+    stale_timestamps = pd.date_range("2026-06-30T22:00:00Z", periods=24, freq="h")
     pd.DataFrame(
         {
-            "area": ["DK1"],
-            "ds_utc": ["2026-07-06T22:00:00Z"],
-            "y": [105.0],
+            "area": "DK1",
+            "ds_utc": stale_timestamps,
+            "forecast_origin_utc": "2026-06-30T08:00:00Z",
+            "model_label": "chronos_weather",
+            "model_release_id": "release_1",
+            "q10": 80.0,
+            "q50": 100.0,
+            "q90": 120.0,
+            "y": 105.0,
+            "y_pred": 100.0,
+            "run_id": "stale_run",
         }
+    ).to_parquet(history_dir / "forecast_history.parquet", index=False)
+    pd.concat(
+        [
+            pd.DataFrame({"area": area, "ds_utc": timestamps, "y": 105.0})
+            for area in ("DK1", "DK2")
+        ],
+        ignore_index=True,
     ).to_parquet(panel_dir / "price_panel_hourly_v1.parquet", index=False)
+    dashboard_predictions = predictions.drop(
+        columns=["forecast_origin_utc", "ds_local"]
+    ).copy()
+    dashboard_predictions["ds_utc"] = dashboard_predictions["ds_utc"].map(
+        lambda value: value.isoformat()
+    )
     (run_dir / "forecast_dashboard.json").write_text(
-        '{"generated_at_utc":"2026-07-06T08:30:00Z","run":'
-        '{"run_id":"run_1","run_kind":"live","delivery_date_local":"2026-07-07",'
-        '"model":{"published_model":"chronos_weather"}},"predictions":'
-        '[{"area":"DK1","ds_utc":"2026-07-06T22:00:00Z",'
-        '"model_label":"chronos_weather","y_pred":100,"q10":80,"q50":100,"q90":120}]}',
+        json.dumps(
+            {
+                "generated_at_utc": "2026-07-06T08:30:00Z",
+                "run": {
+                    "run_id": "run_1",
+                    "run_kind": "live",
+                    "delivery_date_local": "2026-07-07",
+                    "model": {
+                        "published_model": "chronos_weather",
+                        "model_release_id": "release_1",
+                    },
+                },
+                "predictions": dashboard_predictions.to_dict(orient="records"),
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -283,9 +348,29 @@ def test_static_dashboard_publication_updates_history_and_site(tmp_path) -> None
 
     assert uploaded == ["dashboard/forecast_history.parquet", "static-site/index.html"]
     assert (store / "dashboard" / "forecast_history.parquet").exists()
-    assert "Recent model performance" in (site / "index.html").read_text(
-        encoding="utf-8"
+    html = (site / "index.html").read_text(encoding="utf-8")
+    assert "Recent model performance" in html
+    match = re.search(r"const DATA = (.*?);\n", html)
+    assert match is not None
+    assert json.loads(match.group(1))["outlook"]["DK1"]["evaluated"] == []
+
+    (store / "dashboard" / "forecast_history.parquet").unlink()
+
+    def reject_public_page(*args, **kwargs):
+        assert (store / "dashboard" / "forecast_history.parquet").exists()
+        raise ValueError("invalid public outlook")
+
+    monkeypatch.setattr(
+        "dkenergy_forecast.cloud_pipeline.build_static_dashboard",
+        reject_public_page,
     )
+    with pytest.raises(ValueError, match="invalid public outlook"):
+        _publish_static_dashboard(
+            ArtifactStore(store),
+            static_site_uri=f"file://{site}",
+            workdir=workdir,
+        )
+    assert (site / "index.html").read_text(encoding="utf-8") == html
 
 
 def _write_pipeline_outputs(
@@ -301,8 +386,12 @@ def _write_pipeline_outputs(
         workdir / "artifacts" / "forecast_runs" / "run_1",
     ]:
         path.mkdir(parents=True, exist_ok=True)
-    (workdir / "data" / "model_ready" / "price_panel_hourly_v1.parquet").write_text("panel", encoding="utf-8")
-    (workdir / "data" / "model_ready" / "price_panel_hourly_v1.qa.json").write_text("{}", encoding="utf-8")
+    (workdir / "data" / "model_ready" / "price_panel_hourly_v1.parquet").write_text(
+        "panel", encoding="utf-8"
+    )
+    (workdir / "data" / "model_ready" / "price_panel_hourly_v1.qa.json").write_text(
+        "{}", encoding="utf-8"
+    )
     run_dir = workdir / "artifacts" / "forecast_runs" / "run_1"
     (run_dir / "predictions.parquet").write_text("predictions", encoding="utf-8")
     (run_dir / "manifest.json").write_text("{}", encoding="utf-8")

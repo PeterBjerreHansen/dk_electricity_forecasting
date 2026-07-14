@@ -68,6 +68,13 @@ Verify:
 6. public `index.html` was replaced and has the correct content type;
 7. Chronos or an explicitly marked degraded fallback is visible.
 
+The static build must also prove that DK1 and DK2 both have their complete
+DST-aware hourly grid and an explicit model release ID. The evaluated and
+forecast sides may be joined only for consecutive local dates from that same
+release. Missing compatible history yields a forecast-only page; malformed
+compatible history blocks the public upload and preserves the preceding
+`index.html`. The registered private forecast remains archived either way.
+
 If static rendering fails after forecast publication, the previous page should
 remain public and the new forecast should remain valid.
 

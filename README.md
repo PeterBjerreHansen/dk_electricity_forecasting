@@ -124,6 +124,11 @@ The private dashboard archive stores registered predictions and fills in
 official prices on later runs. The public page receives only the newest 30
 evaluated delivery days per model and area. A one-time seed from existing
 backtests is acceptable; daily registered forecasts naturally replace it.
+The public build requires complete DK1 and DK2 delivery grids and an explicit
+model release ID. The outlook joins two days only when the left side is the
+immediately preceding Danish delivery day from that same release. If that
+registered forecast is missing, the page shows the new forecast alone instead
+of compressing a calendar gap or mixing model versions.
 
 ## Repository map
 

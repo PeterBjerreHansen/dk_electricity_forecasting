@@ -84,7 +84,16 @@ the completed run.
 
 The task may exit non-zero after writing `latest.json`. The previous static page
 remains public because `index.html` is uploaded only after a complete render.
-Treat the forecast as valid; repair and rebuild the page separately.
+The private forecast-history archive is still updated before rendering, so the
+registered forecast is not lost. Treat the forecast as valid; repair and rebuild
+the page separately.
+
+The render contract deliberately requires complete DK1 and DK2 forecasts with
+an explicit release ID. It rejects duplicate or missing delivery hours, off-date
+rows, partial or unordered intervals, and an incomplete immediately preceding
+day. Older history or history from another model release is not an error, but it
+is never joined to the live outlook; the page renders the forecast side alone
+until a compatible evaluated day exists.
 
 ### Publication missed the deadline
 

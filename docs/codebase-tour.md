@@ -285,16 +285,21 @@ cutoff for the same date.
 - JSON-safe public records.
 
 [`static_dashboard.py`](../src/dkenergy_forecast/static_dashboard.py) owns
-presentation. It embeds a small JSON payload, CSS, and JavaScript in one HTML
-document. There are no remote JavaScript libraries, application APIs, cookies,
-or server-side sessions.
+the public-data contract and presentation. Before rendering, Python checks the
+run delivery date, the presence of both DK1 and DK2, duplicate timestamps, each
+complete DST-aware 23/24/25-hour grid, interval completeness and ordering, exact
+previous-day adjacency, and explicit model-release identity. It then embeds the
+already selected outlook rows, CSS, and JavaScript in one HTML document. The
+browser does not guess which historical day belongs beside the forecast. There
+are no remote JavaScript libraries, application APIs, cookies, or server-side
+sessions.
 
 The page shows:
 
 - the last evaluated production day flowing into tomorrow’s forecast;
 - uncertainty on both sides of the separator only when a complete interval is
   available on both sides;
-- forecast summary statistics;
+- the preceding day’s MAE;
 - up to 30 evaluated days for Chronos and each baseline;
 - MAE, RMSE, bias, and interval coverage where relevant;
 - run provenance and hourly forecast values.
@@ -302,7 +307,10 @@ The page shows:
 The private history retains 32 delivery dates per model/area so one or two
 unevaluated forecasts survive while the public page selects 30 evaluated days.
 Existing backtest rows can seed the archive once. Registered daily rows replace
-them naturally.
+them naturally. A seed row is eligible for the outlook only when it is exactly
+one local day before the forecast and has the active release ID. Missing history
+produces a forecast-only chart; incomplete adjacent history rejects the page
+build and leaves the previous public file intact.
 
 ## 12. Storage abstraction
 

@@ -339,6 +339,10 @@ def _publish_static_dashboard(
         pd.read_parquet(predictions_path),
         pd.read_parquet(paths.price_panel),
     )
+    # The private archive is the durable record of registered forecasts. Keep
+    # it even when a later presentation check rejects the public page, so a
+    # transient render problem cannot erase a valid forecast from tomorrow's
+    # evaluated history.
     paths.dashboard_history.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_parquet(paths.dashboard_history, history)
     store.upload_file(paths.dashboard_history, "dashboard/forecast_history.parquet")
@@ -351,6 +355,7 @@ def _publish_static_dashboard(
     )
     if len(html) < 10_000 or "<!doctype html>" not in html:
         raise ValueError("Refusing to publish an incomplete static dashboard")
+
     paths.static_dashboard.write_text(html, encoding="utf-8")
     ArtifactStore(static_site_uri).upload_file(
         paths.static_dashboard,

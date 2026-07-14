@@ -97,48 +97,6 @@ def combine_prediction_history(frames: Iterable[pd.DataFrame]) -> pd.DataFrame:
     )
 
 
-def hero_series(
-    latest_predictions: pd.DataFrame,
-    history: pd.DataFrame,
-    *,
-    area: str,
-    model_family: str = "chronos",
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Select the evaluated day before the latest forecast for one area and model."""
-    latest = prepare_dashboard_predictions(latest_predictions)
-    if latest.empty:
-        return pd.DataFrame(), pd.DataFrame()
-    forecast = latest[
-        (latest["area"] == area)
-        & (latest["model_family"] == model_family)
-        & latest["y_pred"].notna()
-    ].copy()
-    if forecast.empty:
-        return pd.DataFrame(), pd.DataFrame()
-    forecast_date = max(forecast["delivery_date"])
-    forecast = forecast[forecast["delivery_date"] == forecast_date].sort_values(
-        "ds_utc"
-    )
-
-    evaluated = history[
-        (history["area"] == area)
-        & (history["model_family"] == model_family)
-        & history["y"].notna()
-        & history["y_pred"].notna()
-        & (history["delivery_date"] < forecast_date)
-    ].copy()
-    if evaluated.empty:
-        return pd.DataFrame(), forecast
-    target_date = pd.Timestamp(forecast_date) - pd.Timedelta(days=1)
-    available_dates = pd.Series(evaluated["delivery_date"].unique())
-    exact = available_dates[available_dates == target_date.date()]
-    evaluated_date = exact.iloc[0] if not exact.empty else max(available_dates)
-    evaluated = evaluated[evaluated["delivery_date"] == evaluated_date].sort_values(
-        "ds_utc"
-    )
-    return evaluated, forecast
-
-
 def recent_model_history(
     history: pd.DataFrame,
     *,

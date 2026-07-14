@@ -7,7 +7,6 @@ from dkenergy_forecast.dashboard import (
     combine_prediction_history,
     dashboard_records,
     evaluated_dashboard_history,
-    hero_series,
     recent_model_history,
     update_forecast_history,
 )
@@ -42,42 +41,6 @@ def test_combined_history_prefers_later_artifact_for_duplicate_model_hour() -> N
     assert len(combined) == 1
     assert combined.iloc[0]["y_pred"] == 12.0
     assert combined.iloc[0]["model"] == "Chronos 2 LoRA Weather"
-
-
-def test_hero_uses_previous_delivery_day_and_latest_forecast_day() -> None:
-    history = combine_prediction_history(
-        [
-            pd.DataFrame(
-                [
-                    _row("2026-07-05T22:00:00Z", "chronos_weather", y_pred=8.0),
-                    _row("2026-07-06T21:00:00Z", "chronos_weather", y_pred=9.0),
-                ]
-            )
-        ]
-    )
-    latest = pd.DataFrame(
-        [
-            _row(
-                "2026-07-06T22:00:00Z",
-                "chronos2_lora_calendar_weather_ctx1024_v1",
-                y_pred=11.0,
-            ),
-            _row(
-                "2026-07-07T21:00:00Z",
-                "chronos2_lora_calendar_weather_ctx1024_v1",
-                y_pred=12.0,
-            ),
-        ]
-    ).drop(columns="y")
-
-    evaluated, forecast = hero_series(latest, history, area="DK1")
-
-    assert evaluated["delivery_date"].unique().tolist() == [
-        pd.Timestamp("2026-07-06").date()
-    ]
-    assert forecast["delivery_date"].unique().tolist() == [
-        pd.Timestamp("2026-07-07").date()
-    ]
 
 
 def test_recent_history_keeps_thirty_days_per_model() -> None:
@@ -138,12 +101,19 @@ def test_evaluated_history_and_records_exclude_pending_and_private_columns() -> 
     assert "private_path" not in records[0]
 
 
-def _row(ds_utc: str, model_label: str, *, y_pred: float) -> dict[str, object]:
+def _row(
+    ds_utc: str,
+    model_label: str,
+    *,
+    y_pred: float,
+    release_id: str = "release_1",
+) -> dict[str, object]:
     return {
         "ds_utc": ds_utc,
         "forecast_origin_utc": "2026-07-01T10:00:00Z",
         "area": "DK1",
         "model_label": model_label,
+        "model_release_id": release_id,
         "y": 10.0,
         "y_pred": y_pred,
     }

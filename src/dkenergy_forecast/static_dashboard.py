@@ -3,7 +3,18 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Iterable, Mapping
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
+
+from dkenergy_forecast.dashboard import (
+    COPENHAGEN_TIMEZONE,
+    canonical_model_family,
+)
+
+
+COPENHAGEN = ZoneInfo(COPENHAGEN_TIMEZONE)
+PRODUCTION_AREAS = ("DK1", "DK2")
 
 
 RUN_FIELDS = (
@@ -112,11 +123,14 @@ def _public_payload(
         key=lambda row: (str(row["area"]), str(row["ds_utc"]), str(row["model_label"]))
     )
 
+    outlook = _build_outlook(public_run, public_predictions, public_history)
+
     return {
         "generated_at_utc": _json_safe(payload.get("generated_at_utc")),
         "run": public_run,
         "predictions": public_predictions,
         "history": public_history,
+        "outlook": outlook,
     }
 
 
@@ -132,6 +146,284 @@ def _public_prediction(
     if missing:
         raise ValueError(f"Prediction is missing required fields: {missing}")
     return {field: _json_safe(prediction.get(field)) for field in PREDICTION_FIELDS}
+
+
+def _build_outlook(
+    run: Mapping[str, Any],
+    predictions: list[dict[str, Any]],
+    history: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Build the validated two-day hero dataset used by the public page.
+
+    The two sides may only be joined when the evaluated forecast is for the
+    immediately preceding Danish delivery day and was produced by the same
+    model release. Missing history therefore yields a truthful forecast-only
+    chart instead of visually compressing an arbitrary calendar gap.
+    """
+
+    model = run.get("model")
+    model = model if isinstance(model, Mapping) else {}
+    published_model = str(model.get("published_model") or "")
+    production_family = canonical_model_family(published_model)
+    if not production_family:
+        production_family = canonical_model_family(predictions[0].get("model_label"))
+    release_id = _optional_text(model.get("model_release_id"))
+    if release_id is None:
+        raise ValueError("Dashboard run is missing model_release_id")
+    delivery_date_text = _optional_text(run.get("delivery_date_local"))
+    if delivery_date_text is None:
+        raise ValueError("Dashboard run is missing delivery_date_local")
+    try:
+        forecast_date = date.fromisoformat(delivery_date_text)
+    except ValueError as exc:
+        raise ValueError(
+            f"Dashboard run has invalid delivery_date_local: {delivery_date_text!r}"
+        ) from exc
+
+    production_predictions = [
+        row
+        for row in predictions
+        if canonical_model_family(row.get("model_label")) == production_family
+    ]
+    if not production_predictions:
+        raise ValueError(
+            f"Dashboard contains no predictions for production model {published_model!r}"
+        )
+
+    areas = sorted({str(row.get("area")) for row in production_predictions})
+    if set(areas) != set(PRODUCTION_AREAS):
+        missing = sorted(set(PRODUCTION_AREAS) - set(areas))
+        extra = sorted(set(areas) - set(PRODUCTION_AREAS))
+        raise ValueError(
+            "Dashboard production forecast must contain exactly DK1 and DK2: "
+            f"missing={missing}, extra={extra}"
+        )
+    outlook: dict[str, dict[str, Any]] = {}
+    previous_date = forecast_date - timedelta(days=1)
+    for area in areas:
+        forecast = sorted(
+            [row for row in production_predictions if str(row.get("area")) == area],
+            key=lambda row: _utc_timestamp(row.get("ds_utc")),
+        )
+        forecast_interval = _validate_delivery_grid(
+            forecast,
+            delivery_date=forecast_date,
+            area=area,
+            segment="forecast",
+            require_actual=False,
+        )
+        _validate_release(
+            forecast,
+            expected_release_id=release_id,
+            area=area,
+            segment="forecast",
+        )
+
+        evaluated_candidates = [
+            row
+            for row in history
+            if str(row.get("area")) == area
+            and canonical_model_family(row.get("model_label")) == production_family
+            and _delivery_date(row) == previous_date
+            and _matches_release(row, release_id=release_id)
+            and _finite(_actual(row))
+            and _finite(row.get("y_pred"))
+        ]
+        evaluated = sorted(
+            evaluated_candidates,
+            key=lambda row: _utc_timestamp(row.get("ds_utc")),
+        )
+        evaluated_interval = False
+        if evaluated:
+            evaluated_interval = _validate_delivery_grid(
+                evaluated,
+                delivery_date=previous_date,
+                area=area,
+                segment="evaluated forecast",
+                require_actual=True,
+            )
+            _validate_release(
+                evaluated,
+                expected_release_id=release_id,
+                area=area,
+                segment="evaluated forecast",
+            )
+
+        outlook[area] = {
+            "forecast_date": forecast_date.isoformat(),
+            "evaluated_date": previous_date.isoformat() if evaluated else None,
+            "forecast": forecast,
+            "evaluated": evaluated,
+            "show_interval": forecast_interval
+            and (not evaluated or evaluated_interval),
+        }
+    return outlook
+
+
+def _validate_delivery_grid(
+    rows: list[dict[str, Any]],
+    *,
+    delivery_date: date,
+    area: str,
+    segment: str,
+    require_actual: bool,
+) -> bool:
+    if not rows:
+        raise ValueError(f"Dashboard {segment} is empty for {area}")
+
+    observed = [_utc_timestamp(row.get("ds_utc")) for row in rows]
+    if len(observed) != len(set(observed)):
+        raise ValueError(
+            f"Dashboard {segment} contains duplicate timestamps for {area}"
+        )
+    expected = _expected_delivery_hours(delivery_date)
+    if set(observed) != set(expected):
+        missing = len(set(expected) - set(observed))
+        extra = len(set(observed) - set(expected))
+        raise ValueError(
+            f"Dashboard {segment} must contain the complete {delivery_date} "
+            f"delivery grid for {area}: expected {len(expected)} hourly rows, "
+            f"got {len(observed)} (missing={missing}, extra={extra})"
+        )
+
+    for row in rows:
+        observed_date = _delivery_date(row)
+        if observed_date != delivery_date:
+            raise ValueError(
+                f"Dashboard {segment} date mismatch for {area}: "
+                f"expected {delivery_date}, got {observed_date}"
+            )
+        if not _finite(row.get("y_pred")):
+            raise ValueError(
+                f"Dashboard {segment} contains a non-finite prediction for {area}"
+            )
+        if require_actual and not _finite(_actual(row)):
+            raise ValueError(
+                f"Dashboard {segment} contains a missing actual price for {area}"
+            )
+
+    return _validate_intervals(rows, area=area, segment=segment)
+
+
+def _validate_intervals(
+    rows: list[dict[str, Any]],
+    *,
+    area: str,
+    segment: str,
+) -> bool:
+    interval_fields = ("q10", "q50", "q90")
+    complete = [
+        all(_finite(row.get(field)) for field in interval_fields) for row in rows
+    ]
+    present = [
+        any(_finite(row.get(field)) for field in interval_fields) for row in rows
+    ]
+    if any(present) and not all(complete):
+        raise ValueError(
+            f"Dashboard {segment} intervals must be complete for every row in {area}"
+        )
+    if not any(present):
+        return False
+
+    for row in rows:
+        q10 = float(row["q10"])
+        q50 = float(row["q50"])
+        q90 = float(row["q90"])
+        y_pred = float(row["y_pred"])
+        if not q10 <= q50 <= q90 or not q10 <= y_pred <= q90:
+            raise ValueError(
+                f"Dashboard {segment} contains unordered intervals for {area}"
+            )
+    return True
+
+
+def _validate_release(
+    rows: list[dict[str, Any]],
+    *,
+    expected_release_id: str,
+    area: str,
+    segment: str,
+) -> None:
+    observed = {_optional_text(row.get("model_release_id")) for row in rows}
+    if observed != {expected_release_id}:
+        raise ValueError(
+            f"Dashboard {segment} release mismatch for {area}: "
+            f"expected {expected_release_id!r}, got {sorted(str(value) for value in observed)!r}"
+        )
+
+
+def _matches_release(
+    row: Mapping[str, Any],
+    *,
+    release_id: str,
+) -> bool:
+    return _optional_text(row.get("model_release_id")) == release_id
+
+
+def _expected_delivery_hours(delivery_date: date) -> list[datetime]:
+    start = datetime.combine(delivery_date, time.min, tzinfo=COPENHAGEN).astimezone(
+        timezone.utc
+    )
+    end = datetime.combine(
+        delivery_date + timedelta(days=1),
+        time.min,
+        tzinfo=COPENHAGEN,
+    ).astimezone(timezone.utc)
+    count = int((end - start).total_seconds() // 3600)
+    return [start + timedelta(hours=hour) for hour in range(count)]
+
+
+def _utc_timestamp(value: object) -> datetime:
+    text = _optional_text(value)
+    if text is None:
+        raise ValueError("Dashboard prediction is missing ds_utc")
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"Dashboard prediction has invalid ds_utc: {text!r}") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(
+            f"Dashboard prediction timestamp must be timezone-aware: {text!r}"
+        )
+    return parsed.astimezone(timezone.utc)
+
+
+def _delivery_date(row: Mapping[str, Any]) -> date:
+    timestamp_date = _utc_timestamp(row.get("ds_utc")).astimezone(COPENHAGEN).date()
+    local_date = _optional_text(row.get("local_date"))
+    if local_date is not None:
+        try:
+            declared = date.fromisoformat(local_date[:10])
+        except ValueError as exc:
+            raise ValueError(
+                f"Dashboard prediction has invalid local_date: {local_date!r}"
+            ) from exc
+        if declared != timestamp_date:
+            raise ValueError(
+                "Dashboard prediction local_date does not match ds_utc: "
+                f"{declared} != {timestamp_date}"
+            )
+    return timestamp_date
+
+
+def _actual(row: Mapping[str, Any]) -> object:
+    return row.get("y") if _finite(row.get("y")) else row.get("actual_price")
+
+
+def _finite(value: object) -> bool:
+    if value is None or value == "":
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _json_safe(value: Any) -> Any:
@@ -185,6 +477,7 @@ _TEMPLATE = r"""<!doctype html>
     .lede, .muted { color: var(--muted); }
     .lede { margin: 0; font-size: 1rem; }
     .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 24px 0; }
+    #forecast-metrics { grid-template-columns: minmax(220px, 280px); }
     .metric, .panel { border: 1px solid var(--line); background: var(--card); box-shadow: var(--shadow); }
     .metric { min-height: 104px; padding: 18px; border-radius: 14px; }
     .metric.compact { min-height: 88px; box-shadow: none; }
@@ -306,15 +599,15 @@ _TEMPLATE = r"""<!doctype html>
     }
 
     function heroData() {
-      const allForecasts = DATA.predictions.filter(row => row.area === selectedArea && family(row.model_label) === productionFamily && finite(row.y_pred));
-      const forecastDates = [...new Set(allForecasts.map(deliveryDate))].sort();
-      const forecastDate = forecastDates.at(-1);
-      const forecast = allForecasts.filter(row => deliveryDate(row) === forecastDate).sort((a,b) => new Date(a.ds_utc) - new Date(b.ds_utc));
-      const allHistory = DATA.history.filter(row => row.area === selectedArea && family(row.model_label) === productionFamily && finite(actual(row)) && finite(row.y_pred) && deliveryDate(row) < forecastDate);
-      const historyDates = [...new Set(allHistory.map(deliveryDate))].sort();
-      const evaluatedDate = historyDates.at(-1);
-      const evaluated = allHistory.filter(row => deliveryDate(row) === evaluatedDate).sort((a,b) => new Date(a.ds_utc) - new Date(b.ds_utc));
-      return {evaluated, forecast, evaluatedDate, forecastDate};
+      const outlook = DATA.outlook?.[selectedArea];
+      if (!outlook) return {evaluated:[], forecast:[], evaluatedDate:null, forecastDate:null, showInterval:false};
+      return {
+        evaluated: outlook.evaluated || [],
+        forecast: outlook.forecast || [],
+        evaluatedDate: outlook.evaluated_date || null,
+        forecastDate: outlook.forecast_date || null,
+        showInterval: Boolean(outlook.show_interval),
+      };
     }
 
     function scales(rows, valueKeys, width, height, padding) {
@@ -339,17 +632,31 @@ _TEMPLATE = r"""<!doctype html>
       }).join("");
     }
 
-    function heroSvg(evaluated, forecast) {
+    function intervalBand(rows, offset, scale) {
+      if (!rows.length) return "";
+      const upper = rows.map((row,index) => `${scale.x(offset+index)},${scale.y(row.q90)}`);
+      const lower = rows.map((row,index) => `${scale.x(offset+index)},${scale.y(row.q10)}`).reverse();
+      return `<polygon points="${upper.concat(lower).join(" ")}" fill="#f6c679" opacity=".35"/>`;
+    }
+
+    function shiftedPolyline(rows, key, offset, scale) {
+      return rows.map((row,index) => ({row,index:offset+index}))
+        .filter(item => finite(key === "actual" ? actual(item.row) : item.row[key]))
+        .map(item => `${scale.x(item.index).toFixed(1)},${scale.y(key === "actual" ? actual(item.row) : item.row[key]).toFixed(1)}`)
+        .join(" ");
+    }
+
+    function heroSvg(evaluated, forecast, showInterval) {
       const rows = [...evaluated, ...forecast];
       if (!rows.length) return `<p class="muted">No production forecast is available.</p>`;
       const width = 1040, height = 420, padding = {left:70,right:24,top:24,bottom:66};
-      const completeInterval = evaluated.length > 0 && forecast.length > 0 && rows.every(row => finite(row.q10) && finite(row.q90));
-      const scale = scales(rows, completeInterval ? ["actual","y_pred","q10","q90"] : ["actual","y_pred"], width, height, padding);
-      const band = completeInterval ? `<polygon points="${rows.map((row,index) => `${scale.x(index)},${scale.y(row.q90)}`).concat(rows.map((row,index) => `${scale.x(index)},${scale.y(row.q10)}`).reverse()).join(" ")}" fill="#f6c679" opacity=".35"/>` : "";
+      const scale = scales(rows, showInterval ? ["actual","y_pred","q10","q90"] : ["actual","y_pred"], width, height, padding);
+      const bands = showInterval ? intervalBand(evaluated,0,scale) + intervalBand(forecast,evaluated.length,scale) : "";
       const labels = rows.map((row,index) => index % 6 === 0 ? `<text x="${scale.x(index)}" y="${height-20}" text-anchor="middle" transform="rotate(-30 ${scale.x(index)} ${height-20})" fill="#667085" font-size="11">${esc(localHour(row.ds_utc))}</text>` : "").join("");
-      const boundaryX = scale.x(evaluated.length);
-      document.getElementById("interval-legend").hidden = !completeInterval;
-      return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(selectedArea)} evaluated and forecast prices">${gridSvg(scale,width,height,padding)}${band}<polyline points="${polyline(rows,"y_pred",scale.x,scale.y)}" fill="none" stroke="#d97706" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><polyline points="${polyline(rows,"actual",scale.x,scale.y)}" fill="none" stroke="#172b4d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><line x1="${boundaryX}" x2="${boundaryX}" y1="${padding.top}" y2="${height-padding.bottom}" stroke="#7d8799" stroke-width="1.5" stroke-dasharray="6 5"/><text x="${boundaryX+8}" y="${padding.top+15}" fill="#667085" font-size="12">Forecast begins</text>${labels}<text x="18" y="${height/2}" transform="rotate(-90 18 ${height/2})" text-anchor="middle" fill="#667085" font-size="12">DKK / MWh</text></svg>`;
+      const boundaryX = evaluated.length ? scale.x(evaluated.length-1) : null;
+      const separator = boundaryX === null ? "" : `<line x1="${boundaryX}" x2="${boundaryX}" y1="${padding.top}" y2="${height-padding.bottom}" stroke="#7d8799" stroke-width="1.5" stroke-dasharray="6 5"/><text x="${boundaryX+8}" y="${padding.top+15}" fill="#667085" font-size="12">Forecast begins</text>`;
+      document.getElementById("interval-legend").hidden = !showInterval;
+      return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(selectedArea)} evaluated and forecast prices">${gridSvg(scale,width,height,padding)}${bands}<polyline points="${shiftedPolyline(evaluated,"y_pred",0,scale)}" fill="none" stroke="#d97706" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><polyline points="${shiftedPolyline(forecast,"y_pred",evaluated.length,scale)}" fill="none" stroke="#d97706" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><polyline points="${shiftedPolyline(evaluated,"actual",0,scale)}" fill="none" stroke="#172b4d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>${separator}${labels}<text x="18" y="${height/2}" transform="rotate(-90 18 ${height/2})" text-anchor="middle" fill="#667085" font-size="12">DKK / MWh</text></svg>`;
     }
 
     function performanceSvg(rows) {
@@ -365,7 +672,11 @@ _TEMPLATE = r"""<!doctype html>
       const container = document.getElementById("performance");
       if (!families.length) { container.innerHTML = `<p class="muted">No evaluated history is available.</p>`; return; }
       container.innerHTML = families.map(modelFamily => {
-        const familyRows = areaRows.filter(row => family(row.model_label) === modelFamily);
+        let familyRows = areaRows.filter(row => family(row.model_label) === modelFamily);
+        if (modelFamily === productionFamily && model.model_release_id) {
+          familyRows = familyRows.filter(row => row.model_release_id === model.model_release_id);
+        }
+        if (!familyRows.length) return "";
         const dates = [...new Set(familyRows.map(deliveryDate))].sort().slice(-30);
         const rows = familyRows.filter(row => dates.includes(deliveryDate(row))).sort((a,b) => new Date(a.ds_utc) - new Date(b.ds_utc));
         const errors = rows.map(row => Number(row.y_pred) - actual(row));
@@ -385,15 +696,14 @@ _TEMPLATE = r"""<!doctype html>
 
     function render() {
       renderTabs();
-      const {evaluated, forecast, evaluatedDate, forecastDate} = heroData();
+      const {evaluated, forecast, evaluatedDate, forecastDate, showInterval} = heroData();
       document.getElementById("outlook-title").textContent = `Latest outlook · ${selectedArea}`;
       const generated = run.created_at_utc || run.generated_at_utc || DATA.generated_at_utc;
       metricCards("top-metrics", [["Evaluated day", deliveryLabel(evaluatedDate)],["Forecast day",deliveryLabel(forecastDate)],["Production model",productionName],["Generated · UTC",utcDateLabel(generated)]]);
-      document.getElementById("hero-chart").innerHTML = heroSvg(evaluated, forecast);
-      const forecastValues = forecast.map(row => Number(row.y_pred)).filter(Number.isFinite);
+      document.getElementById("hero-chart").innerHTML = heroSvg(evaluated, forecast, showInterval);
       const errors = evaluated.map(row => Number(row.y_pred) - actual(row));
       const mae = errors.length ? errors.reduce((sum,value) => sum + Math.abs(value), 0) / errors.length : null;
-      metricCards("forecast-metrics", [["Forecast avg · DKK/MWh",number(forecastValues.reduce((a,b)=>a+b,0)/forecastValues.length)],["Forecast min · DKK/MWh",number(Math.min(...forecastValues))],["Forecast max · DKK/MWh",number(Math.max(...forecastValues))],["Previous MAE · DKK/MWh",number(mae)]], true);
+      metricCards("forecast-metrics", [["Previous MAE · DKK/MWh",number(mae)]], true);
       modelHistory();
       document.getElementById("forecast-table").innerHTML = forecast.map(row => `<tr><td>${esc(localHour(row.ds_utc))}</td><td>${number(row.y_pred)}</td><td>${number(row.q10)}</td><td>${number(row.q50)}</td><td>${number(row.q90)}</td></tr>`).join("");
       const origin = run.forecast_origin_utc ? `${dateLabel(run.forecast_origin_utc)} ${shortHour(run.forecast_origin_utc)}` : "—";
