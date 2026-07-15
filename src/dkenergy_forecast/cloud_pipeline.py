@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from dkenergy_forecast.layout import (
     CHRONOS_MODEL_ARTIFACT_RELATIVE_PATH,
@@ -24,6 +24,10 @@ from dkenergy_forecast.static_dashboard import build_static_dashboard
 from dkenergy_forecast.storage import ArtifactStore, join_uri
 from dkenergy_forecast.publishing import atomic_write_json, atomic_write_parquet
 from dkenergy_forecast.types import to_utc_timestamp
+
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 MODEL_ARTIFACT_RELATIVE_PATH = CHRONOS_MODEL_ARTIFACT_RELATIVE_PATH
@@ -346,9 +350,22 @@ def _publish_static_dashboard(
         if paths.dashboard_history.exists()
         else pd.DataFrame()
     )
+    registered = _completed_dashboard_predictions(
+        paths.forecast_runs,
+        exclude_run_dir=run_dir,
+    )
+    new_predictions = pd.concat(
+        [
+            frame
+            for frame in (registered, pd.read_parquet(predictions_path))
+            if not frame.empty
+        ],
+        ignore_index=True,
+        sort=False,
+    )
     history = update_forecast_history(
         existing,
-        pd.read_parquet(predictions_path),
+        new_predictions,
         pd.read_parquet(paths.price_panel),
     )
     # The private archive is the durable record of registered forecasts. Keep
@@ -376,6 +393,63 @@ def _publish_static_dashboard(
         cache_control="public,max-age=300",
     )
     return ["dashboard/forecast_history.parquet", "static-site/index.html"]
+
+
+def _completed_dashboard_predictions(
+    forecast_runs: Path,
+    *,
+    exclude_run_dir: Path | None = None,
+) -> "pd.DataFrame":
+    """Recover dashboard rows from immutable, completed live forecast runs."""
+
+    import pandas as pd
+
+    if not forecast_runs.exists():
+        return pd.DataFrame()
+
+    excluded = exclude_run_dir.resolve() if exclude_run_dir else None
+    frames: list[pd.DataFrame] = []
+    for run_dir in sorted(path for path in forecast_runs.iterdir() if path.is_dir()):
+        if excluded is not None and run_dir.resolve() == excluded:
+            continue
+        completion_path = run_dir / "COMPLETED.json"
+        if not completion_path.exists():
+            continue
+
+        completion = json.loads(completion_path.read_text(encoding="utf-8"))
+        if str(completion.get("status", "")).lower() not in {"complete", "completed"}:
+            continue
+
+        manifest_path = run_dir / "manifest.json"
+        _require_output(manifest_path)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("run_kind") != "live":
+            continue
+        if completion.get("run_id") != manifest.get("run_id"):
+            raise ValueError(
+                f"Forecast manifest and completion receipt disagree in {run_dir}"
+            )
+
+        predictions_path = run_dir / "diagnostic_predictions.parquet"
+        if not predictions_path.exists():
+            predictions_path = run_dir / "predictions.parquet"
+        _require_output(predictions_path)
+        frames.append(pd.read_parquet(predictions_path))
+
+    if not frames:
+        return pd.DataFrame()
+    predictions = pd.concat(frames, ignore_index=True, sort=False)
+    identity = ["area", "ds_utc", "model_label"]
+    if {"forecast_origin_utc", *identity}.issubset(predictions.columns):
+        predictions["forecast_origin_utc"] = pd.to_datetime(
+            predictions["forecast_origin_utc"],
+            utc=True,
+        )
+        predictions = predictions.sort_values(
+            "forecast_origin_utc",
+            kind="stable",
+        ).drop_duplicates(identity, keep="last")
+    return predictions.reset_index(drop=True)
 
 
 def run_cloud_scoring(

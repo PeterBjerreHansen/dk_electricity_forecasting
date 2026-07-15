@@ -376,6 +376,151 @@ def test_static_dashboard_publication_updates_history_and_site(
     assert (site / "index.html").read_text(encoding="utf-8") == html
 
 
+def test_static_dashboard_recovers_missing_previous_forecast_from_completed_run(
+    tmp_path,
+) -> None:
+    workdir = tmp_path / "workdir"
+    store = tmp_path / "store"
+    site = tmp_path / "site"
+    forecast_runs = workdir / "artifacts" / "forecast_runs"
+    previous_run = forecast_runs / "run_previous"
+    current_run = forecast_runs / "run_current"
+    panel_dir = workdir / "data" / "model_ready"
+    for path in (previous_run, current_run, panel_dir):
+        path.mkdir(parents=True)
+
+    (workdir / "artifacts" / "latest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "completed",
+                "run_id": "run_current",
+                "run_prefix": "forecast_runs/run_current",
+                "completion_key": "forecast_runs/run_current/COMPLETED.json",
+                "delivery_date_local": "2026-07-16",
+                "information_cutoff_utc": "2026-07-15T08:00:00Z",
+                "decision_deadline_utc": "2026-07-15T10:00:00Z",
+                "committed_at_utc": "2026-07-15T08:30:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    previous_times = pd.date_range("2026-07-14T22:00:00Z", periods=24, freq="h")
+    current_times = pd.date_range("2026-07-15T22:00:00Z", periods=24, freq="h")
+
+    def predictions_for(
+        timestamps: pd.DatetimeIndex,
+        *,
+        origin: str,
+        run_id: str,
+    ) -> pd.DataFrame:
+        return pd.concat(
+            [
+                pd.DataFrame(
+                    {
+                        "forecast_origin_utc": origin,
+                        "ds_utc": timestamps,
+                        "ds_local": timestamps.tz_convert("Europe/Copenhagen"),
+                        "area": area,
+                        "model_label": "chronos_weather",
+                        "model_release_id": "release_1",
+                        "y_pred": 100.0,
+                        "q10": 80.0,
+                        "q50": 100.0,
+                        "q90": 120.0,
+                        "run_id": run_id,
+                    }
+                )
+                for area in ("DK1", "DK2")
+            ],
+            ignore_index=True,
+        )
+
+    previous_predictions = predictions_for(
+        previous_times,
+        origin="2026-07-14T08:00:00Z",
+        run_id="run_previous",
+    )
+    current_predictions = predictions_for(
+        current_times,
+        origin="2026-07-15T08:00:00Z",
+        run_id="run_current",
+    )
+    previous_predictions.to_parquet(
+        previous_run / "diagnostic_predictions.parquet",
+        index=False,
+    )
+    current_predictions.to_parquet(
+        current_run / "diagnostic_predictions.parquet",
+        index=False,
+    )
+    (previous_run / "manifest.json").write_text(
+        json.dumps({"run_id": "run_previous", "run_kind": "live"}),
+        encoding="utf-8",
+    )
+    (previous_run / "COMPLETED.json").write_text(
+        json.dumps({"run_id": "run_previous", "status": "completed"}),
+        encoding="utf-8",
+    )
+
+    panel = pd.concat(
+        [
+            pd.DataFrame({"area": area, "ds_utc": previous_times, "y": 105.0})
+            for area in ("DK1", "DK2")
+        ],
+        ignore_index=True,
+    )
+    panel.to_parquet(panel_dir / "price_panel_hourly_v1.parquet", index=False)
+
+    dashboard_predictions = current_predictions.drop(
+        columns=["forecast_origin_utc", "ds_local"]
+    ).copy()
+    dashboard_predictions["ds_utc"] = dashboard_predictions["ds_utc"].map(
+        lambda value: value.isoformat()
+    )
+    (current_run / "forecast_dashboard.json").write_text(
+        json.dumps(
+            {
+                "generated_at_utc": "2026-07-15T08:30:00Z",
+                "run": {
+                    "run_id": "run_current",
+                    "run_kind": "live",
+                    "delivery_date_local": "2026-07-16",
+                    "model": {
+                        "published_model": "chronos_weather",
+                        "model_release_id": "release_1",
+                    },
+                },
+                "predictions": dashboard_predictions.to_dict(orient="records"),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _publish_static_dashboard(
+        ArtifactStore(store),
+        static_site_uri=f"file://{site}",
+        workdir=workdir,
+    )
+
+    html = (site / "index.html").read_text(encoding="utf-8")
+    match = re.search(r"const DATA = (.*?);\n", html)
+    assert match is not None
+    data = json.loads(match.group(1))
+    for area in ("DK1", "DK2"):
+        evaluated = data["outlook"][area]["evaluated"]
+        assert len(evaluated) == 24
+        assert {row["y"] for row in evaluated} == {105.0}
+        assert {
+            pd.Timestamp(row["ds_utc"])
+            .tz_convert("Europe/Copenhagen")
+            .date()
+            .isoformat()
+            for row in evaluated
+        } == {"2026-07-15"}
+
+
 def _write_pipeline_outputs(
     workdir: Path,
     *,
