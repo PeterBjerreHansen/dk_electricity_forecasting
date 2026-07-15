@@ -3,7 +3,12 @@
 Daily hourly day-ahead price forecasts for Denmark's DK1 and DK2 bidding zones,
 with uncertainty intervals and transparent model diagnostics.
 
-**[Open the live DK1/DK2 forecast](http://dk-energy-forecasts-site-653044339519.s3-website.eu-central-1.amazonaws.com/)**
+**[Open the live DK1/DK2 forecast](https://dk-energy-forecasts-site-653044339519.s3.eu-central-1.amazonaws.com/index.html)**
+
+The page currently uses S3's HTTPS object endpoint while AWS completes the
+account verification required for CloudFront. The URL will move to the shorter
+CloudFront HTTPS endpoint after verification; the forecast itself is already
+live and updated by the same daily pipeline.
 
 The page shows the previous forecast against the newly available official
 prices, tomorrow's forecast, and rolling 30-day diagnostics for the production
@@ -55,7 +60,8 @@ prices + weather → features → fixed model → immutable forecast run
       private S3 artifacts    self-contained index.html
                                       │
                                       ▼
-                            CloudFront HTTPS page
+                       S3 HTTPS object endpoint
+                    (CloudFront after verification)
 ```
 
 One daily batch is enough because the public product changes only when a new

@@ -1,6 +1,6 @@
 # AWS infrastructure
 
-This directory contains one static-first production stack:
+This directory defines the final static-first production stack:
 
 - private S3 storage for data state, immutable forecast runs, dashboard history,
   and the Chronos LoRA artifact;
@@ -13,6 +13,22 @@ This directory contains one static-first production stack:
 
 There is no always-on dashboard service, load balancer, database, model training
 job, or automatic model selection.
+
+## Temporary public endpoint
+
+AWS account verification for new CloudFront resources is still pending. Until
+that account-level restriction is removed, the live page is served directly
+from S3's HTTPS object endpoint:
+
+```text
+https://dk-energy-forecasts-site-653044339519.s3.eu-central-1.amazonaws.com/index.html
+```
+
+The temporary bucket policy permits public reads of `index.html`. Do not apply
+the complete static-site Terraform changes while CloudFront creation remains
+blocked: the configuration below deliberately describes the final private S3
+origin and CloudFront delivery path. The daily ECS task and schedule do not
+depend on CloudFront and continue to update the same object.
 
 ## Terraform state
 
@@ -98,10 +114,11 @@ Watch `/ecs/dk-energy-forecasts-production/pipeline` in CloudWatch. A successful
 task exits with code zero after uploading the immutable run, `latest.json`, the
 private dashboard history, and the site `index.html`.
 
-## Static site
+## Final static site
 
-The site bucket is private and readable only by the CloudFront distribution.
-The public HTTPS URL is:
+After CloudFront verification and the final Terraform apply, the site bucket is
+private and readable only by the CloudFront distribution. The public HTTPS URL
+is then:
 
 ```bash
 terraform -chdir=infra/aws output -raw static_site_url

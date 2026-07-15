@@ -331,7 +331,7 @@ are append-only, so an existing raw key is never uploaded as a new S3 version.
 
 ## 13. AWS architecture
 
-Terraform creates:
+Terraform defines the final delivery architecture:
 
 - one private, encrypted, versioned artifact bucket;
 - one private, encrypted, versioned S3 origin containing `index.html`;
@@ -346,6 +346,12 @@ Terraform creates:
 There is deliberately no Streamlit service, ALB, Lambda renderer, database,
 automatic tuning job, or model-promotion service. CloudFront is a delivery
 layer, not an application server: the page remains one generated static file.
+
+While new CloudFront resources await AWS account verification, the same
+`index.html` is temporarily public through S3's HTTPS object endpoint. This
+changes only how a browser retrieves the file; it does not add another runtime
+service or change the forecast pipeline. The final Terraform apply replaces
+that public read path with the private-origin CloudFront design above.
 
 The task role may read the private project prefix. Its writes are limited to
 runtime state, forecast runs, dashboard history, and pointers; it cannot

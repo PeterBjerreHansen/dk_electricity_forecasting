@@ -2,6 +2,21 @@
 
 This is the runbook for the intentionally small AWS deployment.
 
+## Current delivery state
+
+CloudFront creation is temporarily blocked by AWS account verification. The
+daily pipeline is otherwise live, and its generated page is available through
+S3's HTTPS object endpoint:
+
+```text
+https://dk-energy-forecasts-site-653044339519.s3.eu-central-1.amazonaws.com/index.html
+```
+
+This is a delivery-layer workaround only. Forecast generation, immutable run
+publication, dashboard history, and the daily schedule are unchanged. Once AWS
+verifies the account, apply the final CloudFront configuration, confirm the
+CloudFront URL, and make the site bucket private as described below.
+
 ## Normal daily behavior
 
 At 10:00 Europe/Copenhagen, EventBridge Scheduler starts one Fargate task. The
@@ -18,8 +33,9 @@ latest.json
 dashboard/forecast_history.parquet
 ```
 
-The private site bucket should contain a new version of `index.html`; CloudFront
-should serve it over HTTPS within the five-minute cache lifetime.
+The site bucket should contain a new version of `index.html`. During the
+temporary state, S3 serves that object directly over HTTPS; after final cutover,
+CloudFront should serve it within the five-minute cache lifetime.
 
 ## Quick health check
 
@@ -63,7 +79,7 @@ Confirm the public page independently:
 
 ```bash
 curl --fail --silent --show-error \
-  "$(terraform -chdir=infra/aws output -raw static_site_url)" \
+  "https://dk-energy-forecasts-site-653044339519.s3.eu-central-1.amazonaws.com/index.html" \
   >/dev/null
 ```
 
@@ -132,8 +148,8 @@ aws s3 cp build/static-dashboard/index.html \
 
 S3 versioning preserves the previous page.
 
-CloudFront normally refreshes within five minutes. For an immediate manual
-cutover, invalidate both public paths:
+After the final CloudFront cutover, it normally refreshes within five minutes.
+For an immediate manual refresh at that point, invalidate both public paths:
 
 ```bash
 aws cloudfront create-invalidation \
