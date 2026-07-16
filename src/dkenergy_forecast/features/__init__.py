@@ -11,6 +11,14 @@ from dkenergy_forecast.features.feature_sets import (
     TABULAR_METADATA_COLUMNS,
     tabular_feature_columns_for_set,
 )
+from dkenergy_forecast.features.fundamentals_features import (
+    FUNDAMENTALS_SELECTION_POLICY,
+    add_fundamentals_derived_features,
+    add_residual_load_features,
+    add_transfer_capacity_features,
+    fundamentals_value_columns,
+    join_fundamentals_features,
+)
 from dkenergy_forecast.features.weather_features import (
     add_weather_derived_features,
     add_weather_ensemble_features,
@@ -20,9 +28,13 @@ from dkenergy_forecast.features.weather_features import (
 )
 
 __all__ = [
+    "FUNDAMENTALS_SELECTION_POLICY",
     "PriceFeatureConfig",
     "TABULAR_METADATA_COLUMNS",
     "WEIGHTED_MEDIAN_BASELINE_COLUMN",
+    "add_fundamentals_derived_features",
+    "add_residual_load_features",
+    "add_transfer_capacity_features",
     "add_weighted_median_baseline_feature",
     "add_weather_derived_features",
     "add_weather_ensemble_features",
@@ -31,6 +43,8 @@ __all__ = [
     "build_price_feature_frame",
     "build_training_matrix",
     "build_weather_experiment_frame",
+    "fundamentals_value_columns",
+    "join_fundamentals_features",
     "join_weather_features",
     "tabular_feature_columns_for_set",
     "weather_value_columns",

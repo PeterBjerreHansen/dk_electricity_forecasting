@@ -129,6 +129,41 @@ def test_join_weather_features_selects_lead_at_information_cutoff() -> None:
     )
 
 
+def test_join_weather_features_rejects_cutoff_after_origin() -> None:
+    target = pd.Timestamp("2025-01-02T11:00:00Z")
+    origin = pd.Timestamp("2025-01-01T10:00:00Z")
+    frame = pd.DataFrame(
+        {
+            "area": ["DK1"],
+            "ds_utc": [target],
+            "forecast_origin_utc": [origin],
+            "information_cutoff_utc": [origin + pd.Timedelta(minutes=1)],
+        }
+    )
+    area_features_long = pd.DataFrame(
+        {
+            "area": ["DK1"],
+            "ds_utc": [target],
+            "feature_name": [
+                "weather_gfs_global_lead1d_temperature_2m"
+            ],
+            "value": [11.0],
+            "location_coverage_ratio": [1.0],
+            "location_coverage_pass": [True],
+            "feature_group_pass": [True],
+            "forecast_available_at_utc": [
+                pd.Timestamp("2025-01-01T09:00:00Z")
+            ],
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="information_cutoff_utc must not be after forecast_origin_utc",
+    ):
+        join_weather_features(frame, area_features_long)
+
+
 def test_join_weather_features_excludes_circular_wind_direction() -> None:
     target = pd.Timestamp("2025-01-02T00:00:00Z")
     frame = pd.DataFrame(

@@ -7,6 +7,7 @@ from dkenergy_forecast.backtesting.horizons import make_danish_delivery_day_hori
 from dkenergy_forecast.features.price_features import (
     PriceFeatureConfig,
     WEIGHTED_MEDIAN_BASELINE_COLUMN,
+    build_price_experiment_frame,
     build_price_feature_frame,
     build_training_matrix,
 )
@@ -117,6 +118,60 @@ def test_weighted_median_baseline_feature_is_origin_safe() -> None:
         check_names=False,
     )
     assert WEIGHTED_MEDIAN_BASELINE_COLUMN not in disabled.columns
+
+
+def test_price_features_prefer_information_cutoff_over_later_origin() -> None:
+    panel = _two_area_panel(periods=24 * 12)
+    origin = pd.Timestamp("2024-01-09T14:00:00Z")
+    cutoff = pd.Timestamp("2024-01-09T11:00:00Z")
+    future = make_danish_delivery_day_horizon(panel, origin)
+    future["information_cutoff_utc"] = cutoff
+    config = PriceFeatureConfig(
+        lag_hours=(24,),
+        rolling_windows_hours=(24,),
+        seasonal_lookback_days=7,
+        spread_lag_hours=(24,),
+    )
+
+    leaky_panel = ensure_price_availability(panel)
+    newly_available = pd.to_datetime(
+        leaky_panel[PRICE_AVAILABILITY_COLUMN],
+        utc=True,
+    ).between(cutoff, origin, inclusive="left")
+    leaky_panel.loc[newly_available, "y"] = 999999.0
+
+    expected = build_price_feature_frame(
+        panel,
+        future,
+        forecast_origin_utc=origin,
+        config=config,
+    )
+    actual = build_price_feature_frame(
+        leaky_panel,
+        future,
+        forecast_origin_utc=origin,
+        config=config,
+    )
+
+    assert actual["information_cutoff_utc"].eq(cutoff).all()
+    pd.testing.assert_frame_equal(
+        expected[config.feature_columns],
+        actual[config.feature_columns],
+    )
+
+
+def test_price_experiment_rejects_cutoff_after_origin() -> None:
+    panel = _two_area_panel(periods=24 * 12)
+    origin = pd.Timestamp("2024-01-09T11:00:00Z")
+    origins = pd.DataFrame(
+        {
+            "forecast_origin_utc": [origin],
+            "information_cutoff_utc": [origin + pd.Timedelta(minutes=1)],
+        }
+    )
+
+    with pytest.raises(ValueError, match="cannot be after"):
+        build_price_experiment_frame(panel, origins)
 
 
 def _two_area_panel(*, periods: int) -> pd.DataFrame:

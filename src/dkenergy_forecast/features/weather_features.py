@@ -138,6 +138,20 @@ def _join_prepared_weather_features(
     base = normalize_utc_column(frame, "ds_utc")
     cutoff_column = _weather_cutoff_column(base)
     base = normalize_utc_column(base, cutoff_column).reset_index(drop=True)
+    if (
+        cutoff_column == "information_cutoff_utc"
+        and "forecast_origin_utc" in base.columns
+    ):
+        base = normalize_utc_column(base, "forecast_origin_utc")
+        later_cutoff = (
+            base["information_cutoff_utc"]
+            > base["forecast_origin_utc"]
+        )
+        if later_cutoff.any():
+            raise ValueError(
+                "information_cutoff_utc must not be after "
+                "forecast_origin_utc for weather features"
+            )
     base["_weather_row_id"] = range(len(base))
     if base.empty:
         return base.drop(columns=["_weather_row_id"])

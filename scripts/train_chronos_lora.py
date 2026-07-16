@@ -29,6 +29,7 @@ from dkenergy_forecast.models.chronos_production import (  # noqa: E402
     WEATHER_CUTOFF_COLUMNS,
     WEATHER_HORIZON_COVERAGE_UNIT,
     WEATHER_MISSING_VALUE_POLICY,
+    WEATHER_COVARIATE_MODES,
     WEATHER_SELECTION_POLICY,
     Chronos2LoRAWeatherConfig,
     DEFAULT_CHRONOS_LORA_ARTIFACT_PATH,
@@ -38,6 +39,9 @@ from dkenergy_forecast.models.chronos_production import (  # noqa: E402
     require_lora_weather_signal,
     selected_weather_columns,
     to_chronos_timestamp,
+)
+from dkenergy_forecast.models.chronos_artifact_identity import (  # noqa: E402
+    attach_chronos_release_identity,
 )
 from dkenergy_forecast.publishing import git_commit, json_safe  # noqa: E402
 from dkenergy_forecast.types import (  # noqa: E402
@@ -80,6 +84,8 @@ def main() -> None:
         prediction_length=args.prediction_length,
         weather_covariate_mode=args.weather_covariate_mode,
         information_cutoff_local_time=args.information_cutoff_local_time,
+        cross_learning=args.cross_learning,
+        add_weather_derived_features=args.add_weather_derived_features,
     )
 
     from chronos import BaseChronosPipeline
@@ -168,8 +174,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--random-seed", type=int, default=2026)
     parser.add_argument(
         "--weather-covariate-mode",
-        choices=["all", "raw", "ensemble", "ensemble_mean"],
+        choices=WEATHER_COVARIATE_MODES,
         default="ensemble_mean",
+    )
+    parser.add_argument(
+        "--cross-learning",
+        action="store_true",
+        help="Enable joint cross-series learning when Chronos predicts DK1 and DK2.",
+    )
+    parser.add_argument(
+        "--add-weather-derived-features",
+        action="store_true",
+        help="Add the existing physics transforms and DK1-DK2 weather-spread covariates.",
     )
     parser.add_argument("--weather-horizon-min-coverage", type=float, default=1.0)
     parser.add_argument(
@@ -216,6 +232,9 @@ def make_lora_training_frame(
     prediction_length: int,
     weather_covariate_mode: str,
     information_cutoff_local_time: str = DEFAULT_INFORMATION_CUTOFF_LOCAL_TIME,
+    cross_learning: bool = False,
+    add_weather_ensemble_features: bool = True,
+    add_weather_derived_features: bool = False,
 ) -> tuple[pd.DataFrame, list[str], dict[str, Any]]:
     panel_utc = ensure_price_availability(
         normalize_utc_column(panel, "ds_utc")
@@ -249,12 +268,22 @@ def make_lora_training_frame(
         publication_local_time=information_cutoff_local_time,
         column="information_cutoff_utc",
     )
+    experiment_config = Chronos2LoRAWeatherConfig(
+        weather_covariate_mode=weather_covariate_mode,
+        cross_learning=cross_learning,
+        add_weather_ensemble_features=add_weather_ensemble_features,
+        add_weather_derived_features=add_weather_derived_features,
+    )
     train = add_weather_covariates(
         train,
         weather_utc,
-        config=Chronos2LoRAWeatherConfig(weather_covariate_mode=weather_covariate_mode),
+        config=experiment_config,
     )
-    weather_columns = selected_weather_columns(train, mode=weather_covariate_mode)
+    weather_columns = selected_weather_columns(
+        train,
+        mode=weather_covariate_mode,
+        include_derived_features=add_weather_derived_features,
+    )
     if not weather_columns:
         raise ValueError("No availability-safe weather covariates are available for Chronos LoRA training.")
     covariates = [column for column in CALENDAR_COVARIATES if column in train.columns] + weather_columns
@@ -285,6 +314,9 @@ def make_lora_training_frame(
         "available_random_windows_lower_bound": int((lengths - min_required + 1).clip(lower=0).sum()),
         "covariate_count": int(len(covariates)),
         "weather_covariate_count": int(sum(column.startswith("weather_") for column in covariates)),
+        "cross_learning": cross_learning,
+        "add_weather_ensemble_features": add_weather_ensemble_features,
+        "add_weather_derived_features": add_weather_derived_features,
         "weather_origin_policy": (
             f"delivery-day-minus-one at {information_cutoff_local_time} Europe/Copenhagen"
         ),
@@ -357,10 +389,16 @@ def make_manifest(
         "information_cutoff_local_time",
         DEFAULT_INFORMATION_CUTOFF_LOCAL_TIME,
     )
-    return {
+    cross_learning = bool(getattr(args, "cross_learning", False))
+    add_weather_ensemble_features = bool(
+        getattr(args, "add_weather_ensemble_features", True)
+    )
+    add_weather_derived_features = bool(
+        getattr(args, "add_weather_derived_features", False)
+    )
+    manifest = {
         "artifact_schema_version": CHRONOS_LORA_ARTIFACT_SCHEMA_VERSION,
         "model_name": "chronos_weather",
-        "release_id": f"sha256-{artifact_content_sha256[:16]}",
         "created_at_utc": datetime.now(timezone.utc),
         "base_model_id": args.base_model_id,
         "base_model_revision": getattr(args, "base_model_revision", None),
@@ -372,6 +410,9 @@ def make_manifest(
         "learning_rate": float(args.learning_rate),
         "random_seed": int(getattr(args, "random_seed", 2026)),
         "weather_covariate_mode": args.weather_covariate_mode,
+        "cross_learning": cross_learning,
+        "add_weather_ensemble_features": add_weather_ensemble_features,
+        "add_weather_derived_features": add_weather_derived_features,
         "covariates": list(covariates),
         "calendar_covariates": [column for column in covariates if column in CALENDAR_COVARIATES],
         "weather_covariates": [column for column in covariates if column.startswith("weather_")],
@@ -459,6 +500,7 @@ def make_manifest(
         "torch_version": torch_version,
         "git_commit": git_commit(ROOT),
     }
+    return attach_chronos_release_identity(manifest)
 
 
 def _unique_values(frame: pd.DataFrame, column: str) -> list[Any]:
@@ -487,7 +529,7 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _hash_mapping(values: dict[str, str]) -> str:
+def _hash_mapping(values: dict[str, Any]) -> str:
     canonical = json.dumps(values, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
 

@@ -53,6 +53,11 @@ def main() -> None:
             "output_dir": str(Path(args.output_dir)),
             "prediction_row_count": int(len(history)),
             "model_score_row_count": int(len(scores)),
+            "evidence_tiers": (
+                sorted(history["evidence_tier"].dropna().astype(str).unique())
+                if "evidence_tier" in history
+                else []
+            ),
             "evaluated_forecast_run_count": (
                 int(history["run_id"].nunique()) if "run_id" in history else 0
             ),

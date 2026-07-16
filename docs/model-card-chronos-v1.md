@@ -21,6 +21,9 @@ model-file hashes, and training code commit. It supports an optional embedded
 validation summary; this release leaves that field empty and keeps reviewed
 evidence in a separate versioned report. Runtime rejects schema,
 base-revision, file-hash, covariate, or weather-policy mismatches.
+Newly trained candidates also derive their release ID from both the immutable
+model-file content and the serving policy, so inference-only changes such as
+cross-series learning receive a distinct release identity.
 
 The current release uses `no_temporal_fill_then_zero` for training, serving
 context, and serving future covariates. Weather coverage is measured before
@@ -41,6 +44,12 @@ not a guarantee of future performance or a long live-production record. The
 report records its prediction-source hash, releases, interval, pairing keys,
 and statistical settings. See [evaluation.md](evaluation.md) for the reusable
 descriptive workflow.
+
+The evidence tier is `reconstructed_proxy`, not `strict_point_in_time`.
+Historical prices use a project publication-time convention and the latest
+retrieved revision, while weather availability is synthetic. The numerical
+results remain useful as initial model evidence, but they do not prove that
+every historical input exactly matches the vintage available at the cutoff.
 
 ## Failure behavior
 

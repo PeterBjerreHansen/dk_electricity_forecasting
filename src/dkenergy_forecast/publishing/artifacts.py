@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterable
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,7 @@ import pandas as pd
 
 from dkenergy_forecast.types import (
     PRICE_AVAILABILITY_COLUMN,
+    add_price_availability,
     ensure_price_availability,
     normalize_utc_column,
     require_columns,
@@ -51,6 +53,7 @@ MODEL_SCORE_REQUIRED_COLUMNS = [
 MODEL_SCORE_COLUMNS = [
     "model_label",
     "area",
+    "evidence_tier",
     "rows",
     "evaluated_rows",
     "mae",
@@ -154,6 +157,8 @@ def validate_model_scores_schema(scores: pd.DataFrame) -> None:
     key_columns = ["model_label", "area"]
     if "model_release_id" in scores.columns:
         key_columns.append("model_release_id")
+    if "evidence_tier" in scores.columns:
+        key_columns.append("evidence_tier")
     duplicate_count = int(scores.duplicated(key_columns).sum())
     if duplicate_count:
         raise ValueError(
@@ -207,7 +212,34 @@ def build_published_forecast_scores(history: pd.DataFrame) -> pd.DataFrame:
 
     from dkenergy_forecast.evaluation.summary import add_prediction_diagnostics, model_score_table
 
-    scores = model_score_table(add_prediction_diagnostics(history))
+    require_columns(
+        history,
+        ["evidence_tier"],
+        "published forecast history",
+    )
+    missing_tier = (
+        history["evidence_tier"].isna()
+        | history["evidence_tier"].astype("string").str.strip().eq("").fillna(True)
+    )
+    if missing_tier.any():
+        raise ValueError(
+            "Published forecast history contains missing evidence_tier values"
+        )
+
+    score_frames: list[pd.DataFrame] = []
+    for evidence_tier, tier_history in history.groupby(
+        "evidence_tier",
+        sort=True,
+    ):
+        tier_scores = model_score_table(
+            add_prediction_diagnostics(tier_history)
+        )
+        tier_scores["evidence_tier"] = str(evidence_tier)
+        score_frames.append(tier_scores)
+    scores = pd.concat(score_frames, ignore_index=True).sort_values(
+        ["evidence_tier", "area", "mae", "model_label"],
+        kind="stable",
+    ).reset_index(drop=True)
     scores["score_source"] = "published_forecast_history"
     return scores
 
@@ -241,15 +273,21 @@ def _load_forecast_run_predictions(artifact_root: str | Path) -> pd.DataFrame:
         completion_path = run_dir / COMPLETION_FILENAME
         manifest = _read_optional_manifest(manifest_path)
         completion = _read_optional_manifest(completion_path)
-        if not manifest or not _completion_is_score_eligible(manifest, completion):
+        if not manifest:
             continue
-        predictions_path = run_dir / "predictions.parquet"
-        if not predictions_path.exists():
+        evidence_tier = _completion_evidence_tier(
+            manifest,
+            completion,
+            manifest_path=manifest_path,
+        )
+        if evidence_tier is None:
             continue
-        _verify_manifest_artifact_checksum(manifest, "predictions", predictions_path)
-        frame = normalize_published_predictions(pd.read_parquet(predictions_path))
-        require_columns(frame, ["unique_id"], f"{predictions_path}")
-        validate_prediction_artifact_schema(frame)
+        frame = _load_verified_saved_live_run_frame(
+            run_dir,
+            manifest=manifest,
+            completion=completion,
+            evidence_tier=evidence_tier,
+        )
         run_id = str(manifest.get("run_id") or run_dir.name)
         if run_id in seen_run_ids:
             raise ValueError(
@@ -257,25 +295,6 @@ def _load_forecast_run_predictions(artifact_root: str | Path) -> pd.DataFrame:
                 f"{seen_run_ids[run_id]} and {run_dir}"
             )
         seen_run_ids[run_id] = run_dir
-        if "run_id" in frame.columns:
-            conflicting_run_ids = frame["run_id"].dropna().astype(str).ne(run_id)
-            if conflicting_run_ids.any():
-                raise ValueError(
-                    f"Published prediction run_id does not match its manifest: {predictions_path}"
-                )
-        manifest_origin = manifest.get("forecast_origin_utc")
-        if manifest_origin is not None:
-            expected_origin = to_utc_timestamp(manifest_origin)
-            if frame["forecast_origin_utc"].ne(expected_origin).any():
-                raise ValueError(
-                    "Published prediction forecast_origin_utc does not match its manifest: "
-                    f"{predictions_path}"
-                )
-        frame["run_id"] = run_id
-        frame["published_at_utc"] = completion["committed_at_utc"]
-        frame["published_forecast_origin_utc"] = manifest_origin
-        frame["run_kind"] = manifest["run_kind"]
-        frame["score_eligible"] = True
         frames.append(frame)
 
     if not frames:
@@ -306,30 +325,359 @@ def _load_forecast_run_predictions(artifact_root: str | Path) -> pd.DataFrame:
     )
 
 
+def load_verified_saved_live_predictions(
+    run_dirs: Iterable[str | Path],
+) -> pd.DataFrame:
+    """Load prediction rows only after verifying each live run and receipt."""
+
+    frames: list[pd.DataFrame] = []
+    seen_run_ids: dict[str, Path] = {}
+    for value in run_dirs:
+        run_dir = Path(value)
+        manifest_path = run_dir / "manifest.json"
+        completion_path = run_dir / COMPLETION_FILENAME
+        manifest = _read_optional_manifest(manifest_path)
+        completion = _read_optional_manifest(completion_path)
+        if not manifest or not completion:
+            raise ValueError(f"Saved-live run is incomplete: {run_dir}")
+        evidence_tier = _completion_evidence_tier(
+            manifest,
+            completion,
+            manifest_path=manifest_path,
+        )
+        if evidence_tier != "saved_live_forecast":
+            raise ValueError(f"Forecast run is not timely saved-live evidence: {run_dir}")
+        run_id = str(manifest.get("run_id") or run_dir.name)
+        if run_id in seen_run_ids:
+            raise ValueError(
+                f"Saved-live run_id {run_id!r} is used by both "
+                f"{seen_run_ids[run_id]} and {run_dir}"
+            )
+        seen_run_ids[run_id] = run_dir
+        frames.append(
+            _load_verified_saved_live_run_frame(
+                run_dir,
+                manifest=manifest,
+                completion=completion,
+                evidence_tier=evidence_tier,
+            )
+        )
+    if not frames:
+        raise ValueError("At least one saved-live run directory is required")
+    return pd.concat(frames, ignore_index=True).sort_values(
+        ["forecast_origin_utc", "run_id", "model_label", "unique_id", "ds_utc"]
+    ).reset_index(drop=True)
+
+
+def _load_verified_saved_live_run_frame(
+    run_dir: Path,
+    *,
+    manifest: dict[str, Any],
+    completion: dict[str, Any],
+    evidence_tier: str,
+) -> pd.DataFrame:
+    predictions_path = run_dir / "predictions.parquet"
+    manifest_path = run_dir / "manifest.json"
+    if not predictions_path.exists():
+        raise ValueError(
+            f"Completed saved-live forecast is missing predictions: "
+            f"{predictions_path}"
+        )
+    _verify_manifest_artifact_checksum(manifest, "predictions", predictions_path)
+    frame = normalize_published_predictions(pd.read_parquet(predictions_path))
+    require_columns(frame, ["unique_id"], f"{predictions_path}")
+    validate_prediction_artifact_schema(frame)
+    _validate_saved_live_delivery_timing(
+        frame,
+        manifest=manifest,
+        completion=completion,
+        run_dir=run_dir,
+    )
+    run_id = str(manifest.get("run_id") or run_dir.name)
+    if "run_id" in frame.columns:
+        conflicting_run_ids = frame["run_id"].dropna().astype(str).ne(run_id)
+        if conflicting_run_ids.any():
+            raise ValueError(
+                f"Published prediction run_id does not match its manifest: "
+                f"{predictions_path}"
+            )
+    manifest_origin = manifest.get("forecast_origin_utc")
+    if manifest_origin is None:
+        raise ValueError(f"Saved live manifest has no forecast origin: {manifest_path}")
+    expected_origin = to_utc_timestamp(manifest_origin)
+    if frame["forecast_origin_utc"].ne(expected_origin).any():
+        raise ValueError(
+            "Published prediction forecast_origin_utc does not match its manifest: "
+            f"{predictions_path}"
+        )
+    manifest_cutoff = manifest.get("information_cutoff_utc")
+    if manifest_cutoff is None:
+        if evidence_tier == "saved_live_forecast":
+            raise ValueError(
+                f"Saved live forecast manifest has no information_cutoff_utc: "
+                f"{manifest_path}"
+            )
+        manifest_cutoff = manifest_origin
+    expected_cutoff = to_utc_timestamp(manifest_cutoff)
+    if "information_cutoff_utc" in frame.columns:
+        recorded_cutoff = pd.to_datetime(
+            frame["information_cutoff_utc"],
+            utc=True,
+            errors="coerce",
+        )
+        if recorded_cutoff.isna().any() or recorded_cutoff.ne(expected_cutoff).any():
+            raise ValueError(
+                "Published prediction information_cutoff_utc does not match "
+                f"its manifest: {predictions_path}"
+            )
+    frame["information_cutoff_utc"] = expected_cutoff
+    frame["run_id"] = run_id
+    frame["published_at_utc"] = completion["committed_at_utc"]
+    frame["published_forecast_origin_utc"] = manifest_origin
+    frame["run_kind"] = manifest["run_kind"]
+    frame["score_eligible"] = True
+    frame["evidence_tier"] = evidence_tier
+    frame["evidence_id"] = (
+        completion["manifest_sha256"]
+        if evidence_tier == "saved_live_forecast"
+        else f"legacy-manifest-sha256:{file_sha256(manifest_path)}"
+    )
+    return frame
+
+
+def _validate_saved_live_delivery_timing(
+    frame: pd.DataFrame,
+    *,
+    manifest: dict[str, Any],
+    completion: dict[str, Any],
+    run_dir: Path,
+) -> None:
+    if frame.empty:
+        raise ValueError(f"Saved-live run has no forecast targets: {run_dir}")
+
+    committed_at = to_utc_timestamp(completion["committed_at_utc"])
+    deadline = to_utc_timestamp(manifest["decision_deadline_utc"])
+    origin = to_utc_timestamp(manifest["forecast_origin_utc"])
+    cutoff = to_utc_timestamp(
+        manifest.get("information_cutoff_utc")
+        or manifest["forecast_origin_utc"]
+    )
+    if cutoff > origin:
+        raise ValueError(
+            "Saved-live information cutoff is after its forecast origin: "
+            f"{run_dir}"
+        )
+
+    # Derive availability from target timestamps instead of trusting an
+    # availability column embedded in the published artifact.
+    target_availability = add_price_availability(
+        frame[["ds_utc"]].drop(columns=[PRICE_AVAILABILITY_COLUMN], errors="ignore")
+    )[PRICE_AVAILABILITY_COLUMN]
+    timing_fields = {
+        "information cutoff": cutoff,
+        "forecast origin": origin,
+        "decision deadline": deadline,
+        "publication": committed_at,
+    }
+    for field_name, timestamp in timing_fields.items():
+        if target_availability.le(timestamp).any():
+            raise ValueError(
+                f"Saved-live {field_name} must precede every target's price "
+                f"availability timestamp: {run_dir}"
+            )
+
+
 def _read_optional_manifest(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _completion_is_score_eligible(
+def _completion_evidence_tier(
+    manifest: dict[str, Any],
+    completion: dict[str, Any],
+    *,
+    manifest_path: Path,
+) -> str | None:
+    if not completion:
+        return None
+    if str(completion.get("status", "")).lower() not in COMPLETED_RUN_STATUSES:
+        return None
+    if completion.get("run_id") != manifest.get("run_id"):
+        raise ValueError(
+            f"Forecast manifest and completion receipt have different run ids: "
+            f"{manifest_path.parent}"
+        )
+    committed_at = completion.get("committed_at_utc")
+    manifest_committed_at = manifest.get("committed_at_utc")
+    deadline = manifest.get("decision_deadline_utc")
+    if committed_at is None or deadline is None:
+        return None
+    if manifest.get("run_kind") not in SCOREABLE_RUN_KINDS:
+        return None
+    if to_utc_timestamp(committed_at) > to_utc_timestamp(deadline):
+        return None
+    if manifest_committed_at is None:
+        if _has_receipt_integrity_metadata(manifest, completion):
+            _verify_legacy_receipt_integrity(
+                manifest_path=manifest_path,
+                manifest=manifest,
+                completion=completion,
+            )
+        return "reconstructed_proxy"
+    if to_utc_timestamp(committed_at) != to_utc_timestamp(manifest_committed_at):
+        raise ValueError(
+            "Forecast completion timestamp does not match the hashed manifest: "
+            f"{manifest_path.parent}"
+        )
+    _verify_completion_receipt_integrity(
+        manifest_path=manifest_path,
+        manifest=manifest,
+        completion=completion,
+    )
+    return "saved_live_forecast"
+
+
+def _has_receipt_integrity_metadata(
     manifest: dict[str, Any],
     completion: dict[str, Any],
 ) -> bool:
-    if not completion:
-        return False
-    if str(completion.get("status", "")).lower() not in COMPLETED_RUN_STATUSES:
-        return False
-    if completion.get("run_id") != manifest.get("run_id"):
-        return False
-    committed_at = completion.get("committed_at_utc")
-    deadline = manifest.get("decision_deadline_utc")
-    if committed_at is None or deadline is None:
-        return False
-    return (
-        manifest.get("run_kind") in SCOREABLE_RUN_KINDS
-        and to_utc_timestamp(committed_at) <= to_utc_timestamp(deadline)
+    return any(
+        value is not None
+        for value in (
+            manifest.get("artifact_sha256"),
+            manifest.get("artifact_identity_sha256"),
+            completion.get("manifest_sha256"),
+            completion.get("artifact_identity_sha256"),
+        )
     )
+
+
+def _verify_legacy_receipt_integrity(
+    *,
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    completion: dict[str, Any],
+) -> None:
+    expected_manifest_hash = completion.get("manifest_sha256")
+    if expected_manifest_hash is not None:
+        if not isinstance(expected_manifest_hash, str):
+            raise ValueError(
+                "Legacy completion receipt manifest_sha256 must be text: "
+                f"{manifest_path.parent}"
+            )
+        if file_sha256(manifest_path) != expected_manifest_hash:
+            raise ValueError(
+                "Legacy completion receipt manifest checksum mismatch for "
+                f"{manifest_path}"
+            )
+
+    artifact_hashes = manifest.get("artifact_sha256")
+    if artifact_hashes is not None and not isinstance(artifact_hashes, dict):
+        raise ValueError(
+            f"Legacy manifest artifact_sha256 must be an object: {manifest_path}"
+        )
+    manifest_identity = manifest.get("artifact_identity_sha256")
+    receipt_identity = completion.get("artifact_identity_sha256")
+    if manifest_identity is None and receipt_identity is None:
+        return
+    if not isinstance(artifact_hashes, dict):
+        raise ValueError(
+            "Legacy artifact identity cannot be verified without artifact hashes: "
+            f"{manifest_path.parent}"
+        )
+    calculated_identity = _artifact_identity_sha256(artifact_hashes)
+    for label, value in (
+        ("manifest", manifest_identity),
+        ("completion receipt", receipt_identity),
+    ):
+        if value is not None and value != calculated_identity:
+            raise ValueError(
+                f"Legacy {label} artifact identity mismatch: {manifest_path.parent}"
+            )
+
+
+def _verify_completion_receipt_integrity(
+    *,
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    completion: dict[str, Any],
+) -> None:
+    expected_manifest_hash = completion.get("manifest_sha256")
+    if not isinstance(expected_manifest_hash, str):
+        raise ValueError(
+            f"Saved live completion receipt has no manifest_sha256: "
+            f"{manifest_path.parent}"
+        )
+    actual_manifest_hash = file_sha256(manifest_path)
+    if actual_manifest_hash != expected_manifest_hash:
+        raise ValueError(
+            "Saved live completion receipt manifest checksum mismatch for "
+            f"{manifest_path}"
+        )
+
+    artifact_hashes = manifest.get("artifact_sha256")
+    if not isinstance(artifact_hashes, dict) or "predictions" not in artifact_hashes:
+        raise ValueError(
+            f"Saved live manifest has no predictions artifact checksum: "
+            f"{manifest_path}"
+        )
+    calculated_identity = _artifact_identity_sha256(artifact_hashes)
+    manifest_identity = manifest.get("artifact_identity_sha256")
+    receipt_identity = completion.get("artifact_identity_sha256")
+    if (
+        not isinstance(manifest_identity, str)
+        or manifest_identity != calculated_identity
+        or receipt_identity != calculated_identity
+    ):
+        raise ValueError(
+            f"Saved live artifact identity mismatch: {manifest_path.parent}"
+        )
+
+
+def verify_forecast_completion_receipt(
+    manifest_path: str | Path,
+    completion_path: str | Path,
+) -> dict[str, Any]:
+    """Verify a completed forecast manifest/receipt pair and return its identity."""
+
+    manifest_file = Path(manifest_path)
+    completion_file = Path(completion_path)
+    manifest = _read_optional_manifest(manifest_file)
+    completion = _read_optional_manifest(completion_file)
+    if not manifest or not completion:
+        raise ValueError(
+            "Forecast completion verification requires both manifest and receipt"
+        )
+    if str(completion.get("status", "")).lower() not in COMPLETED_RUN_STATUSES:
+        raise ValueError("Forecast completion receipt is not completed")
+    if completion.get("run_id") != manifest.get("run_id"):
+        raise ValueError("Forecast manifest and completion receipt have different run ids")
+    committed_at = completion.get("committed_at_utc")
+    manifest_committed_at = manifest.get("committed_at_utc")
+    if committed_at is None or manifest_committed_at is None:
+        raise ValueError(
+            "Forecast manifest and completion receipt require committed_at_utc"
+        )
+    if to_utc_timestamp(committed_at) != to_utc_timestamp(manifest_committed_at):
+        raise ValueError(
+            "Forecast completion timestamp does not match the hashed manifest"
+        )
+    _verify_completion_receipt_integrity(
+        manifest_path=manifest_file,
+        manifest=manifest,
+        completion=completion,
+    )
+    return {
+        "manifest": manifest,
+        "completion": completion,
+        "run_id": str(manifest["run_id"]),
+        "committed_at_utc": to_utc_timestamp(committed_at),
+        "manifest_sha256": str(completion["manifest_sha256"]),
+        "artifact_identity_sha256": str(
+            completion["artifact_identity_sha256"]
+        ),
+    }
 
 
 def _verify_manifest_artifact_checksum(
@@ -364,7 +712,16 @@ def _panel_actuals(panel: pd.DataFrame) -> pd.DataFrame:
 
 
 def _empty_published_prediction_frame() -> pd.DataFrame:
-    return pd.DataFrame(columns=[*PUBLISHED_PREDICTION_REQUIRED_COLUMNS, "unique_id", "run_id"])
+    return pd.DataFrame(
+        columns=[
+            *PUBLISHED_PREDICTION_REQUIRED_COLUMNS,
+            "unique_id",
+            "run_id",
+            "information_cutoff_utc",
+            "evidence_tier",
+            "evidence_id",
+        ]
+    )
 
 
 def _empty_published_history_frame() -> pd.DataFrame:
@@ -375,6 +732,9 @@ def _empty_published_history_frame() -> pd.DataFrame:
             "run_id",
             "published_at_utc",
             "published_forecast_origin_utc",
+            "information_cutoff_utc",
+            "evidence_tier",
+            "evidence_id",
             "y",
             "actual_price",
         ]
@@ -499,7 +859,9 @@ def write_forecast_run_artifacts(
             for name, path in temp_paths.items()
             if name not in {"manifest", "completion"}
         }
+        committed_at_utc = datetime.now(timezone.utc)
         manifest_out = dict(manifest)
+        manifest_out["committed_at_utc"] = committed_at_utc
         manifest_out["artifact_sha256"] = artifact_sha256
         manifest_out["artifact_identity_sha256"] = _artifact_identity_sha256(
             artifact_sha256
@@ -511,7 +873,7 @@ def write_forecast_run_artifacts(
                 "schema_version": 1,
                 "status": "completed",
                 "run_id": manifest_out["run_id"],
-                "committed_at_utc": datetime.now(timezone.utc),
+                "committed_at_utc": committed_at_utc,
                 "manifest_sha256": file_sha256(temp_paths["manifest"]),
                 "artifact_identity_sha256": manifest_out["artifact_identity_sha256"],
             },
@@ -564,6 +926,21 @@ def write_latest_pointer(
         raise ValueError("Forecast manifest and completion receipt have different run ids")
     if str(completion.get("status", "")).lower() not in COMPLETED_RUN_STATUSES:
         raise ValueError(f"Forecast run is not completed: {run_path}")
+    _verify_completion_receipt_integrity(
+        manifest_path=manifest_path,
+        manifest=manifest,
+        completion=completion,
+    )
+    for artifact_name, expected_hash in manifest["artifact_sha256"].items():
+        artifact_path = run_path / _artifact_filename(artifact_name)
+        if not artifact_path.exists():
+            raise ValueError(
+                f"Cannot publish forecast run with missing artifact: {artifact_path}"
+            )
+        if file_sha256(artifact_path) != expected_hash:
+            raise ValueError(
+                f"Cannot publish forecast run with corrupt artifact: {artifact_path}"
+            )
 
     pointer.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -764,6 +1141,19 @@ def _forecast_run_paths(
     if include_dashboard:
         paths["dashboard"] = run_path / "forecast_dashboard.json"
     return paths
+
+
+def _artifact_filename(artifact_name: str) -> str:
+    filenames = {
+        "predictions": "predictions.parquet",
+        "model_scores": "model_scores.parquet",
+        "score_predictions": "score_predictions.parquet",
+        "diagnostic_predictions": "diagnostic_predictions.parquet",
+        "dashboard": "forecast_dashboard.json",
+    }
+    if artifact_name not in filenames:
+        raise ValueError(f"Unknown forecast artifact name: {artifact_name!r}")
+    return filenames[artifact_name]
 
 
 def _artifact_identity_sha256(artifact_hashes: dict[str, str]) -> str:

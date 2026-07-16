@@ -1,0 +1,47 @@
+{
+  "schema_version": "experiment_spec_v1",
+  "name": "forecast-foundation-validation",
+  "kind": "command_pipeline",
+  "description": "Example smoke/full validation pipeline; it does not promote artifacts.",
+  "inputs": [
+    {
+      "name": "project-config",
+      "path": "pyproject.toml",
+      "required": true
+    }
+  ],
+  "metadata": {
+    "owner": "forecasting"
+  },
+  "profiles": {
+    "smoke": {
+      "stages": [
+        {
+          "name": "focused-tests",
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "tests/test_experiment_runner.py"
+          ],
+          "timeout_seconds": 180
+        }
+      ]
+    },
+    "full": {
+      "stages": [
+        {
+          "name": "full-tests",
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q"
+          ],
+          "timeout_seconds": 900
+        }
+      ]
+    }
+  }
+}

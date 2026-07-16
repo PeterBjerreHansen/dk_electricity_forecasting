@@ -127,6 +127,48 @@ def test_history_rejects_checksum_mismatch(tmp_path: Path) -> None:
         )
 
 
+def test_history_rejects_completed_run_missing_predictions(tmp_path: Path) -> None:
+    run_dir = tmp_path / "runs" / "run-1"
+    _write_run(run_dir)
+    (run_dir / "predictions.parquet").unlink()
+
+    with pytest.raises(ValueError, match="missing predictions"):
+        build_published_forecast_history(
+            tmp_path / "runs",
+            _predictions()[["unique_id", "ds_utc", "area", "y"]],
+        )
+
+
+def test_history_rejects_tampered_live_completion_receipt(tmp_path: Path) -> None:
+    run_dir = tmp_path / "runs" / "run-1"
+    written = _write_run(run_dir)
+    completion = json.loads(written["completion"].read_text(encoding="utf-8"))
+    completion["manifest_sha256"] = "0" * 64
+    written["completion"].write_text(json.dumps(completion), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="manifest checksum mismatch"):
+        build_published_forecast_history(
+            tmp_path / "runs",
+            _predictions()[["unique_id", "ds_utc", "area", "y"]],
+        )
+
+
+def test_history_rejects_completion_time_not_bound_to_manifest(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "runs" / "run-1"
+    written = _write_run(run_dir)
+    completion = json.loads(written["completion"].read_text(encoding="utf-8"))
+    completion["committed_at_utc"] = "2024-01-02T10:00:00Z"
+    written["completion"].write_text(json.dumps(completion), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="does not match the hashed manifest"):
+        build_published_forecast_history(
+            tmp_path / "runs",
+            _predictions()[["unique_id", "ds_utc", "area", "y"]],
+        )
+
+
 def test_atomic_parquet_failure_preserves_previous_file(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "latest.parquet"
     atomic_write_parquet(path, pd.DataFrame({"value": [1]}))
@@ -153,6 +195,19 @@ def test_latest_pointer_references_a_completed_run(tmp_path: Path) -> None:
     assert pointer["status"] == "completed"
     assert pointer["run_prefix"] == "forecast_runs/run-1"
     assert pointer["completion_key"] == "forecast_runs/run-1/COMPLETED.json"
+
+
+def test_latest_pointer_rejects_tampered_artifact(tmp_path: Path) -> None:
+    artifacts = tmp_path / "artifacts"
+    run_dir = artifacts / "forecast_runs" / "run-1"
+    _write_run(run_dir)
+    _predictions(y_pred=999.0).to_parquet(
+        run_dir / "predictions.parquet",
+        index=False,
+    )
+
+    with pytest.raises(ValueError, match="corrupt artifact"):
+        write_latest_pointer(artifacts / "latest.json", run_dir=run_dir)
 
 
 def test_latest_pointer_cannot_regress(tmp_path: Path) -> None:
@@ -240,28 +295,32 @@ def _manual_run(
     y_pred: float,
     run_kind: str,
     committed_at: str = "2024-01-02T10:05:00Z",
-    deadline: str = "2024-01-02T12:00:00Z",
+    deadline: str = "2024-01-02T10:59:00Z",
     write_completion: bool = True,
 ) -> None:
     run_dir = root / run_id
-    run_dir.mkdir(parents=True)
     frame = _predictions(y_pred=y_pred).assign(ds_utc=pd.Timestamp(target))
-    frame.to_parquet(run_dir / "predictions.parquet", index=False)
     manifest = {
         "run_id": run_id,
         "forecast_origin_utc": "2024-01-02T10:00:00Z",
+        "information_cutoff_utc": "2024-01-02T10:00:00Z",
         "run_kind": run_kind,
         "decision_deadline_utc": deadline,
     }
-    (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    if write_completion:
-        (run_dir / "COMPLETED.json").write_text(
-            json.dumps(
-                {
-                    "status": "completed",
-                    "run_id": run_id,
-                    "committed_at_utc": committed_at,
-                }
-            ),
-            encoding="utf-8",
-        )
+    written = write_forecast_run_artifacts(
+        run_dir,
+        predictions=frame,
+        scores=None,
+        manifest=manifest,
+    )
+    if not write_completion:
+        written["completion"].unlink()
+        return
+    completion = json.loads(written["completion"].read_text(encoding="utf-8"))
+    completion["committed_at_utc"] = committed_at
+    written["completion"].write_text(json.dumps(completion), encoding="utf-8")
+    manifest_out = json.loads(written["manifest"].read_text(encoding="utf-8"))
+    manifest_out["committed_at_utc"] = committed_at
+    written["manifest"].write_text(json.dumps(manifest_out), encoding="utf-8")
+    completion["manifest_sha256"] = file_sha256(written["manifest"])
+    written["completion"].write_text(json.dumps(completion), encoding="utf-8")

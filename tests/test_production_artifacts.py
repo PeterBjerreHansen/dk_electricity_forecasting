@@ -27,6 +27,8 @@ from dkenergy_forecast.publishing import (
     build_published_forecast_scores,
     build_dashboard_payload,
     make_forecast_run_manifest,
+    file_sha256,
+    load_verified_saved_live_predictions,
     normalize_published_predictions,
     validate_evaluated_prediction_artifact_schema,
     validate_model_scores_schema,
@@ -283,7 +285,6 @@ def test_future_dashboard_payload_serializes_missing_actuals_as_null(tmp_path) -
 def test_published_forecast_history_scores_immutable_run_predictions(tmp_path) -> None:
     artifact_root = tmp_path / "forecast_runs"
     run_dir = artifact_root / "forecast_20240102T100000Z"
-    run_dir.mkdir(parents=True)
     predictions = add_copenhagen_calendar(
         pd.DataFrame(
             {
@@ -298,29 +299,7 @@ def test_published_forecast_history_scores_immutable_run_predictions(tmp_path) -
             }
         )
     )
-    normalize_published_predictions(predictions).to_parquet(run_dir / "predictions.parquet", index=False)
-    (run_dir / "manifest.json").write_text(
-        json.dumps(
-                {
-                    "run_id": "forecast_20240102T100000Z",
-                    "created_at_utc": "2024-01-02T10:00:00Z",
-                    "forecast_origin_utc": "2024-01-02T10:00:00Z",
-                    "run_kind": "live",
-                    "decision_deadline_utc": "2024-01-02T12:00:00Z",
-                }
-        ),
-        encoding="utf-8",
-    )
-    (run_dir / "COMPLETED.json").write_text(
-        json.dumps(
-            {
-                "status": "completed",
-                "run_id": "forecast_20240102T100000Z",
-                "committed_at_utc": "2024-01-02T10:01:00Z",
-            }
-        ),
-        encoding="utf-8",
-    )
+    _write_saved_live_fixture(run_dir, predictions)
     panel = add_copenhagen_calendar(
         pd.DataFrame(
             {
@@ -342,6 +321,8 @@ def test_published_forecast_history_scores_immutable_run_predictions(tmp_path) -
     )
 
     assert history["run_id"].tolist() == ["forecast_20240102T100000Z", "forecast_20240102T100000Z"]
+    assert history["evidence_tier"].eq("saved_live_forecast").all()
+    assert history["evidence_id"].notna().all()
     assert history["y"].tolist() == pytest.approx([10.0, 20.0])
     assert scores.loc[scores["area"] == "ALL", "mae"].iloc[0] == pytest.approx(1.5)
     assert scores["score_source"].eq("published_forecast_history").all()
@@ -349,10 +330,130 @@ def test_published_forecast_history_scores_immutable_run_predictions(tmp_path) -
     assert written["published_history_scores"].exists()
 
 
+def test_published_forecast_scores_do_not_pool_evidence_tiers() -> None:
+    saved_live = _predictions().assign(
+        evidence_tier="saved_live_forecast",
+    )
+    reconstructed = _predictions().assign(
+        evidence_tier="reconstructed_proxy",
+        y_pred=[20.0, 30.0],
+    )
+    history = pd.concat([saved_live, reconstructed], ignore_index=True)
+
+    scores = build_published_forecast_scores(history)
+    all_area = scores.loc[scores["area"].eq("ALL")].set_index("evidence_tier")
+
+    assert set(all_area.index) == {
+        "saved_live_forecast",
+        "reconstructed_proxy",
+    }
+    assert all_area.loc["saved_live_forecast", "rows"] == len(saved_live)
+    assert all_area.loc["reconstructed_proxy", "rows"] == len(reconstructed)
+    assert (
+        all_area.loc["saved_live_forecast", "mae"]
+        != all_area.loc["reconstructed_proxy", "mae"]
+    )
+    validate_model_scores_schema(scores)
+
+
+def test_legacy_live_run_remains_visible_as_reconstructed_proxy(
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / "forecast_runs"
+    run_dir = artifact_root / "legacy-run"
+    run_dir.mkdir(parents=True)
+    predictions = _predictions()
+    normalize_published_predictions(predictions).to_parquet(
+        run_dir / "predictions.parquet",
+        index=False,
+    )
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "legacy-run",
+                "forecast_origin_utc": "2024-01-02T10:00:00Z",
+                "information_cutoff_utc": "2024-01-02T10:00:00Z",
+                "run_kind": "live",
+                "decision_deadline_utc": "2024-01-02T10:59:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "COMPLETED.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "run_id": "legacy-run",
+                "committed_at_utc": "2024-01-02T10:01:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    panel = predictions[["unique_id", "ds_utc", "area", "y"]].copy()
+
+    history = build_published_forecast_history(artifact_root, panel)
+
+    assert len(history) == len(predictions)
+    assert history["evidence_tier"].eq("reconstructed_proxy").all()
+    assert history["evidence_id"].str.startswith(
+        "legacy-manifest-sha256:"
+    ).all()
+
+
+def test_legacy_live_run_verifies_available_integrity_metadata(
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / "forecast_runs"
+    run_dir = artifact_root / "legacy-bound"
+    predictions = _predictions()
+    _write_integrity_bound_legacy_fixture(run_dir, predictions)
+    panel = predictions[["unique_id", "ds_utc", "area", "y"]].copy()
+
+    history = build_published_forecast_history(artifact_root, panel)
+
+    assert len(history) == len(predictions)
+    assert history["evidence_tier"].eq("reconstructed_proxy").all()
+
+
+def test_legacy_live_run_rejects_tampered_integrity_receipt(
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / "forecast_runs"
+    run_dir = artifact_root / "legacy-tampered"
+    predictions = _predictions()
+    _write_integrity_bound_legacy_fixture(run_dir, predictions)
+    completion_path = run_dir / "COMPLETED.json"
+    completion = json.loads(completion_path.read_text(encoding="utf-8"))
+    completion["manifest_sha256"] = "0" * 64
+    completion_path.write_text(json.dumps(completion), encoding="utf-8")
+    panel = predictions[["unique_id", "ds_utc", "area", "y"]].copy()
+
+    with pytest.raises(ValueError, match="manifest checksum mismatch"):
+        build_published_forecast_history(artifact_root, panel)
+
+
+def test_saved_live_evidence_rejects_deadline_after_target_price_is_available(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "forecast_20240102T100000Z"
+    predictions = _predictions()
+    _write_saved_live_fixture(
+        run_dir,
+        predictions,
+        committed_at_utc="2024-01-02T12:19:00Z",
+        decision_deadline_utc="2024-01-02T23:00:00Z",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="decision deadline must precede every target's price availability",
+    ):
+        load_verified_saved_live_predictions([run_dir])
+
+
 def test_score_published_forecasts_script_scores_saved_runs(tmp_path) -> None:
     artifact_root = tmp_path / "forecast_runs"
     run_dir = artifact_root / "forecast_20240102T100000Z"
-    run_dir.mkdir(parents=True)
     predictions = add_copenhagen_calendar(
         pd.DataFrame(
             {
@@ -367,29 +468,7 @@ def test_score_published_forecasts_script_scores_saved_runs(tmp_path) -> None:
             }
         )
     )
-    normalize_published_predictions(predictions).to_parquet(run_dir / "predictions.parquet", index=False)
-    (run_dir / "manifest.json").write_text(
-        json.dumps(
-                {
-                    "run_id": "forecast_20240102T100000Z",
-                    "created_at_utc": "2024-01-02T10:00:00Z",
-                    "forecast_origin_utc": "2024-01-02T10:00:00Z",
-                    "run_kind": "live",
-                    "decision_deadline_utc": "2024-01-02T12:00:00Z",
-                }
-        ),
-        encoding="utf-8",
-    )
-    (run_dir / "COMPLETED.json").write_text(
-        json.dumps(
-            {
-                "status": "completed",
-                "run_id": "forecast_20240102T100000Z",
-                "committed_at_utc": "2024-01-02T10:01:00Z",
-            }
-        ),
-        encoding="utf-8",
-    )
+    _write_saved_live_fixture(run_dir, predictions)
     panel = add_copenhagen_calendar(
         pd.DataFrame(
             {
@@ -433,8 +512,10 @@ def test_score_published_forecasts_script_scores_saved_runs(tmp_path) -> None:
     assert history["y"].tolist() == pytest.approx([10.0, 20.0])
     assert scores.loc[scores["area"] == "ALL", "mae"].iloc[0] == pytest.approx(1.5)
     assert scores["score_source"].eq("published_forecast_history").all()
+    assert scores["evidence_tier"].eq("saved_live_forecast").all()
     assert manifest["prediction_row_count"] == 2
     assert manifest["evaluated_forecast_run_count"] == 1
+    assert manifest["evidence_tiers"] == ["saved_live_forecast"]
 
 
 def test_production_registry_contains_only_deployed_models(monkeypatch, tmp_path) -> None:
@@ -457,10 +538,16 @@ def test_production_registry_contains_only_deployed_models(monkeypatch, tmp_path
         ["chronos_weather"],
         weather_features_long_path=tmp_path / "weather.parquet",
         chronos_model_artifact_path=tmp_path / "chronos_model",
+        chronos_cross_learning=True,
+        chronos_weather_covariate_mode="ensemble_mean_spread",
+        chronos_add_weather_derived_features=True,
     )["chronos_weather"]
     chronos_model = chronos_factory()
     assert chronos_model.config.weather_features_long_path == tmp_path / "weather.parquet"
     assert chronos_model.config.model_artifact_path == tmp_path / "chronos_model"
+    assert chronos_model.config.cross_learning is True
+    assert chronos_model.config.weather_covariate_mode == "ensemble_mean_spread"
+    assert chronos_model.config.add_weather_derived_features is True
     with pytest.raises(ValueError, match="Unknown production model"):
         latest_publish_model_factories(["weather_catboost_all_weather"])
     with pytest.raises(ValueError, match="Unknown production model"):
@@ -505,6 +592,50 @@ def test_publish_model_listing_includes_required_extra_and_quantile_metadata() -
     assert "weighted_median_v1: fallback" in result.stdout
     assert "catboost_price_manual_v1" not in result.stdout
     assert "chronos_zero_shot_v1" not in result.stdout
+
+
+def _write_saved_live_fixture(
+    run_dir: Path,
+    predictions: pd.DataFrame,
+    *,
+    committed_at_utc: str = "2024-01-02T10:01:00Z",
+    decision_deadline_utc: str = "2024-01-02T10:59:00Z",
+) -> None:
+    written = write_forecast_run_artifacts(
+        run_dir,
+        predictions=predictions,
+        scores=None,
+        manifest={
+            "run_id": "forecast_20240102T100000Z",
+            "created_at_utc": "2024-01-02T10:00:00Z",
+            "forecast_origin_utc": "2024-01-02T10:00:00Z",
+            "information_cutoff_utc": "2024-01-02T10:00:00Z",
+            "run_kind": "live",
+            "decision_deadline_utc": decision_deadline_utc,
+        },
+    )
+    completion = json.loads(written["completion"].read_text(encoding="utf-8"))
+    completion["committed_at_utc"] = committed_at_utc
+    manifest = json.loads(written["manifest"].read_text(encoding="utf-8"))
+    manifest["committed_at_utc"] = completion["committed_at_utc"]
+    written["manifest"].write_text(json.dumps(manifest), encoding="utf-8")
+    completion["manifest_sha256"] = file_sha256(written["manifest"])
+    written["completion"].write_text(json.dumps(completion), encoding="utf-8")
+
+
+def _write_integrity_bound_legacy_fixture(
+    run_dir: Path,
+    predictions: pd.DataFrame,
+) -> None:
+    _write_saved_live_fixture(run_dir, predictions)
+    manifest_path = run_dir / "manifest.json"
+    completion_path = run_dir / "COMPLETED.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("committed_at_utc")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    completion = json.loads(completion_path.read_text(encoding="utf-8"))
+    completion["manifest_sha256"] = file_sha256(manifest_path)
+    completion_path.write_text(json.dumps(completion), encoding="utf-8")
 
 
 def _panel(*, periods: int) -> pd.DataFrame:

@@ -173,11 +173,13 @@ def build_price_feature_frame(
     panel_utc = _prepare_panel(panel, config)
     future_utc = _prepare_future(future, config)
     origin = _resolve_single_origin(future_utc, forecast_origin_utc)
+    information_cutoff = _resolve_information_cutoff(future_utc, origin)
 
     return _build_price_feature_frame_prepared(
         panel_utc,
         future_utc,
         forecast_origin_utc=origin,
+        information_cutoff_utc=information_cutoff,
         include_target=include_target,
         config=config,
     )
@@ -188,18 +190,29 @@ def _build_price_feature_frame_prepared(
     future_utc: pd.DataFrame,
     *,
     forecast_origin_utc: pd.Timestamp,
+    information_cutoff_utc: pd.Timestamp,
     include_target: bool,
     config: PriceFeatureConfig,
 ) -> pd.DataFrame:
-    origin = to_utc_timestamp(forecast_origin_utc)
-    history = filter_price_history_available_before(panel_utc, origin)
+    information_cutoff = to_utc_timestamp(information_cutoff_utc)
+    history = filter_price_history_available_before(panel_utc, information_cutoff)
     features = _base_feature_frame(future_utc, config)
 
-    features = _add_lag_features(features, history, origin, config)
-    features = _add_rolling_features(features, history, origin, config)
-    features = _add_seasonal_features(features, history, origin, config)
-    features = _add_weighted_median_baseline_feature(features, history, origin, config)
-    features = _add_spread_features(features, history, origin, config)
+    features = _add_lag_features(features, history, information_cutoff, config)
+    features = _add_rolling_features(features, history, information_cutoff, config)
+    features = _add_seasonal_features(features, history, information_cutoff, config)
+    features = _add_weighted_median_baseline_feature(
+        features,
+        history,
+        information_cutoff,
+        config,
+    )
+    features = _add_spread_features(
+        features,
+        history,
+        information_cutoff,
+        config,
+    )
 
     for column in ["is_weekend", "is_dst"]:
         if column in features.columns:
@@ -227,6 +240,17 @@ def build_price_experiment_frame(
     config = config or PriceFeatureConfig()
     panel_utc = _prepare_panel(panel, config)
     origins_utc = normalize_utc_column(origins, "forecast_origin_utc")
+    if "information_cutoff_utc" in origins_utc:
+        origins_utc = normalize_utc_column(origins_utc, "information_cutoff_utc")
+    else:
+        origins_utc["information_cutoff_utc"] = origins_utc["forecast_origin_utc"]
+    requests = origins_utc[
+        ["forecast_origin_utc", "information_cutoff_utc"]
+    ].drop_duplicates()
+    if requests["forecast_origin_utc"].duplicated().any():
+        raise ValueError(
+            "Each forecast_origin_utc must have exactly one information cutoff"
+        )
     origin_config = (
         replace(config, include_weighted_median_baseline=False)
         if config.include_weighted_median_baseline
@@ -234,16 +258,23 @@ def build_price_experiment_frame(
     )
     frames: list[pd.DataFrame] = []
 
-    for origin in origins_utc["forecast_origin_utc"].sort_values().drop_duplicates():
-        origin = to_utc_timestamp(origin)
+    for request in requests.sort_values("forecast_origin_utc").itertuples(index=False):
+        origin = to_utc_timestamp(request.forecast_origin_utc)
+        information_cutoff = to_utc_timestamp(request.information_cutoff_utc)
+        if information_cutoff > origin:
+            raise ValueError(
+                "information_cutoff_utc cannot be after forecast_origin_utc"
+            )
         future = horizon_builder(panel_utc, origin)
         if future.empty:
             continue
+        future["information_cutoff_utc"] = information_cutoff
         future_utc = _prepare_future(future, origin_config)
         frame = _build_price_feature_frame_prepared(
             panel_utc,
             future_utc,
             forecast_origin_utc=origin,
+            information_cutoff_utc=information_cutoff,
             include_target=True,
             config=origin_config,
         )
@@ -365,6 +396,8 @@ def _prepare_future(future: pd.DataFrame, config: PriceFeatureConfig) -> pd.Data
     require_columns(future, ["unique_id", "area", "ds_utc", "forecast_origin_utc"], "future")
     prepared = ensure_price_availability(normalize_utc_column(future, "ds_utc"))
     prepared = normalize_utc_column(prepared, "forecast_origin_utc")
+    if "information_cutoff_utc" in prepared:
+        prepared = normalize_utc_column(prepared, "information_cutoff_utc")
     if "horizon" not in prepared.columns:
         prepared = add_horizon_column(prepared)
     require_columns(prepared, list(config.base_features) + _baseline_calendar_columns(config), "future")
@@ -405,6 +438,21 @@ def _resolve_single_origin(
     return origin
 
 
+def _resolve_information_cutoff(
+    future: pd.DataFrame,
+    forecast_origin_utc: pd.Timestamp,
+) -> pd.Timestamp:
+    if "information_cutoff_utc" not in future.columns:
+        return forecast_origin_utc
+    cutoffs = future["information_cutoff_utc"].drop_duplicates().tolist()
+    if len(cutoffs) != 1:
+        raise ValueError("future must contain exactly one information_cutoff_utc")
+    cutoff = to_utc_timestamp(cutoffs[0])
+    if cutoff > forecast_origin_utc:
+        raise ValueError("information_cutoff_utc cannot be after forecast_origin_utc")
+    return cutoff
+
+
 def _base_feature_frame(future: pd.DataFrame, config: PriceFeatureConfig) -> pd.DataFrame:
     metadata_columns = [
         "unique_id",
@@ -413,6 +461,7 @@ def _base_feature_frame(future: pd.DataFrame, config: PriceFeatureConfig) -> pd.
         "ds_local",
         "local_date",
         "forecast_origin_utc",
+        "information_cutoff_utc",
         "horizon",
         "dataset_version",
         PRICE_AVAILABILITY_COLUMN,
@@ -551,7 +600,12 @@ def _weighted_median_baseline_predictions(
             continue
 
         lookback_days, half_life_days, floor = _weighted_median_parameters(config, is_weekend)
-        origin = to_utc_timestamp(getattr(row, "forecast_origin_utc"))
+        cutoff_value = getattr(
+            row,
+            "information_cutoff_utc",
+            getattr(row, "forecast_origin_utc"),
+        )
+        origin = to_utc_timestamp(cutoff_value)
         target_time = to_utc_timestamp(getattr(row, "ds_utc"))
         window = group[
             (pd.to_datetime(group[PRICE_AVAILABILITY_COLUMN], utc=True) < origin)

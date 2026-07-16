@@ -1,0 +1,155 @@
+{
+  "schema_version": "experiment_spec_v1",
+  "name": "chronos-a1-cross-learning",
+  "kind": "command_pipeline",
+  "description": "A1: reuse A0 weights with Chronos cross-series inference enabled.",
+  "metadata": {
+    "ablation_id": "A1",
+    "research_only": true,
+    "promotes_model": false,
+    "weights_retrained": false,
+    "base_model_id": "amazon/chronos-2",
+    "base_model_revision": "29ec3766d36d6f73f0696f85560a422f50e8498c",
+    "local_artifact_bootstrap_required": true,
+    "base_artifact_source": "Private production artifact store resolved by Terraform model_artifact_uri; release path pinned by config/production.json.",
+    "frozen_origin_evidence": false,
+    "evidence_note": "Recent diagnostics are operational research checks, not frozen-origin model-selection evidence."
+  },
+  "inputs": [
+    {
+      "name": "price-panel",
+      "path": "data/model_ready/price_panel_hourly_v1.parquet",
+      "required": true
+    },
+    {
+      "name": "price-panel-qa",
+      "path": "data/model_ready/price_panel_hourly_v1.qa.json",
+      "required": true
+    },
+    {
+      "name": "weather-features",
+      "path": "data/features/weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet",
+      "required": true
+    },
+    {
+      "name": "base-artifact",
+      "path": "artifacts/models/chronos_weather/sha256-55814a7fd0d36973",
+      "required": true
+    }
+  ],
+  "profiles": {
+    "smoke": {
+      "description": "Clone and validate the policy-only A1 artifact without training or inference.",
+      "stages": [
+        {
+          "name": "clone-policy",
+          "argv": [
+            "python",
+            "scripts/clone_chronos_policy_artifact.py",
+            "--source-artifact",
+            "{project_root}/artifacts/models/chronos_weather/sha256-55814a7fd0d36973",
+            "--output-dir",
+            "{run_dir}/artifact",
+            "--cross-learning",
+            "--expected-base-model-revision",
+            "29ec3766d36d6f73f0696f85560a422f50e8498c"
+          ],
+          "outputs": [
+            "{run_dir}/artifact"
+          ],
+          "timeout_seconds": 300
+        },
+        {
+          "name": "preflight",
+          "argv": [
+            "python",
+            "scripts/preflight_chronos_ablation.py",
+            "--ablation-id",
+            "A1",
+            "--panel-path",
+            "{project_root}/data/model_ready/price_panel_hourly_v1.parquet",
+            "--qa-path",
+            "{project_root}/data/model_ready/price_panel_hourly_v1.qa.json",
+            "--weather-features-long-path",
+            "{project_root}/data/features/weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet",
+            "--artifact-path",
+            "{run_dir}/artifact",
+            "--output-path",
+            "{run_dir}/preflight.json",
+            "--base-model-id",
+            "amazon/chronos-2",
+            "--base-model-revision",
+            "29ec3766d36d6f73f0696f85560a422f50e8498c",
+            "--weather-covariate-mode",
+            "ensemble_mean",
+            "--cross-learning"
+          ],
+          "outputs": [
+            "{run_dir}/preflight.json"
+          ],
+          "timeout_seconds": 1800
+        }
+      ]
+    },
+    "full": {
+      "description": "Clone A0 weights into an A1 policy artifact, then run recent diagnostics.",
+      "stages": [
+        {
+          "name": "clone-policy",
+          "argv": [
+            "python",
+            "scripts/clone_chronos_policy_artifact.py",
+            "--source-artifact",
+            "{project_root}/artifacts/models/chronos_weather/sha256-55814a7fd0d36973",
+            "--output-dir",
+            "{run_dir}/artifact",
+            "--cross-learning",
+            "--expected-base-model-revision",
+            "29ec3766d36d6f73f0696f85560a422f50e8498c"
+          ],
+          "outputs": [
+            "{run_dir}/artifact"
+          ],
+          "timeout_seconds": 300
+        },
+        {
+          "name": "recent-diagnostics",
+          "argv": [
+            "python",
+            "scripts/run_recent_diagnostics.py",
+            "--panel-path",
+            "{project_root}/data/model_ready/price_panel_hourly_v1.parquet",
+            "--qa-path",
+            "{project_root}/data/model_ready/price_panel_hourly_v1.qa.json",
+            "--weather-features-long-path",
+            "{project_root}/data/features/weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet",
+            "--chronos-model-artifact-path",
+            "{run_dir}/artifact",
+            "--chronos-weather-covariate-mode",
+            "ensemble_mean",
+            "--chronos-cross-learning",
+            "--no-chronos-add-weather-derived-features",
+            "--models",
+            "chronos_weather",
+            "--forecast-local-time",
+            "10:00",
+            "--score-days",
+            "60",
+            "--score-max-origins",
+            "24",
+            "--score-holdout-days",
+            "2",
+            "--run-id",
+            "a1-{experiment_id}",
+            "--output-dir",
+            "{run_dir}/diagnostics"
+          ],
+          "outputs": [
+            "{run_dir}/diagnostics"
+          ],
+          "timeout_seconds": 43200
+        }
+      ]
+    }
+  }
+}

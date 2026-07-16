@@ -3,11 +3,18 @@ from __future__ import annotations
 import math
 import random
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from dkenergy_forecast.evaluation.point_metrics import bias, mae, rmse
+from dkenergy_forecast.evaluation.evidence import (
+    RECONSTRUCTED_PROXY,
+    SAVED_LIVE_FORECAST,
+    make_evidence_declaration,
+    validate_evidence_coverage,
+)
 from dkenergy_forecast.evaluation.probabilistic_metrics import (
     average_interval_width,
     interval_coverage,
@@ -27,7 +34,13 @@ from dkenergy_forecast.evaluation.stratification import (
 from dkenergy_forecast.types import require_columns
 
 
-PAIR_KEY_COLUMNS = ["forecast_origin_utc", "unique_id", "ds_utc", "area"]
+PAIR_KEY_COLUMNS = [
+    "forecast_origin_utc",
+    "unique_id",
+    "ds_utc",
+    "area",
+]
+PAIR_METADATA_COLUMNS = ["information_cutoff_utc", "evidence_tier"]
 QUANTILE_COLUMNS = ["q10", "q50", "q90"]
 MODEL_COLUMN = "model_label"
 DIFFERENCE_METRICS = [
@@ -76,12 +89,19 @@ def pair_model_predictions(
     selected["forecast_origin_utc"] = pd.to_datetime(
         selected["forecast_origin_utc"], utc=True
     )
+    if "information_cutoff_utc" in selected:
+        selected["information_cutoff_utc"] = pd.to_datetime(
+            selected["information_cutoff_utc"], utc=True
+        )
     selected["ds_utc"] = pd.to_datetime(selected["ds_utc"], utc=True)
     selected = _normalize_numeric_predictions(selected)
     _validate_selected_models(
         selected,
         model_labels=(reference_model, comparison_model),
         key_columns=key_columns,
+        metadata_columns=[
+            column for column in PAIR_METADATA_COLUMNS if column in selected
+        ],
     )
 
     reference = selected[selected[MODEL_COLUMN].eq(reference_model)]
@@ -93,11 +113,25 @@ def pair_model_predictions(
         "y_pred",
         *[column for column in QUANTILE_COLUMNS if column in selected],
     ]
-    reference_values = reference[key_columns + value_columns].rename(
-        columns={column: f"reference_{column}" for column in value_columns}
+    metadata_columns = [
+        column for column in PAIR_METADATA_COLUMNS if column in selected
+    ]
+    renamed_columns = {
+        column: f"reference_{column}"
+        for column in [*metadata_columns, *value_columns]
+    }
+    reference_values = reference[
+        key_columns + metadata_columns + value_columns
+    ].rename(
+        columns=renamed_columns
     )
-    comparison_values = comparison[key_columns + value_columns].rename(
-        columns={column: f"comparison_{column}" for column in value_columns}
+    comparison_values = comparison[
+        key_columns + metadata_columns + value_columns
+    ].rename(
+        columns={
+            column: f"comparison_{column}"
+            for column in [*metadata_columns, *value_columns]
+        }
     )
     paired = reference_values.merge(
         comparison_values,
@@ -112,6 +146,15 @@ def pair_model_predictions(
         raise ValueError("The paired model rows disagree on actual target values")
     paired["y"] = paired.pop("reference_y")
     paired = paired.drop(columns=["comparison_y"])
+    for column in metadata_columns:
+        reference_column = f"reference_{column}"
+        comparison_column = f"comparison_{column}"
+        if paired[reference_column].ne(paired[comparison_column]).any():
+            raise ValueError(
+                f"The paired model rows disagree on {column}"
+            )
+        paired[column] = paired[reference_column]
+        paired = paired.drop(columns=[reference_column, comparison_column])
     return paired.sort_values(key_columns).reset_index(drop=True)
 
 
@@ -211,6 +254,9 @@ def build_model_comparison(
     extreme_quantile: float = 0.95,
     split_provenance: dict[str, Any] | None = None,
     source_sha256: str | None = None,
+    availability_audit: dict[str, Any] | None = None,
+    evidence_note: str | None = None,
+    saved_live_run_dirs: Iterable[str | Path] | None = None,
 ) -> dict[str, Any]:
     """Build a descriptive, deterministic comparison of two forecast models.
 
@@ -236,6 +282,13 @@ def build_model_comparison(
         reference_release = _single_release(selected, reference_model)
         comparison_release = _single_release(selected, comparison_model)
     selected = _normalize_numeric_predictions(selected)
+    _validate_prediction_evidence_labels(selected)
+    evidence = _comparison_evidence_declaration(
+        selected,
+        availability_audit=availability_audit,
+        evidence_note=evidence_note,
+        saved_live_run_dirs=saved_live_run_dirs,
+    )
     paired = pair_model_predictions(
         selected,
         reference_model=reference_model,
@@ -281,7 +334,7 @@ def build_model_comparison(
     )
 
     return {
-        "schema_version": "model_comparison_v1",
+        "schema_version": "model_comparison_v2",
         "reference_model": reference_model,
         "comparison_model": comparison_model,
         "reference_release": reference_release,
@@ -290,9 +343,13 @@ def build_model_comparison(
         "evaluation_interval": interval.as_dict(),
         "split_provenance": split_provenance,
         "source_sha256": source_sha256,
+        "evidence": evidence,
         "pairing": {
             "key_columns": [
                 column for column in PAIR_KEY_COLUMNS if column in selected
+            ],
+            "matched_metadata_columns": [
+                column for column in PAIR_METADATA_COLUMNS if column in selected
             ],
             "paired_rows": int(len(paired)),
             "origin_count": int(per_origin["forecast_origin_utc"].nunique()),
@@ -320,6 +377,199 @@ def build_model_comparison(
     }
 
 
+def _validate_prediction_evidence_labels(selected: pd.DataFrame) -> None:
+    if "evidence_tier" not in selected.columns:
+        return
+    if selected["evidence_tier"].isna().any():
+        raise ValueError("Selected predictions contain missing evidence_tier values")
+    tiers = set(selected["evidence_tier"].astype(str))
+    known = {
+        "strict_point_in_time",
+        "reconstructed_proxy",
+        "saved_live_forecast",
+    }
+    unknown = sorted(tiers - known)
+    if unknown:
+        raise ValueError(f"Selected predictions contain unknown evidence tiers: {unknown}")
+    if "saved_live_forecast" in tiers and len(tiers) > 1:
+        raise ValueError(
+            "Saved-live and reconstructed historical evidence cannot be pooled "
+            "in one comparison"
+        )
+
+
+def _comparison_evidence_declaration(
+    selected: pd.DataFrame,
+    *,
+    availability_audit: dict[str, Any] | None,
+    evidence_note: str | None,
+    saved_live_run_dirs: Iterable[str | Path] | None,
+) -> dict[str, Any]:
+    tiers = (
+        set(selected["evidence_tier"].astype(str))
+        if "evidence_tier" in selected.columns
+        else set()
+    )
+    if tiers == {SAVED_LIVE_FORECAST}:
+        require_columns(selected, ["evidence_id"], "saved-live predictions")
+        if selected["evidence_id"].isna().any():
+            raise ValueError("Saved-live predictions contain missing evidence_id values")
+        if not saved_live_run_dirs:
+            raise ValueError(
+                "Saved-live predictions require their immutable run directories "
+                "so completion receipts and prediction rows can be verified"
+            )
+        from dkenergy_forecast.publishing import (
+            load_verified_saved_live_predictions,
+        )
+
+        verified = load_verified_saved_live_predictions(saved_live_run_dirs)
+        _validate_complete_saved_live_rows(selected, verified)
+        if availability_audit is not None:
+            raise ValueError(
+                "Saved-live comparisons use verified receipts, not reconstructed "
+                "availability audits"
+            )
+        return make_evidence_declaration(
+            saved_live_receipt_verified=True,
+            note=evidence_note,
+        )
+
+    if availability_audit is not None:
+        validate_evidence_coverage(selected, availability_audit)
+    requested_tier = (
+        RECONSTRUCTED_PROXY
+        if RECONSTRUCTED_PROXY in tiers
+        else None
+    )
+    return make_evidence_declaration(
+        availability_audit,
+        requested_tier=requested_tier,
+        note=evidence_note,
+    )
+
+
+def _validate_complete_saved_live_rows(
+    selected: pd.DataFrame,
+    verified: pd.DataFrame,
+) -> None:
+    base_columns = [
+        "forecast_origin_utc",
+        "information_cutoff_utc",
+        "unique_id",
+        "ds_utc",
+        "area",
+        "model_label",
+        "evidence_tier",
+        "evidence_id",
+        "y_pred",
+    ]
+    optional_columns = ["model_release_id", "q10", "q50", "q90"]
+    require_columns(selected, base_columns, "saved-live predictions")
+    require_columns(verified, base_columns, "verified saved-live predictions")
+
+    schema_mismatches = [
+        column
+        for column in optional_columns
+        if (column in selected.columns) != (column in verified.columns)
+    ]
+    if schema_mismatches:
+        raise ValueError(
+            "Selected saved-live prediction schema differs from the verified "
+            f"artifacts for columns: {schema_mismatches}"
+        )
+    identity_columns = [
+        *base_columns,
+        *[column for column in optional_columns if column in selected.columns],
+    ]
+
+    selected_normalized = _normalize_saved_live_identity(
+        selected[identity_columns],
+        identity_columns=identity_columns,
+    )
+    verified_normalized = _normalize_saved_live_identity(
+        verified[identity_columns],
+        identity_columns=identity_columns,
+    )
+    selected_evidence_ids = set(selected_normalized["evidence_id"])
+    selected_models = set(selected_normalized["model_label"])
+    verified_normalized = verified_normalized.loc[
+        verified_normalized["evidence_id"].isin(selected_evidence_ids)
+        & verified_normalized["model_label"].isin(selected_models)
+    ].copy()
+    if "model_release_id" in identity_columns:
+        selected_releases = selected_normalized[
+            ["model_label", "model_release_id"]
+        ].drop_duplicates()
+        verified_normalized = verified_normalized.merge(
+            selected_releases,
+            on=["model_label", "model_release_id"],
+            how="inner",
+            validate="many_to_one",
+        )
+
+    if selected_normalized.duplicated(identity_columns).any():
+        raise ValueError("Selected saved-live predictions contain duplicate rows")
+    if verified_normalized.duplicated(identity_columns).any():
+        raise ValueError(
+            "Verified saved-live artifacts contain duplicate prediction rows"
+        )
+    exact = selected_normalized.merge(
+        verified_normalized,
+        on=identity_columns,
+        how="outer",
+        indicator=True,
+        validate="one_to_one",
+    )
+    counts = exact["_merge"].value_counts().to_dict()
+    if not exact["_merge"].eq("both").all():
+        raise ValueError(
+            "Selected saved-live rows must exactly cover the verified immutable "
+            f"forecast artifacts represented by their evidence ids: {counts}"
+        )
+
+
+def _normalize_saved_live_identity(
+    frame: pd.DataFrame,
+    *,
+    identity_columns: list[str],
+) -> pd.DataFrame:
+    output = frame.copy()
+    for column in (
+        "forecast_origin_utc",
+        "information_cutoff_utc",
+        "ds_utc",
+    ):
+        output[column] = pd.to_datetime(output[column], utc=True, errors="coerce")
+        if output[column].isna().any():
+            raise ValueError(
+                f"Saved-live prediction identity contains invalid {column}"
+            )
+    for column in (
+        "unique_id",
+        "area",
+        "model_label",
+        "evidence_tier",
+        "evidence_id",
+        "model_release_id",
+    ):
+        if column not in identity_columns:
+            continue
+        missing = (
+            output[column].isna()
+            | output[column].astype("string").str.strip().eq("").fillna(True)
+        )
+        if missing.any():
+            raise ValueError(
+                f"Saved-live prediction identity contains missing {column}"
+            )
+        output[column] = output[column].astype(str)
+    for column in ("y_pred", "q10", "q50", "q90"):
+        if column in identity_columns:
+            output[column] = pd.to_numeric(output[column], errors="coerce")
+    return output.reset_index(drop=True)
+
+
 def _origin_differences_from_paired(paired: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for origin, frame in paired.groupby("forecast_origin_utc", sort=True):
@@ -344,6 +594,7 @@ def _validate_selected_models(
     *,
     model_labels: tuple[str, str],
     key_columns: list[str],
+    metadata_columns: list[str],
 ) -> None:
     labels = set(selected[MODEL_COLUMN].dropna())
     missing_labels = sorted(set(model_labels) - labels)
@@ -354,6 +605,15 @@ def _validate_selected_models(
         raise ValueError(
             f"Selected predictions contain {missing_key_count} row(s) with missing pairing keys"
         )
+    if metadata_columns:
+        missing_metadata_count = int(
+            selected[metadata_columns].isna().any(axis=1).sum()
+        )
+        if missing_metadata_count:
+            raise ValueError(
+                "Selected predictions contain "
+                f"{missing_metadata_count} row(s) with missing pairing metadata"
+            )
     for label, frame in selected.groupby(MODEL_COLUMN, sort=False):
         duplicate_count = int(frame.duplicated(key_columns).sum())
         if duplicate_count:

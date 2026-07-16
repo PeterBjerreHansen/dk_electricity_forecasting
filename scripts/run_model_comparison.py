@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -26,6 +27,11 @@ def main() -> None:
     predictions_path = Path(args.predictions)
     predictions = pd.read_parquet(predictions_path)
     interval, split_provenance = resolve_interval(args)
+    availability_audit = (
+        json.loads(Path(args.availability_audit_json).read_text(encoding="utf-8"))
+        if args.availability_audit_json
+        else None
+    )
     report = build_model_comparison(
         predictions,
         reference_model=args.reference_model,
@@ -41,6 +47,9 @@ def main() -> None:
         extreme_quantile=args.extreme_quantile,
         split_provenance=split_provenance,
         source_sha256=sha256_file(predictions_path),
+        availability_audit=availability_audit,
+        evidence_note=args.evidence_note,
+        saved_live_run_dirs=args.saved_live_run_dir,
     )
     written = write_model_comparison(report, args.output_dir)
 
@@ -51,6 +60,7 @@ def main() -> None:
     )
     print(f"Paired rows: {report['pairing']['paired_rows']}")
     print(f"Forecast origins: {report['pairing']['origin_count']}")
+    print(f"Evidence tier: {report['evidence']['tier']}")
     print(f"Overall MAE difference (comparison - reference): {difference:.6f}")
     for label, path in written.items():
         print(f"Wrote {label}: {path}")
@@ -128,6 +138,21 @@ def parse_args() -> argparse.Namespace:
     statistics.add_argument("--seed", type=int, default=2026)
     statistics.add_argument("--extreme-quantile", type=float, default=0.95)
     statistics.add_argument("--extreme-threshold", type=float)
+
+    evidence = parser.add_argument_group("evidence provenance")
+    evidence.add_argument(
+        "--availability-audit-json",
+        help="Optional availability_audit_v1 JSON for the evaluated information set.",
+    )
+    evidence.add_argument("--evidence-note", help="Optional human-readable caveat.")
+    evidence.add_argument(
+        "--saved-live-run-dir",
+        action="append",
+        help=(
+            "Immutable live forecast run directory to verify. Repeat for every "
+            "run represented by saved-live prediction rows."
+        ),
+    )
     return parser.parse_args()
 
 

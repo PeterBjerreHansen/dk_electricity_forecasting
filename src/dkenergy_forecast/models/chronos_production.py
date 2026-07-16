@@ -9,6 +9,9 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 
+from dkenergy_forecast.models.chronos_artifact_identity import (
+    validate_chronos_release_identity,
+)
 from dkenergy_forecast.features.weather_features import (
     EXCLUDED_WEATHER_PARAMETERS,
     WEATHER_CUTOFF_COLUMNS,
@@ -43,6 +46,23 @@ WEATHER_MISSING_VALUE_POLICY = "no_temporal_fill_then_zero"
 DEFAULT_INFORMATION_CUTOFF_LOCAL_TIME = "10:00"
 CONTEXT_WEATHER_FILL_POLICY = WEATHER_MISSING_VALUE_POLICY
 FUTURE_WEATHER_FILL_POLICY = WEATHER_MISSING_VALUE_POLICY
+WEATHER_COVARIATE_MODES = (
+    "all",
+    "raw",
+    "ensemble",
+    "ensemble_mean",
+    "ensemble_mean_spread",
+)
+DERIVED_WEATHER_COLUMN_SUFFIXES = (
+    "_wind_direction_10m_sin",
+    "_wind_direction_10m_cos",
+    "_wind10_u",
+    "_wind10_v",
+    "_wind_shear_100m_minus_10m",
+    "_shortwave_x_cloud_cover",
+    "_shortwave_x_clear_sky_proxy",
+    "_dk1_minus_dk2",
+)
 
 CALENDAR_COVARIATES = [
     "local_hour",
@@ -65,7 +85,13 @@ class Chronos2LoRAWeatherConfig:
     torch_dtype: str | None = None
     weather_features_long_path: str | Path = DEFAULT_WEATHER_FEATURES_LONG_PATH
     information_cutoff_local_time: str = DEFAULT_INFORMATION_CUTOFF_LOCAL_TIME
-    weather_covariate_mode: Literal["all", "raw", "ensemble", "ensemble_mean"] = "ensemble_mean"
+    weather_covariate_mode: Literal[
+        "all",
+        "raw",
+        "ensemble",
+        "ensemble_mean",
+        "ensemble_mean_spread",
+    ] = "ensemble_mean"
     batch_size: int = 128
     cross_learning: bool = False
     add_weather_ensemble_features: bool = True
@@ -107,6 +133,10 @@ class Chronos2LoRAWeatherDayAhead:
             raise ValueError("weather_horizon_min_coverage must be in (0, 1]")
         if self.config.weather_future_fallback_policy not in {"error", "zero"}:
             raise ValueError("weather_future_fallback_policy must be 'error' or 'zero'")
+        if self.config.weather_covariate_mode not in WEATHER_COVARIATE_MODES:
+            raise ValueError(
+                f"weather_covariate_mode must be one of {list(WEATHER_COVARIATE_MODES)}"
+            )
         if tuple(self.config.quantile_levels) != (0.10, 0.50, 0.90):
             raise ValueError("Chronos2LoRAWeatherDayAhead currently expects q10/q50/q90 quantiles")
         self._history: pd.DataFrame | None = None
@@ -311,6 +341,7 @@ def load_lora_artifact_manifest(model_artifact_path: str | Path) -> dict[str, An
         )
     _validate_artifact_file_hashes(artifact_path, manifest)
     _validate_base_model_revision(artifact_path, manifest)
+    validate_chronos_release_identity(manifest)
     return manifest
 
 
@@ -382,6 +413,33 @@ def validate_artifact_weather_policy(
             "Chronos runtime weather-covariate mode does not match the trained artifact: "
             f"runtime={config.weather_covariate_mode!r}, artifact={artifact_mode!r}"
         )
+    artifact_experiment_policy = {
+        "cross_learning": _artifact_boolean_policy(
+            manifest,
+            "cross_learning",
+            default=False,
+        ),
+        "add_weather_ensemble_features": _artifact_boolean_policy(
+            manifest,
+            "add_weather_ensemble_features",
+            default=True,
+        ),
+        "add_weather_derived_features": _artifact_boolean_policy(
+            manifest,
+            "add_weather_derived_features",
+            default=False,
+        ),
+    }
+    runtime_experiment_policy = {
+        "cross_learning": config.cross_learning,
+        "add_weather_ensemble_features": config.add_weather_ensemble_features,
+        "add_weather_derived_features": config.add_weather_derived_features,
+    }
+    if artifact_experiment_policy != runtime_experiment_policy:
+        raise ValueError(
+            "Chronos runtime ablation policy does not match the trained artifact: "
+            f"runtime={runtime_experiment_policy}, artifact={artifact_experiment_policy}"
+        )
     policy = manifest.get("weather_horizon_coverage_policy")
     if not isinstance(policy, dict):
         raise ValueError(
@@ -402,6 +460,18 @@ def validate_artifact_weather_policy(
             "Chronos runtime weather coverage policy does not match the trained artifact: "
             f"runtime={expected}, artifact={observed}"
         )
+
+
+def _artifact_boolean_policy(
+    manifest: dict[str, Any],
+    name: str,
+    *,
+    default: bool,
+) -> bool:
+    value = manifest.get(name, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"Chronos artifact policy {name!r} must be boolean")
+    return value
 
 
 def load_weather_features(path: str | Path) -> pd.DataFrame:
@@ -510,21 +580,53 @@ def _ensemble_covariate_has_source(column: str, source_features: set[str]) -> bo
     return False
 
 
-def selected_weather_columns(frame: pd.DataFrame, mode: str) -> list[str]:
+def selected_weather_columns(
+    frame: pd.DataFrame,
+    mode: str,
+    *,
+    include_derived_features: bool = False,
+) -> list[str]:
     columns = weather_value_columns(frame)
     if mode == "raw":
-        return [column for column in columns if not column.startswith("weather_ensemble_")]
-    if mode == "ensemble":
-        return [column for column in columns if column.startswith("weather_ensemble_")]
-    if mode == "ensemble_mean":
-        return [
+        selected = [
+            column for column in columns if not column.startswith("weather_ensemble_")
+        ]
+    elif mode == "ensemble":
+        selected = [
+            column for column in columns if column.startswith("weather_ensemble_")
+        ]
+    elif mode == "ensemble_mean":
+        selected = [
             column
             for column in columns
             if column.startswith("weather_ensemble_") and column.endswith("_mean")
         ]
-    if mode == "all":
-        return columns
-    raise ValueError(f"Unknown weather covariate mode: {mode!r}")
+    elif mode == "ensemble_mean_spread":
+        selected = [
+            column
+            for column in columns
+            if column.startswith("weather_ensemble_")
+            and column.endswith(("_mean", "_spread"))
+        ]
+    elif mode == "all":
+        selected = columns
+    else:
+        raise ValueError(f"Unknown weather covariate mode: {mode!r}")
+
+    if include_derived_features:
+        selected = list(
+            dict.fromkeys(
+                [
+                    *selected,
+                    *[
+                        column
+                        for column in columns
+                        if column.endswith(DERIVED_WEATHER_COLUMN_SUFFIXES)
+                    ],
+                ]
+            )
+        )
+    return selected
 
 
 def fill_lora_covariates(
@@ -656,7 +758,13 @@ def _single_information_cutoff(
     cutoffs = future["information_cutoff_utc"].drop_duplicates().tolist()
     if len(cutoffs) != 1:
         raise ValueError("Chronos production model expects exactly one information_cutoff_utc")
-    return to_utc_timestamp(cutoffs[0])
+    cutoff = to_utc_timestamp(cutoffs[0])
+    if cutoff > fallback_origin:
+        raise ValueError(
+            "Chronos information_cutoff_utc must not be after "
+            "forecast_origin_utc"
+        )
+    return cutoff
 
 
 def _require_covariate_columns(frame: pd.DataFrame, covariates: list[str], frame_name: str) -> None:

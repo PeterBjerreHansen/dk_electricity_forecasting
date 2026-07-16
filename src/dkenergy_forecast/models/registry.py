@@ -12,6 +12,7 @@ from dkenergy_forecast.models.baselines import (
 )
 from dkenergy_forecast.models.chronos_production import (
     PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG,
+    WEATHER_COVARIATE_MODES,
     Chronos2LoRAWeatherDayAhead,
     ensure_chronos_available,
 )
@@ -125,6 +126,9 @@ def latest_publish_model_factories(
     *,
     weather_features_long_path: str | Path | None = None,
     chronos_model_artifact_path: str | Path | None = None,
+    chronos_cross_learning: bool | None = None,
+    chronos_weather_covariate_mode: str | None = None,
+    chronos_add_weather_derived_features: bool | None = None,
 ) -> dict[str, Callable[[], ForecastModel]]:
     """Construct explicitly requested live-path models.
 
@@ -153,6 +157,25 @@ def latest_publish_model_factories(
                 config = replace(config, weather_features_long_path=weather_features_long_path)
             if chronos_model_artifact_path is not None:
                 config = replace(config, model_artifact_path=chronos_model_artifact_path)
+            if chronos_cross_learning is not None:
+                config = replace(config, cross_learning=chronos_cross_learning)
+            if chronos_weather_covariate_mode is not None:
+                if chronos_weather_covariate_mode not in WEATHER_COVARIATE_MODES:
+                    raise ValueError(
+                        "Unknown Chronos weather-covariate mode: "
+                        f"{chronos_weather_covariate_mode!r}"
+                    )
+                config = replace(
+                    config,
+                    weather_covariate_mode=chronos_weather_covariate_mode,
+                )
+            if chronos_add_weather_derived_features is not None:
+                config = replace(
+                    config,
+                    add_weather_derived_features=(
+                        chronos_add_weather_derived_features
+                    ),
+                )
             factories[label] = lambda config=config: Chronos2LoRAWeatherDayAhead(config)
         else:
             factories[label] = spec.factory

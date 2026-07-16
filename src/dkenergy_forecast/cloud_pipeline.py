@@ -4,6 +4,7 @@ import os
 import json
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,7 +23,12 @@ from dkenergy_forecast.dashboard import (
 )
 from dkenergy_forecast.static_dashboard import build_static_dashboard
 from dkenergy_forecast.storage import ArtifactStore, join_uri
-from dkenergy_forecast.publishing import atomic_write_json, atomic_write_parquet
+from dkenergy_forecast.publishing import (
+    atomic_write_json,
+    atomic_write_parquet,
+    file_sha256,
+    verify_forecast_completion_receipt,
+)
 from dkenergy_forecast.types import to_utc_timestamp
 
 
@@ -219,17 +225,28 @@ def _upload_runtime_outputs(
     run_prefix = str(pointer["run_prefix"])
     run_dir = paths.latest_pointer.parent / run_prefix
     completion = run_dir / "COMPLETED.json"
+    manifest = run_dir / "manifest.json"
     _require_output(completion)
-    if not store.exists(f"{run_prefix}/COMPLETED.json"):
-        for source in sorted(path for path in run_dir.iterdir() if path.name != "COMPLETED.json"):
+    _require_output(manifest)
+    completion_key = f"{run_prefix}/COMPLETED.json"
+    if str(pointer["completion_key"]) != completion_key:
+        raise ValueError(
+            "Latest forecast pointer completion_key does not match its run_prefix"
+        )
+    if not store.exists(completion_key):
+        for source in sorted(
+            path
+            for path in run_dir.iterdir()
+            if path.name not in {"COMPLETED.json", "manifest.json"}
+        ):
             if not source.is_file():
                 continue
             key = f"{run_prefix}/{source.name}"
             store.upload_file(source, key)
             uploaded.append(key)
 
-        committed_at = to_utc_timestamp(datetime.now(timezone.utc))
         deadline = to_utc_timestamp(pointer["decision_deadline_utc"])
+        committed_at = to_utc_timestamp(datetime.now(timezone.utc))
         if committed_at > deadline:
             raise RuntimeError(
                 "Cloud publication missed its decision deadline; latest.json was not updated: "
@@ -237,16 +254,125 @@ def _upload_runtime_outputs(
                 f"decision_deadline_utc={deadline.isoformat()}"
             )
         completion_payload = json.loads(completion.read_text(encoding="utf-8"))
+        manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+        manifest_payload["committed_at_utc"] = committed_at
         completion_payload["committed_at_utc"] = committed_at
-        atomic_write_json(completion, completion_payload)
-        store.upload_file(completion, f"{run_prefix}/COMPLETED.json")
-        uploaded.append(f"{run_prefix}/COMPLETED.json")
-        pointer["committed_at_utc"] = committed_at
-        atomic_write_json(paths.latest_pointer, pointer)
+        with tempfile.TemporaryDirectory(
+            prefix=f".{run_dir.name}.cloud-publication-",
+            dir=run_dir.parent,
+        ) as temp_value:
+            staging_dir = Path(temp_value)
+            staged_manifest = staging_dir / "manifest.json"
+            staged_completion = staging_dir / "COMPLETED.json"
+            staged_pointer = staging_dir / "latest.json"
+            atomic_write_json(staged_manifest, manifest_payload)
+            completion_payload["manifest_sha256"] = file_sha256(staged_manifest)
+            atomic_write_json(staged_completion, completion_payload)
+            receipt = verify_forecast_completion_receipt(
+                staged_manifest,
+                staged_completion,
+            )
 
-    store.upload_file(paths.latest_pointer, "latest.json")
-    uploaded.append("latest.json")
+            store.upload_file(staged_manifest, f"{run_prefix}/manifest.json")
+            uploaded.append(f"{run_prefix}/manifest.json")
+            store.upload_file(staged_completion, completion_key)
+            durable_at = to_utc_timestamp(datetime.now(timezone.utc))
+            if durable_at > deadline:
+                store.delete_file(completion_key)
+                raise RuntimeError(
+                    "Cloud completion marker became durable after its decision "
+                    "deadline and was removed: "
+                    f"durable_at_utc={durable_at.isoformat()}, "
+                    f"decision_deadline_utc={deadline.isoformat()}"
+                )
+            uploaded.append(completion_key)
+
+            pointer_payload = _cloud_pointer_from_verified_receipt(
+                pointer,
+                receipt,
+            )
+            atomic_write_json(staged_pointer, pointer_payload)
+            store.upload_file(staged_pointer, "latest.json")
+            uploaded.append("latest.json")
+        return uploaded
+
+    return _restore_cloud_latest_from_remote_receipt(
+        store,
+        pointer=pointer,
+        run_prefix=run_prefix,
+        staging_parent=run_dir.parent,
+        uploaded=uploaded,
+    )
+
+
+def _restore_cloud_latest_from_remote_receipt(
+    store: ArtifactStore,
+    *,
+    pointer: dict[str, object],
+    run_prefix: str,
+    staging_parent: Path,
+    uploaded: list[str],
+) -> list[str]:
+    with tempfile.TemporaryDirectory(
+        prefix=".cloud-receipt-recovery-",
+        dir=staging_parent,
+    ) as temp_value:
+        staging_dir = Path(temp_value)
+        remote_manifest = staging_dir / "manifest.json"
+        remote_completion = staging_dir / "COMPLETED.json"
+        staged_pointer = staging_dir / "latest.json"
+        store.download_file(
+            f"{run_prefix}/manifest.json",
+            remote_manifest,
+            required=True,
+        )
+        store.download_file(
+            f"{run_prefix}/COMPLETED.json",
+            remote_completion,
+            required=True,
+        )
+        receipt = verify_forecast_completion_receipt(
+            remote_manifest,
+            remote_completion,
+        )
+        pointer_payload = _cloud_pointer_from_verified_receipt(
+            pointer,
+            receipt,
+        )
+        atomic_write_json(staged_pointer, pointer_payload)
+        store.upload_file(staged_pointer, "latest.json")
+        uploaded.append("latest.json")
     return uploaded
+
+
+def _cloud_pointer_from_verified_receipt(
+    pointer: dict[str, object],
+    receipt: dict[str, object],
+) -> dict[str, object]:
+    manifest = receipt["manifest"]
+    if not isinstance(manifest, dict):
+        raise ValueError("Verified forecast receipt has no manifest object")
+    expected_text = {
+        "run_id": pointer["run_id"],
+        "delivery_date_local": pointer["delivery_date_local"],
+    }
+    for field, expected in expected_text.items():
+        if str(manifest.get(field)) != str(expected):
+            raise ValueError(
+                f"Remote forecast manifest {field} does not match latest pointer"
+            )
+    for field in ("information_cutoff_utc", "decision_deadline_utc"):
+        if to_utc_timestamp(manifest.get(field)) != to_utc_timestamp(
+            pointer[field]
+        ):
+            raise ValueError(
+                f"Remote forecast manifest {field} does not match latest pointer"
+            )
+
+    payload = dict(pointer)
+    payload["committed_at_utc"] = receipt["committed_at_utc"]
+    payload["manifest_sha256"] = receipt["manifest_sha256"]
+    return payload
 
 
 def _forecast_run_ids(forecast_runs: Path) -> set[str]:

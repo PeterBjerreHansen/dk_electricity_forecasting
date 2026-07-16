@@ -18,3 +18,5 @@ app_data/
 runtime/
 cloud_store/
 build/
+!src/dkenergy_data/build/
+!src/dkenergy_data/build/*.py

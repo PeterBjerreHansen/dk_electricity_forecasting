@@ -4,6 +4,16 @@ from dkenergy_forecast.evaluation.comparison import (
     origin_metric_differences,
     pair_model_predictions,
 )
+from dkenergy_forecast.evaluation.evidence import (
+    EVIDENCE_TIERS,
+    RECONSTRUCTED_PROXY,
+    SAVED_LIVE_FORECAST,
+    STRICT_POINT_IN_TIME,
+    build_availability_audit,
+    classify_evidence_tier,
+    make_evidence_declaration,
+    validate_evidence_coverage,
+)
 from dkenergy_forecast.evaluation.point_metrics import bias, mae, rmse
 from dkenergy_forecast.evaluation.probabilistic_metrics import (
     average_interval_width,
@@ -42,8 +52,11 @@ __all__ = [
     "average_interval_width",
     "bias",
     "build_model_comparison",
+    "build_availability_audit",
+    "classify_evidence_tier",
     "DEFAULT_STRATA_COLUMNS",
     "EvaluationInterval",
+    "EVIDENCE_TIERS",
     "explicit_evaluation_interval",
     "filter_evaluation_interval",
     "FrozenDateSplits",
@@ -61,9 +74,14 @@ __all__ = [
     "probabilistic_metric_table",
     "quantile_calibration_error",
     "render_model_comparison_markdown",
+    "RECONSTRUCTED_PROXY",
     "rmse",
     "sha256_file",
+    "SAVED_LIVE_FORECAST",
     "stratified_score_table",
+    "STRICT_POINT_IN_TIME",
     "weighted_interval_score",
     "write_model_comparison",
+    "make_evidence_declaration",
+    "validate_evidence_coverage",
 ]

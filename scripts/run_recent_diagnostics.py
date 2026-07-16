@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from dkenergy_forecast.layout import PROJECT_ROOT, runtime_layout  # noqa: E402
 from dkenergy_forecast.models.chronos_production import (  # noqa: E402
     PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG,
+    WEATHER_COVARIATE_MODES,
 )
 from dkenergy_forecast.models.registry import production_model_specs  # noqa: E402
 from dkenergy_forecast.operations.recent_diagnostics import run_recent_diagnostics  # noqa: E402
@@ -53,6 +54,23 @@ def parse_args() -> argparse.Namespace:
             "DKENERGY_CHRONOS_MODEL_ARTIFACT_PATH",
             str(PRODUCTION_CHRONOS_LORA_WEATHER_CONFIG.model_artifact_path),
         ),
+    )
+    parser.add_argument(
+        "--chronos-weather-covariate-mode",
+        choices=WEATHER_COVARIATE_MODES,
+        help="Explicit research override; must match the candidate artifact manifest.",
+    )
+    parser.add_argument(
+        "--chronos-cross-learning",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Explicit research override; must match the candidate artifact manifest.",
+    )
+    parser.add_argument(
+        "--chronos-add-weather-derived-features",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Explicit research override; must match the candidate artifact manifest.",
     )
     parser.add_argument("--run-id")
     parser.add_argument("--allow-incomplete-panel", action="store_true")

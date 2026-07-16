@@ -49,6 +49,7 @@ def render_model_comparison_markdown(report: dict[str, Any]) -> str:
     pairing = report["pairing"]
     overall = report["overall"]
     bootstrap = report["bootstrap_confidence_intervals"]
+    evidence = report.get("evidence")
 
     lines = [
         "# Forecast model comparison",
@@ -75,6 +76,17 @@ def render_model_comparison_markdown(report: dict[str, Any]) -> str:
         lines.extend(
             ["", f"Prediction source SHA-256: `{_escape(report['source_sha256'])}`."]
         )
+    if evidence:
+        lines.extend(
+            [
+                "",
+                f"Evidence tier: `{_escape(evidence['tier'])}`.",
+                "",
+                _escape(evidence["basis"]),
+            ]
+        )
+        if evidence.get("note"):
+            lines.extend(["", f"Evidence note: {_escape(evidence['note'])}"])
     lines.extend(
         [
             "",
@@ -182,6 +194,7 @@ def render_model_comparison_markdown(report: dict[str, Any]) -> str:
             "- WIS uses q10, q50, and q90; calibration error is the mean absolute quantile calibration error.",
             "- Confidence intervals use a deterministic circular moving-block bootstrap over chronological forecast origins.",
             "- Extreme-price groups use the absolute-target threshold recorded in the JSON report.",
+            "- The evidence tier records whether inputs were observed point-in-time, reconstructed, or saved from a live run.",
             "- The report is descriptive and does not select or deploy a model.",
             "",
         ]

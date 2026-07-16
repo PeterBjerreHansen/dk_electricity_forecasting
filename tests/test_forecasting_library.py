@@ -416,6 +416,32 @@ def test_rolling_origin_backtest_rejects_insufficient_training_rows() -> None:
         )
 
 
+def test_rolling_origin_backtest_rejects_cutoff_after_origin() -> None:
+    panel = _panel(periods=50)
+    origin = pd.Timestamp("2024-01-02T00:00:00Z")
+    origins = pd.DataFrame(
+        {
+            "forecast_origin_utc": [origin],
+            "information_cutoff_utc": [origin + pd.Timedelta(minutes=1)],
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="information_cutoff_utc must not be after forecast_origin_utc",
+    ):
+        rolling_origin_backtest(
+            model_factory=lambda: LagNaive(lag_hours=24),
+            panel=panel,
+            origins=origins,
+            horizon_builder=lambda panel_arg, origin_arg: make_next_utc_hours_horizon(
+                panel_arg,
+                origin_arg,
+                hours=1,
+            ),
+        )
+
+
 def test_rolling_origin_backtest_rejects_prediction_key_mismatch() -> None:
     class DroppingModel:
         model_name = "dropping_model"

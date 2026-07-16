@@ -200,6 +200,25 @@ def test_chronos_training_and_serving_share_point_in_time_weather_covariates() -
     assert training_value != raw_value
 
 
+def test_chronos_serving_rejects_cutoff_after_origin() -> None:
+    panel = _panel(periods=24 * 12)
+    origin = pd.Timestamp("2024-01-08T11:00:00Z")
+    future = make_danish_delivery_day_horizon(panel, origin)
+    future["information_cutoff_utc"] = origin + pd.Timedelta(minutes=1)
+
+    with pytest.raises(
+        ValueError,
+        match="information_cutoff_utc must not be after forecast_origin_utc",
+    ):
+        build_lora_weather_prediction_frames(
+            panel,
+            future,
+            weather=_weather_vintages(panel),
+            covariates=[*CALENDAR_COVARIATES],
+            config=Chronos2LoRAWeatherConfig(context_length=24),
+        )
+
+
 def test_chronos_lora_loader_uses_chronos2_pipeline_for_adapter_artifact(tmp_path, monkeypatch) -> None:
     artifact_path = _chronos_artifact(tmp_path, covariates=[*CALENDAR_COVARIATES])
     calls = []

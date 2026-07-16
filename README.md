@@ -154,6 +154,8 @@ explanation. Then use the narrower references as needed:
 - [Chronos model card](docs/model-card-chronos-v1.md) — the exact production
   model and evidence.
 - [Model evaluation](docs/evaluation.md) — reproducible descriptive comparison.
+- [Forecast improvement plan](docs/forecast-improvement-execution-plan.md) —
+  non-blocking experiments, evidence gates, and deferred research.
 - [Production operations](docs/operations.md) — health checks and failure
   handling.
 - [AWS infrastructure](infra/aws/README.md) — the deployment procedure and

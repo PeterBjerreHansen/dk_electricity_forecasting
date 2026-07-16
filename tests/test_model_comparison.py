@@ -85,6 +85,20 @@ def test_pairing_is_exact_and_differences_are_per_origin() -> None:
         )
 
 
+def test_pairing_rejects_duplicate_physical_target_under_two_cutoffs() -> None:
+    predictions = _comparison_predictions()
+    duplicate = predictions.iloc[[0]].copy()
+    duplicate["information_cutoff_utc"] += pd.Timedelta(minutes=1)
+    predictions = pd.concat([predictions, duplicate], ignore_index=True)
+
+    with pytest.raises(ValueError, match="duplicate prediction key"):
+        pair_model_predictions(
+            predictions,
+            reference_model=REFERENCE,
+            comparison_model=COMPARISON,
+        )
+
+
 def test_pairing_rejects_duplicate_and_disagreeing_actual_rows() -> None:
     predictions = _comparison_predictions()
     duplicate = pd.concat(
@@ -109,6 +123,120 @@ def test_pairing_rejects_duplicate_and_disagreeing_actual_rows() -> None:
             disagreeing,
             reference_model=REFERENCE,
             comparison_model=COMPARISON,
+        )
+
+
+def test_pairing_rejects_different_information_cutoffs() -> None:
+    predictions = _comparison_predictions()
+    first_comparison = predictions["model_label"].eq(COMPARISON).idxmax()
+    predictions.loc[first_comparison, "information_cutoff_utc"] += pd.Timedelta(
+        minutes=1
+    )
+
+    with pytest.raises(ValueError, match="disagree on information_cutoff_utc"):
+        pair_model_predictions(
+            predictions,
+            reference_model=REFERENCE,
+            comparison_model=COMPARISON,
+        )
+
+
+def test_comparison_rejects_mixed_saved_live_and_reconstructed_evidence() -> None:
+    predictions = _comparison_predictions()
+    predictions["evidence_tier"] = "saved_live_forecast"
+    last_origin = predictions["forecast_origin_utc"].max()
+    predictions.loc[
+        predictions["forecast_origin_utc"].eq(last_origin),
+        "evidence_tier",
+    ] = "reconstructed_proxy"
+
+    with pytest.raises(ValueError, match="cannot be pooled"):
+        build_model_comparison(
+            predictions,
+            reference_model=REFERENCE,
+            comparison_model=COMPARISON,
+            interval=_full_interval(),
+            n_resamples=10,
+        )
+
+
+def test_saved_live_comparison_requires_verified_run_rows(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    predictions = _comparison_predictions()
+    predictions["evidence_tier"] = "saved_live_forecast"
+    predictions["evidence_id"] = "manifest-sha-1"
+
+    with pytest.raises(ValueError, match="immutable run directories"):
+        build_model_comparison(
+            predictions,
+            reference_model=REFERENCE,
+            comparison_model=COMPARISON,
+            interval=_full_interval(),
+            n_resamples=10,
+        )
+
+    monkeypatch.setattr(
+        "dkenergy_forecast.publishing.load_verified_saved_live_predictions",
+        lambda run_dirs: predictions.drop(columns=["y"]).copy(),
+    )
+    report = build_model_comparison(
+        predictions,
+        reference_model=REFERENCE,
+        comparison_model=COMPARISON,
+        interval=_full_interval(),
+        n_resamples=10,
+        saved_live_run_dirs=[tmp_path / "run-1"],
+    )
+    assert report["evidence"]["tier"] == "saved_live_forecast"
+
+
+def test_saved_live_comparison_rejects_cherry_picked_verified_rows(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    verified = _comparison_predictions()
+    verified["evidence_tier"] = "saved_live_forecast"
+    verified["evidence_id"] = "manifest-sha-1"
+    selected = verified.loc[verified["ds_utc"].dt.hour.eq(0)].copy()
+    monkeypatch.setattr(
+        "dkenergy_forecast.publishing.load_verified_saved_live_predictions",
+        lambda run_dirs: verified.drop(columns=["y"]).copy(),
+    )
+
+    with pytest.raises(ValueError, match="exactly cover"):
+        build_model_comparison(
+            selected,
+            reference_model=REFERENCE,
+            comparison_model=COMPARISON,
+            interval=_full_interval(),
+            n_resamples=10,
+            saved_live_run_dirs=[tmp_path / "run-1"],
+        )
+
+
+def test_saved_live_comparison_rejects_omitted_saved_quantiles(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    verified = _comparison_predictions()
+    verified["evidence_tier"] = "saved_live_forecast"
+    verified["evidence_id"] = "manifest-sha-1"
+    selected = verified.drop(columns=["q10", "q50", "q90"]).copy()
+    monkeypatch.setattr(
+        "dkenergy_forecast.publishing.load_verified_saved_live_predictions",
+        lambda run_dirs: verified.drop(columns=["y"]).copy(),
+    )
+
+    with pytest.raises(ValueError, match="schema differs"):
+        build_model_comparison(
+            selected,
+            reference_model=REFERENCE,
+            comparison_model=COMPARISON,
+            interval=_full_interval(),
+            n_resamples=10,
+            saved_live_run_dirs=[tmp_path / "run-1"],
         )
 
 
@@ -236,10 +364,11 @@ def test_report_is_descriptive_paired_and_strict_json(tmp_path: Path) -> None:
     )
     written = write_model_comparison(report, tmp_path)
 
-    assert report["schema_version"] == "model_comparison_v1"
+    assert report["schema_version"] == "model_comparison_v2"
     assert report["difference_definition"] == "comparison_minus_reference"
     assert report["pairing"]["origin_count"] == 6
     assert report["overall"]["differences"]["mae"] == pytest.approx(-5.0)
+    assert report["evidence"]["tier"] == "reconstructed_proxy"
     assert len(report["per_origin_differences"]) == 6
     assert report["bootstrap_confidence_intervals"]["mae"]["upper"] < 0
     saved_text = written["json"].read_text(encoding="utf-8")
@@ -251,6 +380,7 @@ def test_report_is_descriptive_paired_and_strict_json(tmp_path: Path) -> None:
     assert "Per-origin differences" in markdown
     assert "does not select or deploy a model" in markdown
     assert "Prediction source SHA-256: `abc123`" in markdown
+    assert "Evidence tier: `reconstructed_proxy`" in markdown
 
 
 def test_point_only_reference_keeps_available_descriptive_metrics() -> None:
@@ -346,6 +476,7 @@ def _comparison_predictions() -> pd.DataFrame:
             common = {
                 "unique_id": f"day_ahead_price_{area}",
                 "forecast_origin_utc": origin,
+                "information_cutoff_utc": origin - pd.Timedelta(hours=1),
                 "ds_utc": target,
                 "area": area,
                 "y": actual,

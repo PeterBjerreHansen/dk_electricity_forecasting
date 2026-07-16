@@ -1,0 +1,162 @@
+{
+  "schema_version": "experiment_spec_v1",
+  "name": "chronos-a4-combined",
+  "kind": "command_pipeline",
+  "description": "A4: combine cross-learning, derived weather, and ensemble mean plus spread.",
+  "metadata": {
+    "ablation_id": "A4",
+    "research_only": true,
+    "promotes_model": false,
+    "weights_retrained": true,
+    "base_model_id": "amazon/chronos-2",
+    "base_model_revision": "29ec3766d36d6f73f0696f85560a422f50e8498c",
+    "frozen_origin_evidence": false,
+    "evidence_note": "Recent diagnostics are operational research checks, not frozen-origin model-selection evidence."
+  },
+  "inputs": [
+    {
+      "name": "price-panel",
+      "path": "data/model_ready/price_panel_hourly_v1.parquet",
+      "required": true
+    },
+    {
+      "name": "price-panel-qa",
+      "path": "data/model_ready/price_panel_hourly_v1.qa.json",
+      "required": true
+    },
+    {
+      "name": "weather-features",
+      "path": "data/features/weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet",
+      "required": true
+    }
+  ],
+  "profiles": {
+    "smoke": {
+      "description": "Materialize the A4 training-frame contract without loading Chronos.",
+      "stages": [
+        {
+          "name": "preflight",
+          "argv": [
+            "python",
+            "scripts/preflight_chronos_ablation.py",
+            "--ablation-id",
+            "A4",
+            "--panel-path",
+            "{project_root}/data/model_ready/price_panel_hourly_v1.parquet",
+            "--qa-path",
+            "{project_root}/data/model_ready/price_panel_hourly_v1.qa.json",
+            "--weather-features-long-path",
+            "{project_root}/data/features/weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet",
+            "--output-path",
+            "{run_dir}/preflight.json",
+            "--base-model-id",
+            "amazon/chronos-2",
+            "--base-model-revision",
+            "29ec3766d36d6f73f0696f85560a422f50e8498c",
+            "--weather-covariate-mode",
+            "ensemble_mean_spread",
+            "--cross-learning",
+            "--add-weather-derived-features"
+          ],
+          "outputs": [
+            "{run_dir}/preflight.json"
+          ],
+          "timeout_seconds": 1800
+        }
+      ]
+    },
+    "full": {
+      "description": "Train A4 in a detached-capable stage, then run recent diagnostics.",
+      "stages": [
+        {
+          "name": "train",
+          "argv": [
+            "python",
+            "scripts/train_chronos_lora.py",
+            "--panel-path",
+            "{project_root}/data/model_ready/price_panel_hourly_v1.parquet",
+            "--qa-path",
+            "{project_root}/data/model_ready/price_panel_hourly_v1.qa.json",
+            "--weather-features-long-path",
+            "{project_root}/data/features/weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet",
+            "--output-dir",
+            "{run_dir}/artifact",
+            "--base-model-id",
+            "amazon/chronos-2",
+            "--base-model-revision",
+            "29ec3766d36d6f73f0696f85560a422f50e8498c",
+            "--first-eval-origin-utc",
+            "2026-04-01T10:00:00Z",
+            "--information-cutoff-local-time",
+            "10:00",
+            "--context-length",
+            "1024",
+            "--prediction-length",
+            "36",
+            "--num-steps",
+            "300",
+            "--batch-size",
+            "32",
+            "--learning-rate",
+            "0.0001",
+            "--logging-steps",
+            "25",
+            "--random-seed",
+            "2026",
+            "--weather-covariate-mode",
+            "ensemble_mean_spread",
+            "--cross-learning",
+            "--add-weather-derived-features",
+            "--weather-horizon-min-coverage",
+            "1.0",
+            "--weather-future-fallback-policy",
+            "error",
+            "--device-map",
+            "cpu"
+          ],
+          "outputs": [
+            "{run_dir}/artifact"
+          ],
+          "timeout_seconds": 86400
+        },
+        {
+          "name": "recent-diagnostics",
+          "argv": [
+            "python",
+            "scripts/run_recent_diagnostics.py",
+            "--panel-path",
+            "{project_root}/data/model_ready/price_panel_hourly_v1.parquet",
+            "--qa-path",
+            "{project_root}/data/model_ready/price_panel_hourly_v1.qa.json",
+            "--weather-features-long-path",
+            "{project_root}/data/features/weather_open_meteo_area_hourly_long_open_meteo_previous_runs_v1.parquet",
+            "--chronos-model-artifact-path",
+            "{run_dir}/artifact",
+            "--chronos-weather-covariate-mode",
+            "ensemble_mean_spread",
+            "--chronos-cross-learning",
+            "--chronos-add-weather-derived-features",
+            "--models",
+            "chronos_weather",
+            "--forecast-local-time",
+            "10:00",
+            "--score-days",
+            "60",
+            "--score-max-origins",
+            "24",
+            "--score-holdout-days",
+            "2",
+            "--run-id",
+            "a4-{experiment_id}",
+            "--output-dir",
+            "{run_dir}/diagnostics"
+          ],
+          "outputs": [
+            "{run_dir}/diagnostics"
+          ],
+          "timeout_seconds": 43200
+        }
+      ]
+    }
+  }
+}

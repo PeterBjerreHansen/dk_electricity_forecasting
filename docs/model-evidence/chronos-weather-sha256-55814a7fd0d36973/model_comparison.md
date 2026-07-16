@@ -6,6 +6,12 @@ Releases: comparison `sha256-55814a7fd0d36973`; reference `weighted_median_v1`.
 
 Prediction source SHA-256: `55f45dfeae5546a7623963400edb4afe79089f2b277149ebc224ca258221e01e`.
 
+Evidence tier: `reconstructed_proxy`.
+
+Historical price timing/revisions and weather availability/vintages are
+documented proxies or latest-retrieved snapshots, not a complete observed
+point-in-time source-vintage record.
+
 The comparison contains 1152 exactly paired rows across 24 forecast origins. Differences are comparison minus reference; negative differences favor the comparison for error and scoring metrics.
 
 ## Overall metrics

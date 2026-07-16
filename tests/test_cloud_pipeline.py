@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -12,10 +14,12 @@ from dkenergy_forecast.cloud_pipeline import (
     CloudPipelineConfig,
     CloudScoringConfig,
     _publish_static_dashboard,
+    _upload_runtime_outputs,
     run_cloud_pipeline,
     run_cloud_scoring,
 )
 from dkenergy_forecast.storage import ArtifactStore
+from dkenergy_forecast.publishing import file_sha256
 
 
 def test_cloud_pipeline_syncs_state_runs_daily_and_uploads_latest_last(
@@ -87,6 +91,178 @@ def test_cloud_pipeline_syncs_state_runs_daily_and_uploads_latest_last(
     assert (store / "latest.json").exists()
     assert (store / "forecast_runs" / "run_1" / "forecast_dashboard.json").exists()
     assert (store / "latest" / "price_panel_hourly_v1.parquet").exists()
+    remote_run = store / "forecast_runs" / "run_1"
+    remote_manifest = json.loads(
+        (remote_run / "manifest.json").read_text(encoding="utf-8")
+    )
+    remote_completion = json.loads(
+        (remote_run / "COMPLETED.json").read_text(encoding="utf-8")
+    )
+    remote_pointer = json.loads(
+        (store / "latest.json").read_text(encoding="utf-8")
+    )
+    assert (
+        remote_manifest["committed_at_utc"]
+        == remote_completion["committed_at_utc"]
+        == remote_pointer["committed_at_utc"]
+    )
+    assert (
+        remote_completion["manifest_sha256"]
+        == remote_pointer["manifest_sha256"]
+        == file_sha256(remote_run / "manifest.json")
+    )
+    local_manifest = json.loads(
+        (workdir / "artifacts" / "forecast_runs" / "run_1" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert local_manifest["committed_at_utc"] == "2026-01-01T10:00:00Z"
+    local_completion = json.loads(
+        (
+            workdir
+            / "artifacts"
+            / "forecast_runs"
+            / "run_1"
+            / "COMPLETED.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert local_completion["committed_at_utc"] == "2026-01-01T10:00:00Z"
+    local_pointer = json.loads(
+        (workdir / "artifacts" / "latest.json").read_text(encoding="utf-8")
+    )
+    assert local_pointer["committed_at_utc"] == "2999-01-01T09:05:00Z"
+    assert "manifest_sha256" not in local_pointer
+
+
+def test_cloud_pipeline_removes_completion_that_crosses_deadline(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workdir = tmp_path / "workdir"
+    store_root = tmp_path / "store"
+    _write_pipeline_outputs(workdir)
+    pointer_path = workdir / "artifacts" / "latest.json"
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    pointer["decision_deadline_utc"] = "2026-01-01T12:00:00Z"
+    pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
+
+    class SequencedDateTime:
+        values = iter(
+            [
+                datetime(2026, 1, 1, 11, 59, 59, tzinfo=timezone.utc),
+                datetime(2026, 1, 1, 12, 0, 1, tzinfo=timezone.utc),
+            ]
+        )
+
+        @classmethod
+        def now(cls, tz):
+            return next(cls.values)
+
+    monkeypatch.setattr(
+        "dkenergy_forecast.cloud_pipeline.datetime",
+        SequencedDateTime,
+    )
+
+    with pytest.raises(RuntimeError, match="became durable after"):
+        _upload_runtime_outputs(
+            ArtifactStore(f"file://{store_root}"),
+            workdir,
+            run_kind="live",
+            known_run_ids=set(),
+        )
+
+    remote_run = store_root / "forecast_runs" / "run_1"
+    assert (remote_run / "manifest.json").exists()
+    assert not (remote_run / "COMPLETED.json").exists()
+    assert not (store_root / "latest.json").exists()
+    local_manifest = json.loads(
+        (workdir / "artifacts" / "forecast_runs" / "run_1" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert local_manifest["committed_at_utc"] == "2026-01-01T10:00:00Z"
+
+
+def test_cloud_pipeline_repeat_upload_preserves_cloud_receipt_pointer(
+    tmp_path,
+) -> None:
+    workdir = tmp_path / "workdir"
+    store_root = tmp_path / "store"
+    _write_pipeline_outputs(workdir)
+    store = ArtifactStore(f"file://{store_root}")
+
+    _upload_runtime_outputs(
+        store,
+        workdir,
+        run_kind="live",
+        known_run_ids=set(),
+    )
+    remote_pointer_path = store_root / "latest.json"
+    first_pointer = json.loads(remote_pointer_path.read_text(encoding="utf-8"))
+    local_pointer = json.loads(
+        (workdir / "artifacts" / "latest.json").read_text(encoding="utf-8")
+    )
+    assert first_pointer["committed_at_utc"] != local_pointer["committed_at_utc"]
+    assert "manifest_sha256" not in local_pointer
+
+    uploaded = _upload_runtime_outputs(
+        store,
+        workdir,
+        run_kind="live",
+        known_run_ids=set(),
+    )
+
+    second_pointer = json.loads(remote_pointer_path.read_text(encoding="utf-8"))
+    remote_manifest = store_root / "forecast_runs" / "run_1" / "manifest.json"
+    remote_completion = json.loads(
+        (
+            store_root
+            / "forecast_runs"
+            / "run_1"
+            / "COMPLETED.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert second_pointer == first_pointer
+    assert second_pointer["manifest_sha256"] == file_sha256(remote_manifest)
+    assert (
+        second_pointer["manifest_sha256"]
+        == remote_completion["manifest_sha256"]
+    )
+    assert uploaded[-1] == "latest.json"
+    assert "forecast_runs/run_1/COMPLETED.json" not in uploaded
+
+
+def test_cloud_pipeline_retry_rejects_tampered_remote_receipt(
+    tmp_path,
+) -> None:
+    workdir = tmp_path / "workdir"
+    store_root = tmp_path / "store"
+    _write_pipeline_outputs(workdir)
+    store = ArtifactStore(f"file://{store_root}")
+    _upload_runtime_outputs(
+        store,
+        workdir,
+        run_kind="live",
+        known_run_ids=set(),
+    )
+    remote_pointer_path = store_root / "latest.json"
+    pointer_before = remote_pointer_path.read_text(encoding="utf-8")
+    remote_completion_path = (
+        store_root / "forecast_runs" / "run_1" / "COMPLETED.json"
+    )
+    completion = json.loads(remote_completion_path.read_text(encoding="utf-8"))
+    completion["manifest_sha256"] = "0" * 64
+    remote_completion_path.write_text(json.dumps(completion), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="manifest checksum mismatch"):
+        _upload_runtime_outputs(
+            store,
+            workdir,
+            run_kind="live",
+            known_run_ids=set(),
+        )
+
+    assert remote_pointer_path.read_text(encoding="utf-8") == pointer_before
 
 
 def test_cloud_pipeline_fails_when_model_manifest_is_missing(tmp_path) -> None:
@@ -542,10 +718,42 @@ def _write_pipeline_outputs(
     )
     run_dir = workdir / "artifacts" / "forecast_runs" / "run_1"
     (run_dir / "predictions.parquet").write_text("predictions", encoding="utf-8")
-    (run_dir / "manifest.json").write_text("{}", encoding="utf-8")
     (run_dir / "forecast_dashboard.json").write_text("{}", encoding="utf-8")
+    artifact_sha256 = {
+        "predictions": file_sha256(run_dir / "predictions.parquet"),
+        "dashboard": file_sha256(run_dir / "forecast_dashboard.json"),
+    }
+    artifact_identity = hashlib.sha256(
+        json.dumps(
+            {"predictions": artifact_sha256["predictions"]},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    manifest = {
+        "run_id": "run_1",
+        "run_kind": "live",
+        "forecast_origin_utc": "2999-01-01T09:00:00Z",
+        "delivery_date_local": "2999-01-02",
+        "information_cutoff_utc": "2999-01-01T09:00:00Z",
+        "decision_deadline_utc": "2999-01-01T12:00:00Z",
+        "committed_at_utc": "2026-01-01T10:00:00Z",
+        "artifact_sha256": artifact_sha256,
+        "artifact_identity_sha256": artifact_identity,
+    }
+    (run_dir / "manifest.json").write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+    completion = {
+        "status": "completed",
+        "run_id": "run_1",
+        "committed_at_utc": "2026-01-01T10:00:00Z",
+        "manifest_sha256": file_sha256(run_dir / "manifest.json"),
+        "artifact_identity_sha256": artifact_identity,
+    }
     (run_dir / "COMPLETED.json").write_text(
-        '{"status":"completed","run_id":"run_1","committed_at_utc":"2026-01-01T10:00:00Z"}',
+        json.dumps(completion),
         encoding="utf-8",
     )
     if include_latest_pointer:

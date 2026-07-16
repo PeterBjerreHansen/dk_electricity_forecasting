@@ -1,0 +1,15 @@
+{
+  "availability_audit": null,
+  "availability_audit_sha256": null,
+  "basis": "Historical price timing/revisions and weather availability/vintages are documented proxies or latest-retrieved snapshots.",
+  "comparison_report": {
+    "path": "model_comparison.json",
+    "schema_version": "model_comparison_v1",
+    "sha256": "8922bbf3e459a66e776cf44a03c6b8dd70955c946922f35661b23e81ff811136"
+  },
+  "integrity_scope": null,
+  "note": "This report is not a strict point-in-time replay.",
+  "saved_live_receipt_verified": false,
+  "schema_version": "model_evidence_v1",
+  "tier": "reconstructed_proxy"
+}

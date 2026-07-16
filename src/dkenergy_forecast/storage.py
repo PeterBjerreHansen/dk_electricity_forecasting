@@ -191,6 +191,14 @@ class ArtifactStore:
         )
         return f"s3://{self.root.bucket}/{remote_key}"
 
+    def delete_file(self, key: str) -> None:
+        """Delete one object, primarily to retract an invalid commit marker."""
+
+        if self.root.is_local:
+            (Path(self.root.path).expanduser() / key).unlink(missing_ok=True)
+            return
+        _s3_client().delete_object(Bucket=self.root.bucket, Key=self._remote_key(key))
+
     def _remote_key(self, key: str) -> str:
         return _join_key(self.root.key, key)
 

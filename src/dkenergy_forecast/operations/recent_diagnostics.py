@@ -47,6 +47,17 @@ def run_recent_diagnostics(
         diagnostic_labels,
         weather_features_long_path=args.weather_features_long_path,
         chronos_model_artifact_path=args.chronos_model_artifact_path,
+        chronos_cross_learning=getattr(args, "chronos_cross_learning", None),
+        chronos_weather_covariate_mode=getattr(
+            args,
+            "chronos_weather_covariate_mode",
+            None,
+        ),
+        chronos_add_weather_derived_features=getattr(
+            args,
+            "chronos_add_weather_derived_features",
+            None,
+        ),
     )
     panel_path = Path(args.panel_path)
     qa_path = Path(args.qa_path) if args.qa_path else None

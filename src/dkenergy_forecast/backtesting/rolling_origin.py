@@ -55,6 +55,19 @@ def rolling_origin_backtest(
         origins_utc = normalize_utc_column(origins_utc, "information_cutoff_utc")
     else:
         origins_utc["information_cutoff_utc"] = origins_utc["forecast_origin_utc"]
+    later_cutoff = (
+        origins_utc["information_cutoff_utc"]
+        > origins_utc["forecast_origin_utc"]
+    )
+    if bool(later_cutoff.any()):
+        sample = origins_utc.loc[
+            later_cutoff,
+            ["forecast_origin_utc", "information_cutoff_utc"],
+        ].head(5)
+        raise ValueError(
+            "information_cutoff_utc must not be after forecast_origin_utc; "
+            f"sample={sample.to_dict(orient='records')}"
+        )
 
     request_columns = ["forecast_origin_utc", "information_cutoff_utc"]
     requests = origins_utc[request_columns].drop_duplicates()
