@@ -72,6 +72,16 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Explicit research override; must match the candidate artifact manifest.",
     )
+    parser.add_argument(
+        "--chronos-weather-horizon-min-coverage",
+        type=float,
+        help="Explicit research override; must match the candidate artifact manifest.",
+    )
+    parser.add_argument(
+        "--chronos-weather-future-fallback-policy",
+        choices=["error", "zero"],
+        help="Explicit research override; must match the candidate artifact manifest.",
+    )
     parser.add_argument("--run-id")
     parser.add_argument("--allow-incomplete-panel", action="store_true")
     return parser.parse_args()

@@ -153,6 +153,31 @@ def test_a1_policy_clone_reuses_weights_but_gets_a_distinct_release(tmp_path: Pa
     ).read_bytes()
 
 
+def test_policy_clone_can_change_missing_weather_fallback_without_retraining(
+    tmp_path: Path,
+) -> None:
+    source = _artifact(tmp_path)
+    source_manifest = json.loads((source / "manifest.json").read_text())
+
+    cloned = clone_chronos_policy_artifact(
+        source,
+        tmp_path / "zero-fallback",
+        cross_learning=None,
+        weather_future_fallback_policy="zero",
+        expected_base_model_revision=REVISION,
+    )
+
+    assert cloned["cross_learning"] is False
+    assert cloned["weather_horizon_coverage_policy"]["insufficient_coverage_fallback"] == "zero"
+    assert cloned["artifact_content_sha256"] == source_manifest["artifact_content_sha256"]
+    assert cloned["policy_clone"]["changed_fields"] == {
+        "weather_horizon_coverage_policy.insufficient_coverage_fallback": {
+            "from": "error",
+            "to": "zero",
+        }
+    }
+
+
 def _option_value(argv: list[str], option: str) -> str | None:
     if option not in argv:
         return None

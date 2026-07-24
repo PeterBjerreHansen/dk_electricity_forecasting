@@ -541,6 +541,8 @@ def test_production_registry_contains_only_deployed_models(monkeypatch, tmp_path
         chronos_cross_learning=True,
         chronos_weather_covariate_mode="ensemble_mean_spread",
         chronos_add_weather_derived_features=True,
+        chronos_weather_horizon_min_coverage=0.9,
+        chronos_weather_future_fallback_policy="zero",
     )["chronos_weather"]
     chronos_model = chronos_factory()
     assert chronos_model.config.weather_features_long_path == tmp_path / "weather.parquet"
@@ -548,6 +550,8 @@ def test_production_registry_contains_only_deployed_models(monkeypatch, tmp_path
     assert chronos_model.config.cross_learning is True
     assert chronos_model.config.weather_covariate_mode == "ensemble_mean_spread"
     assert chronos_model.config.add_weather_derived_features is True
+    assert chronos_model.config.weather_horizon_min_coverage == 0.9
+    assert chronos_model.config.weather_future_fallback_policy == "zero"
     with pytest.raises(ValueError, match="Unknown production model"):
         latest_publish_model_factories(["weather_catboost_all_weather"])
     with pytest.raises(ValueError, match="Unknown production model"):

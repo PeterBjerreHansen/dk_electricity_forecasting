@@ -129,6 +129,8 @@ def latest_publish_model_factories(
     chronos_cross_learning: bool | None = None,
     chronos_weather_covariate_mode: str | None = None,
     chronos_add_weather_derived_features: bool | None = None,
+    chronos_weather_horizon_min_coverage: float | None = None,
+    chronos_weather_future_fallback_policy: str | None = None,
 ) -> dict[str, Callable[[], ForecastModel]]:
     """Construct explicitly requested live-path models.
 
@@ -175,6 +177,16 @@ def latest_publish_model_factories(
                     add_weather_derived_features=(
                         chronos_add_weather_derived_features
                     ),
+                )
+            if chronos_weather_horizon_min_coverage is not None:
+                config = replace(
+                    config,
+                    weather_horizon_min_coverage=chronos_weather_horizon_min_coverage,
+                )
+            if chronos_weather_future_fallback_policy is not None:
+                config = replace(
+                    config,
+                    weather_future_fallback_policy=chronos_weather_future_fallback_policy,
                 )
             factories[label] = lambda config=config: Chronos2LoRAWeatherDayAhead(config)
         else:

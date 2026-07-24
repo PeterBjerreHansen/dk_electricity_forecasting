@@ -30,6 +30,7 @@ def main() -> None:
         args.source_artifact,
         args.output_dir,
         cross_learning=args.cross_learning,
+        weather_future_fallback_policy=args.weather_future_fallback_policy,
         expected_base_model_revision=args.expected_base_model_revision,
     )
     print(
@@ -50,8 +51,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--cross-learning",
         action=argparse.BooleanOptionalAction,
-        required=True,
-        help="Cross-series inference policy for the cloned artifact.",
+        help="Optional cross-series inference policy for the cloned artifact.",
+    )
+    parser.add_argument(
+        "--weather-future-fallback-policy",
+        choices=["error", "zero"],
+        help="Optional missing-weather policy for the cloned artifact.",
     )
     parser.add_argument(
         "--expected-base-model-revision",
@@ -65,8 +70,9 @@ def clone_chronos_policy_artifact(
     source_artifact: str | Path,
     output_dir: str | Path,
     *,
-    cross_learning: bool,
+    cross_learning: bool | None,
     expected_base_model_revision: str,
+    weather_future_fallback_policy: str | None = None,
 ) -> dict[str, object]:
     source = Path(source_artifact).resolve()
     destination = Path(output_dir).resolve()
@@ -88,18 +94,32 @@ def clone_chronos_policy_artifact(
         "cross_learning",
         default=False,
     )
-    if source_cross_learning == cross_learning:
-        raise ValueError(
-            "Chronos policy clone must change cross_learning; "
-            f"source and requested value are both {cross_learning}"
-        )
+    target_cross_learning = (
+        source_cross_learning if cross_learning is None else cross_learning
+    )
+    source_weather_policy = source_manifest.get("weather_horizon_coverage_policy")
+    if not isinstance(source_weather_policy, dict):
+        raise ValueError("Chronos source artifact is missing weather_horizon_coverage_policy")
+    source_fallback = source_weather_policy.get("insufficient_coverage_fallback")
+    if source_fallback not in {"error", "zero"}:
+        raise ValueError("Chronos source artifact has an invalid weather fallback policy")
+    target_fallback = (
+        source_fallback
+        if weather_future_fallback_policy is None
+        else weather_future_fallback_policy
+    )
+    if target_cross_learning == source_cross_learning and target_fallback == source_fallback:
+        raise ValueError("Chronos policy clone must change at least one serving policy")
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
     try:
         shutil.copytree(source, temporary)
         cloned_manifest = dict(source_manifest)
-        cloned_manifest["cross_learning"] = cross_learning
+        cloned_manifest["cross_learning"] = target_cross_learning
+        cloned_weather_policy = dict(source_weather_policy)
+        cloned_weather_policy["insufficient_coverage_fallback"] = target_fallback
+        cloned_manifest["weather_horizon_coverage_policy"] = cloned_weather_policy
         cloned_manifest["add_weather_ensemble_features"] = _manifest_boolean(
             source_manifest,
             "add_weather_ensemble_features",
@@ -110,6 +130,19 @@ def clone_chronos_policy_artifact(
             "add_weather_derived_features",
             default=False,
         )
+        changed_fields: dict[str, dict[str, object]] = {}
+        if target_cross_learning != source_cross_learning:
+            changed_fields["cross_learning"] = {
+                "from": source_cross_learning,
+                "to": target_cross_learning,
+            }
+        if target_fallback != source_fallback:
+            changed_fields[
+                "weather_horizon_coverage_policy.insufficient_coverage_fallback"
+            ] = {
+                "from": source_fallback,
+                "to": target_fallback,
+            }
         cloned_manifest["policy_clone"] = {
             "schema_version": "chronos_policy_clone_v1",
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -117,12 +150,7 @@ def clone_chronos_policy_artifact(
             "source_artifact_content_sha256": source_manifest.get(
                 "artifact_content_sha256"
             ),
-            "changed_fields": {
-                "cross_learning": {
-                    "from": source_cross_learning,
-                    "to": cross_learning,
-                }
-            },
+            "changed_fields": changed_fields,
             "weights_retrained": False,
         }
         cloned_manifest = attach_chronos_release_identity(cloned_manifest)
@@ -139,7 +167,7 @@ def clone_chronos_policy_artifact(
         _validate_clone(
             temporary,
             cloned_manifest,
-            cross_learning=cross_learning,
+            cross_learning=target_cross_learning,
         )
         os.replace(temporary, destination)
     except BaseException:

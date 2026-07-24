@@ -58,6 +58,16 @@ def run_recent_diagnostics(
             "chronos_add_weather_derived_features",
             None,
         ),
+        chronos_weather_horizon_min_coverage=getattr(
+            args,
+            "chronos_weather_horizon_min_coverage",
+            None,
+        ),
+        chronos_weather_future_fallback_policy=getattr(
+            args,
+            "chronos_weather_future_fallback_policy",
+            None,
+        ),
     )
     panel_path = Path(args.panel_path)
     qa_path = Path(args.qa_path) if args.qa_path else None
