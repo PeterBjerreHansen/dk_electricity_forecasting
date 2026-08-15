@@ -50,7 +50,7 @@ python scripts/build_price_panel.py --dataset-version v1
 Install optional notebook and CatBoost dependencies only when you need them:
 
 ```bash
-pip install -e ".[notebooks,tuning]"
+uv sync --locked --extra dev --extra notebooks --extra tuning
 ```
 
 The current interpreted EDA pass uses a focused real-data artifact:

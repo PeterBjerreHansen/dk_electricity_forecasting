@@ -1308,7 +1308,7 @@ def load_catboost() -> tuple[Any, Any]:
     except ImportError as exc:
         raise ImportError(
             "CatBoost validation requires CatBoost. Install it with "
-            '`pip install -e ".[tuning]"` or `pip install catboost>=1.2 optuna>=4`.'
+            '`uv sync --extra dev --extra tuning`.'
         ) from exc
     return CatBoostRegressor, Pool
 
@@ -1319,6 +1319,6 @@ def load_optuna() -> Any:
     except ImportError as exc:
         raise ImportError(
             "CatBoost validation requires Optuna. Install it with "
-            '`pip install -e ".[tuning]"` or `pip install optuna>=4`.'
+            '`uv sync --extra dev --extra tuning`.'
         ) from exc
     return optuna

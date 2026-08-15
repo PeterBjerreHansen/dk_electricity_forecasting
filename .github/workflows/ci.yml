@@ -14,22 +14,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
+          enable-cache: true
 
       - name: Install package
-        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+        run: uv sync --locked --python "${{ matrix.python-version }}" --extra dev
 
       - name: Run lint
-        run: python -m ruff check .
+        run: uv run --locked --python "${{ matrix.python-version }}" --extra dev ruff check .
 
       - name: Run tests
-        run: python -m pytest
+        run: uv run --locked --python "${{ matrix.python-version }}" --extra dev python -m pytest
 
       - name: Compile importable Python sources
-        run: python -m compileall -q src scripts
+        run: uv run --locked --python "${{ matrix.python-version }}" --extra dev python -m compileall -q src scripts
 
   terraform:
     runs-on: ubuntu-latest

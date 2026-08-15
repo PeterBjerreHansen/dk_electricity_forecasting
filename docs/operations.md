@@ -133,7 +133,7 @@ Build and inspect locally first:
 
 ```bash
 make static-dashboard
-python -m http.server 8000 --directory build/static-dashboard
+uv run --locked --extra dev python -m http.server 8000 --directory build/static-dashboard
 ```
 
 Then replace only `index.html`:

@@ -273,7 +273,7 @@ Explore weather-enhanced CatBoost models from the modeling notebook after
 installing the optional tuning dependencies:
 
 ```bash
-pip install -e ".[tuning,notebooks]"
+uv sync --locked --extra dev --extra tuning --extra notebooks
 jupyter notebook notebooks/05_catboost_model_development.ipynb
 ```
 

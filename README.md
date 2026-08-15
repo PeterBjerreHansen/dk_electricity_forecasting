@@ -88,23 +88,34 @@ of truth.
 
 ## Run locally
 
-The core development environment is intentionally ordinary:
+The project uses [uv](https://docs.astral.sh/uv/) for its Python environment
+and dependency lockfile. Nothing is installed globally: `uv` creates and
+maintains the project-local `.venv` from `uv.lock`.
+
+When dependencies change, run `uv lock` and commit the updated `uv.lock`; the
+`--locked` flag below makes setup and CI fail instead of silently changing it.
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
-python -m pytest
+uv sync --locked --extra dev
+uv run --locked --extra dev python -m pytest
 ```
+
+The repository pins Python 3.11 in `.python-version`, matching the production
+container. If that interpreter is not installed, uv downloads it for the
+project environment. You can activate `.venv` if you prefer, but using
+`uv run` keeps commands on the locked environment without relying on shell
+activation.
 
 Optional dependencies are explicit:
 
 ```bash
-python -m pip install -e ".[chronos,aws]"     # production pipeline
-python -m pip install -e ".[notebooks]"       # analysis notebooks
-python -m pip install -e ".[catboost,tuning]" # research only
+uv sync --locked --extra dev --extra chronos --extra aws       # production pipeline
+uv sync --locked --extra dev --extra notebooks                  # analysis notebooks
+uv sync --locked --extra dev --extra catboost --extra tuning   # research only
 ```
+
+For the common combinations, `make install`, `make install-production`, and
+`make install-analysis` run the corresponding uv commands.
 
 Common workflows are thin commands over the same library code:
 
@@ -120,12 +131,12 @@ make test
 To inspect a completed run as a static site:
 
 ```bash
-python scripts/build_static_dashboard.py \
+uv run --locked --extra dev python scripts/build_static_dashboard.py \
   --input artifacts/forecast_runs/<run-id>/forecast_dashboard.json \
   --history results/baseline_v1/predictions.parquet \
   --output build/static-dashboard/index.html
 
-python -m http.server 8000 --directory build/static-dashboard
+uv run --locked --extra dev python -m http.server 8000 --directory build/static-dashboard
 ```
 
 Open `http://127.0.0.1:8000/`. Python is used to build the file, not to serve

@@ -260,6 +260,6 @@ def _s3_client():
         import boto3
     except ImportError as exc:  # pragma: no cover - depends on optional extra
         raise ImportError(
-            "S3 artifact storage requires boto3. Install with `pip install -e \".[aws]\"`."
+            "S3 artifact storage requires boto3. Run `uv sync --extra dev --extra aws`."
         ) from exc
     return boto3.client("s3")

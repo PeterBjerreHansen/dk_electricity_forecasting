@@ -378,9 +378,9 @@ The suite is intentionally broader than “does the model return a number?”
 Run the full local gate with:
 
 ```bash
-python -m ruff check .
-python -m pytest
-python -m compileall -q src scripts
+uv run --locked --extra dev ruff check .
+uv run --locked --extra dev python -m pytest
+uv run --locked --extra dev python -m compileall -q src scripts
 terraform -chdir=infra/aws fmt -check -recursive
 terraform -chdir=infra/aws validate
 ```
@@ -415,7 +415,7 @@ Never replace files inside the currently configured artifact prefix.
 2. Keep rendering in `static_dashboard.py`.
 3. Ensure the public payload whitelist does not expand accidentally.
 4. Run dashboard tests.
-5. Build locally, serve it with `python -m http.server`, and inspect DK1/DK2.
+5. Build locally, serve it with `uv run --locked --extra dev python -m http.server`, and inspect DK1/DK2.
 6. Upload only after visual acceptance.
 
 ### Add a new AWS component

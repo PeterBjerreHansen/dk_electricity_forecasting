@@ -807,8 +807,7 @@ def _import_chronos() -> Any:
     except ImportError as exc:
         raise ImportError(
             "Chronos production models require the optional Chronos dependency. "
-            'Install it with `pip install -e ".[chronos]"` or '
-            "`pip install 'chronos-forecasting>=2.2' 'peft>=0.18.1'`."
+            'Run `uv sync --extra dev --extra chronos` to install it.'
         ) from exc
     return chronos
 

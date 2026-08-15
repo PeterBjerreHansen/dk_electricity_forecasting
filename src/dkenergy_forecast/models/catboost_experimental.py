@@ -285,7 +285,7 @@ def load_catboost() -> tuple[Any, Any]:
     except ImportError as exc:
         raise ImportError(
             "Production CatBoost requires CatBoost. Install it with "
-            '`pip install -e ".[catboost]"`, `pip install -e ".[tuning]"`, '
-            "or `pip install catboost>=1.2`."
+            '`uv sync --extra dev --extra catboost` or '
+            '`uv sync --extra dev --extra tuning`. '
         ) from exc
     return CatBoostRegressor, Pool
