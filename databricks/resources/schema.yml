@@ -1,0 +1,13 @@
+resources:
+  schemas:
+    dk_energy:
+      catalog_name: ${var.catalog}
+      name: ${var.schema}
+      comment: DK1/DK2 day-ahead electricity price forecasting (bronze, silver, gold tables and model)
+
+  volumes:
+    landing:
+      catalog_name: ${var.catalog}
+      schema_name: ${resources.schemas.dk_energy.name}
+      name: landing
+      comment: Raw Energi Data Service API responses, byte for byte

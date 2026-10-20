@@ -311,6 +311,59 @@ def build_price_panel_from_raw(
     day_ahead_batches = load_raw_batches(raw_root, "DayAheadPrices")
     if not elspot_batches and not day_ahead_batches:
         raise ValueError(f"No raw EDS price batches found under {raw_root}")
+    built = build_price_panel_from_batches(
+        elspot_batches,
+        day_ahead_batches,
+        dataset_version=dataset_version,
+        allow_incomplete_recent=allow_incomplete_recent,
+        required_areas=required_areas,
+        start_local=start_local,
+        end_local=end_local,
+    )
+    qa = built.qa
+    qa["source_metadata_sha256"] = source_metadata_hashes(raw_root)
+
+    normalized_dir.mkdir(parents=True, exist_ok=True)
+    normalized_paths = {
+        "Elspotprices": normalized_dir / f"eds_elspotprices_{dataset_version}.parquet",
+        "DayAheadPrices": normalized_dir / f"eds_day_ahead_prices_15min_{dataset_version}.parquet",
+    }
+    built.normalized["Elspotprices"].to_parquet(normalized_paths["Elspotprices"], index=False)
+    built.normalized["DayAheadPrices"].to_parquet(normalized_paths["DayAheadPrices"], index=False)
+
+    model_ready_dir.mkdir(parents=True, exist_ok=True)
+    panel_path = model_ready_dir / f"price_panel_hourly_{dataset_version}.parquet"
+    qa_path = model_ready_dir / f"price_panel_hourly_{dataset_version}.qa.json"
+    built.panel.to_parquet(panel_path, index=False)
+    qa_path.write_text(json.dumps(_json_safe(qa), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    return BuildResult(
+        panel_path=panel_path,
+        qa_path=qa_path,
+        normalized_paths=normalized_paths,
+        qa=qa,
+    )
+
+
+@dataclass(frozen=True)
+class InMemoryBuild:
+    panel: pd.DataFrame
+    qa: dict[str, Any]
+    normalized: dict[str, pd.DataFrame]
+
+
+def build_price_panel_from_batches(
+    elspot_batches: list[RawBatch],
+    day_ahead_batches: list[RawBatch],
+    *,
+    dataset_version: str = DATASET_VERSION,
+    allow_incomplete_recent: bool = False,
+    required_areas: Iterable[str] | None = ALLOWED_AREAS,
+    start_local: date | None = None,
+    end_local: date | None = None,
+) -> InMemoryBuild:
+    """Normalize, stitch and QA raw batches without touching the filesystem."""
+
     raw_source_audit = _make_raw_source_audit(
         {
             "Elspotprices": elspot_batches,
@@ -336,14 +389,6 @@ def build_price_panel_from_raw(
             day_ahead_normalized["area"].isin(selected_area_set)
         ].reset_index(drop=True)
 
-    normalized_dir.mkdir(parents=True, exist_ok=True)
-    normalized_paths = {
-        "Elspotprices": normalized_dir / f"eds_elspotprices_{dataset_version}.parquet",
-        "DayAheadPrices": normalized_dir / f"eds_day_ahead_prices_15min_{dataset_version}.parquet",
-    }
-    elspot_normalized.to_parquet(normalized_paths["Elspotprices"], index=False)
-    day_ahead_normalized.to_parquet(normalized_paths["DayAheadPrices"], index=False)
-
     panel, qa = build_model_ready_panel(
         elspot_normalized,
         day_ahead_normalized,
@@ -354,19 +399,13 @@ def build_price_panel_from_raw(
         end_local=end_local,
         raw_source_audit=raw_source_audit,
     )
-    qa["source_metadata_sha256"] = source_metadata_hashes(raw_root)
-
-    model_ready_dir.mkdir(parents=True, exist_ok=True)
-    panel_path = model_ready_dir / f"price_panel_hourly_{dataset_version}.parquet"
-    qa_path = model_ready_dir / f"price_panel_hourly_{dataset_version}.qa.json"
-    panel.to_parquet(panel_path, index=False)
-    qa_path.write_text(json.dumps(_json_safe(qa), indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-    return BuildResult(
-        panel_path=panel_path,
-        qa_path=qa_path,
-        normalized_paths=normalized_paths,
+    return InMemoryBuild(
+        panel=panel,
         qa=qa,
+        normalized={
+            "Elspotprices": elspot_normalized,
+            "DayAheadPrices": day_ahead_normalized,
+        },
     )
 
 

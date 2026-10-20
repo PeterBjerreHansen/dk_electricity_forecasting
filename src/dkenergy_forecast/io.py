@@ -23,7 +23,23 @@ def load_price_panel(
 ) -> pd.DataFrame:
     """Load and validate a model-ready hourly price panel."""
 
-    panel = pd.read_parquet(path)
+    panel = validate_price_panel(pd.read_parquet(path))
+
+    if qa_path is not None:
+        qa = json.loads(Path(qa_path).read_text(encoding="utf-8"))
+        artifact_status = qa.get("artifact_status")
+        if require_final_historical and artifact_status != "final_historical":
+            raise ValueError(
+                "Price panel QA artifact_status is not final_historical: "
+                f"{artifact_status!r}"
+            )
+
+    return panel
+
+
+def validate_price_panel(panel: pd.DataFrame) -> pd.DataFrame:
+    """Normalize and validate an in-memory model-ready hourly price panel."""
+
     required_without_availability = [
         column for column in PANEL_REQUIRED_COLUMNS if column != PRICE_AVAILABILITY_COLUMN
     ]
@@ -38,14 +54,5 @@ def load_price_panel(
             "Price panel contains duplicate (unique_id, ds_utc) rows: "
             f"{duplicate_count}"
         )
-
-    if qa_path is not None:
-        qa = json.loads(Path(qa_path).read_text(encoding="utf-8"))
-        artifact_status = qa.get("artifact_status")
-        if require_final_historical and artifact_status != "final_historical":
-            raise ValueError(
-                "Price panel QA artifact_status is not final_historical: "
-                f"{artifact_status!r}"
-            )
 
     return panel.sort_values(["unique_id", "ds_utc"]).reset_index(drop=True)

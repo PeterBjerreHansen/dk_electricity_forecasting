@@ -31,6 +31,32 @@ jobs:
       - name: Compile importable Python sources
         run: uv run --locked --python "${{ matrix.python-version }}" --extra dev python -m compileall -q src scripts
 
+  databricks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+          enable-cache: true
+
+      - name: Install package with the Databricks extra
+        run: uv sync --locked --python 3.11 --extra dev --extra databricks
+
+      - name: Run Databricks pipeline tests with CatBoost and MLflow
+        run: uv run --locked --python 3.11 --extra dev --extra databricks python -m pytest tests/test_databricks_pipeline.py
+
+      - name: Build the bundle wheel
+        run: uv build --wheel
+
+      - uses: databricks/setup-cli@main
+
+      - name: Check bundle configuration against the CLI schema
+        run: |
+          databricks bundle schema > /tmp/bundle-schema.json
+          uv run --locked --with jsonschema --with pyyaml python scripts/check_bundle_schema.py /tmp/bundle-schema.json
+
   terraform:
     runs-on: ubuntu-latest
     steps:
