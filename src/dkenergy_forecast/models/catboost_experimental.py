@@ -114,57 +114,8 @@ class ExperimentalCatBoostDayAhead(ForecastModel):
             config=self.config.price_feature_config,
         )
 
-        training = _drop_unusable_training_rows(
-            training,
-            target_mode=self.config.target_mode,
-            residual_baseline_column=self.config.residual_baseline_column,
-        )
-        _require_residual_baseline_if_needed(
-            future_features,
-            target_mode=self.config.target_mode,
-            residual_baseline_column=self.config.residual_baseline_column,
-        )
-
-        feature_columns = tabular_feature_columns_for_set(
-            training,
-            self.config.feature_set,
-            price_feature_config=self.config.price_feature_config,
-        )
-        if not feature_columns:
-            raise ValueError(f"No usable CatBoost feature columns for {self.config.feature_set!r}")
-        missing_future_features = sorted(set(feature_columns) - set(future_features.columns))
-        if missing_future_features:
-            raise ValueError(f"Future CatBoost feature frame is missing columns: {missing_future_features}")
-
-        CatBoostRegressor, Pool = load_catboost()
-        cat_features = [column for column in ["area"] if column in feature_columns]
-        params = _production_params(self.config.params)
-        model = CatBoostRegressor(**params)
-        train_pool = Pool(
-            training[feature_columns],
-            label=_target_values(
-                training,
-                target_mode=self.config.target_mode,
-                residual_baseline_column=self.config.residual_baseline_column,
-            ),
-            weight=_recency_sample_weights(
-                training,
-                reference_origin=origin,
-                half_life_days=self.config.recency_half_life_days,
-                floor=self.config.recency_floor,
-            ),
-            cat_features=cat_features,
-        )
-        model.fit(train_pool)
-        prediction = model.predict(
-            Pool(
-                future_features[feature_columns],
-                cat_features=cat_features,
-            )
-        )
-        prediction = pd.Series(prediction, index=future_features.index, dtype="float64")
-        if self.config.target_mode == "residual_baseline":
-            prediction = prediction + future_features[self.config.residual_baseline_column].astype(float)
+        fitted = fit_catboost_regressor(training, origin=origin, config=self.config)
+        prediction = predict_catboost_regressor(fitted, future_features)
 
         output = future_features[
             ["unique_id", "ds_utc", "forecast_origin_utc", "horizon"]
@@ -173,6 +124,96 @@ class ExperimentalCatBoostDayAhead(ForecastModel):
         output["model_version"] = self.model_version
         output["y_pred"] = prediction.to_numpy()
         return output.reset_index(drop=True)
+
+
+@dataclass(frozen=True)
+class FittedCatBoost:
+    """A fitted regressor plus the column contract needed to reuse it later."""
+
+    model: Any
+    feature_columns: list[str]
+    cat_features: list[str]
+    target_mode: TargetMode
+    residual_baseline_column: str
+    training_rows: int
+
+
+def fit_catboost_regressor(
+    training: pd.DataFrame,
+    *,
+    origin: pd.Timestamp,
+    config: CatBoostExperimentConfig = CATBOOST_EXPERIMENT_CONFIG,
+) -> FittedCatBoost:
+    """Fit CatBoost on a training matrix built strictly before ``origin``."""
+
+    training = _drop_unusable_training_rows(
+        training,
+        target_mode=config.target_mode,
+        residual_baseline_column=config.residual_baseline_column,
+    )
+    feature_columns = tabular_feature_columns_for_set(
+        training,
+        config.feature_set,
+        price_feature_config=config.price_feature_config,
+    )
+    if not feature_columns:
+        raise ValueError(f"No usable CatBoost feature columns for {config.feature_set!r}")
+
+    CatBoostRegressor, Pool = load_catboost()
+    cat_features = [column for column in ["area"] if column in feature_columns]
+    model = CatBoostRegressor(**_production_params(config.params))
+    train_pool = Pool(
+        training[feature_columns],
+        label=_target_values(
+            training,
+            target_mode=config.target_mode,
+            residual_baseline_column=config.residual_baseline_column,
+        ),
+        weight=_recency_sample_weights(
+            training,
+            reference_origin=origin,
+            half_life_days=config.recency_half_life_days,
+            floor=config.recency_floor,
+        ),
+        cat_features=cat_features,
+    )
+    model.fit(train_pool)
+    return FittedCatBoost(
+        model=model,
+        feature_columns=feature_columns,
+        cat_features=cat_features,
+        target_mode=config.target_mode,
+        residual_baseline_column=config.residual_baseline_column,
+        training_rows=len(training),
+    )
+
+
+def predict_catboost_regressor(
+    fitted: FittedCatBoost,
+    future_features: pd.DataFrame,
+) -> pd.Series:
+    """Predict prices for a target-free feature frame with a fitted model."""
+
+    _require_residual_baseline_if_needed(
+        future_features,
+        target_mode=fitted.target_mode,
+        residual_baseline_column=fitted.residual_baseline_column,
+    )
+    missing_future_features = sorted(set(fitted.feature_columns) - set(future_features.columns))
+    if missing_future_features:
+        raise ValueError(f"Future CatBoost feature frame is missing columns: {missing_future_features}")
+
+    _, Pool = load_catboost()
+    prediction = fitted.model.predict(
+        Pool(
+            future_features[fitted.feature_columns],
+            cat_features=fitted.cat_features,
+        )
+    )
+    prediction = pd.Series(prediction, index=future_features.index, dtype="float64")
+    if fitted.target_mode == "residual_baseline":
+        prediction = prediction + future_features[fitted.residual_baseline_column].astype(float)
+    return prediction
 
 
 def _prepare_history(history: pd.DataFrame) -> pd.DataFrame:

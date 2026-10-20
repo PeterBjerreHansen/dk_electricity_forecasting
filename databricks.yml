@@ -1,0 +1,36 @@
+# Databricks Asset Bundle for the DK1/DK2 day-ahead price forecaster.
+# See databricks/README.md for setup on Databricks Free Edition.
+bundle:
+  name: dk_energy_forecasts
+
+include:
+  - databricks/resources/*.yml
+
+artifacts:
+  dkenergy_wheel:
+    type: whl
+    build: uv build --wheel
+    path: .
+    # Serverless caches wheels by file name; a unique version per deploy
+    # makes every deploy pick up the new code.
+    dynamic_version: true
+
+variables:
+  catalog:
+    description: Unity Catalog catalog. Free Edition workspaces come with "workspace".
+    default: workspace
+  schema:
+    description: Schema for the Delta tables, landing volume and registered model.
+    default: dk_energy
+
+targets:
+  # Development mode prefixes names with your user, uses a separate schema
+  # and pauses every schedule, so dev deploys never run on their own.
+  dev:
+    mode: development
+    default: true
+
+  prod:
+    mode: production
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}

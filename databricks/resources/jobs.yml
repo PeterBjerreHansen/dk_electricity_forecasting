@@ -1,0 +1,93 @@
+# Both jobs run on serverless compute, the only compute on Free Edition.
+# Schedules only run for the prod target: development mode pauses them.
+
+resources:
+  jobs:
+    daily_forecast:
+      name: dk-energy-daily-forecast
+      description: >-
+        Land raw prices, refresh bronze and silver, forecast tomorrow's 24 hourly
+        DK1/DK2 prices with the @champion model, then score past forecasts and
+        check for drift.
+      schedule:
+        quartz_cron_expression: "0 15 10 * * ?"
+        timezone_id: Europe/Copenhagen
+        pause_status: UNPAUSED
+      max_concurrent_runs: 1
+      environments: &environment
+        - environment_key: default
+          spec:
+            environment_version: "2"
+            dependencies:
+              - ../../dist/*.whl
+              - catboost>=1.2
+              - mlflow-skinny>=3.1
+      tasks:
+        - task_key: land_prices
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/land_prices.py
+            parameters: &params
+              - --catalog
+              - ${var.catalog}
+              - --schema
+              - ${resources.schemas.dk_energy.name}
+
+        - task_key: bronze_ingest
+          depends_on: [{ task_key: land_prices }]
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/bronze_ingest.py
+            parameters: *params
+
+        - task_key: silver_panel
+          depends_on: [{ task_key: bronze_ingest }]
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/silver_panel.py
+            parameters: *params
+
+        - task_key: forecast
+          depends_on: [{ task_key: silver_panel }]
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/forecast.py
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --schema
+              - ${resources.schemas.dk_energy.name}
+              - --run-id
+              - "{{job.run_id}}"
+
+        - task_key: monitor
+          depends_on: [{ task_key: forecast }]
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/monitor.py
+            parameters: *params
+
+    weekly_retrain:
+      name: dk-energy-weekly-retrain
+      description: >-
+        Backtest the CatBoost candidate against the baselines on recent origins,
+        train it on all history, register it in Unity Catalog, and move
+        @champion only if it beats the weighted-median fallback.
+      schedule:
+        quartz_cron_expression: "0 0 6 ? * MON"
+        timezone_id: Europe/Copenhagen
+        pause_status: UNPAUSED
+      max_concurrent_runs: 1
+      environments: *environment
+      tasks:
+        - task_key: train_register
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/train_register.py
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --schema
+              - ${resources.schemas.dk_energy.name}
+              - --experiment
+              - /Users/${workspace.current_user.userName}/dk-energy-forecasts

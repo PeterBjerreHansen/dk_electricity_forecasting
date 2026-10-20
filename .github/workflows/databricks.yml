@@ -1,0 +1,84 @@
+name: Databricks
+
+# Deploys the asset bundle and, on Databricks Free Edition (where serverless
+# compute cannot reach api.energidataservice.dk), lands the raw price files in
+# the Unity Catalog volume before triggering the daily job.
+#
+# Setup: repository variable DATABRICKS_HOST and secret DATABRICKS_TOKEN.
+# Set variable DATABRICKS_LAND_FROM_GITHUB=true to enable the daily landing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to run
+        type: choice
+        options: [deploy, land-and-run]
+        default: deploy
+  push:
+    branches: [main]
+    paths:
+      - databricks.yml
+      - databricks/**
+      - src/**
+      - pyproject.toml
+      - uv.lock
+  schedule:
+    # 08:00 UTC is 09:00 or 10:00 in Copenhagen, before the 10:00 forecast origin.
+    - cron: "0 8 * * *"
+
+concurrency:
+  group: databricks-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+  DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+  LANDING_URI: dbfs:/Volumes/workspace/dk_energy/landing/energi_data_service
+
+jobs:
+  deploy:
+    if: >-
+      vars.DATABRICKS_HOST != '' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' && inputs.action == 'deploy'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - name: Run tests
+        run: uv run --locked --extra dev --extra databricks python -m pytest
+      - uses: databricks/setup-cli@main
+      - name: Validate bundle
+        run: databricks bundle validate -t prod
+      - name: Deploy bundle
+        run: databricks bundle deploy -t prod
+
+  land-and-run:
+    if: >-
+      vars.DATABRICKS_LAND_FROM_GITHUB == 'true' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' && inputs.action == 'land-and-run'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - name: Fetch raw prices
+        run: |
+          START=$(python3 -c 'from datetime import date, datetime, timedelta; from zoneinfo import ZoneInfo; t=datetime.now(ZoneInfo("Europe/Copenhagen")).date(); print((t - timedelta(days=450)).replace(day=1))')
+          uv run --locked python scripts/fetch_eds_prices.py \
+            --start "$START" --chunk-months 1 --raw-dir landing/energi_data_service
+      - uses: databricks/setup-cli@main
+      - name: Upload to the landing volume
+        run: databricks fs cp -r --overwrite landing/energi_data_service "$LANDING_URI"
+      - name: Run the daily job
+        run: databricks bundle run -t prod daily_forecast

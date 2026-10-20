@@ -20,3 +20,7 @@ cloud_store/
 build/
 !src/dkenergy_data/build/
 !src/dkenergy_data/build/*.py
+
+# Databricks bundle
+.databricks/
+dist/

@@ -14,11 +14,11 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from dkenergy_data.build.eds_prices_v1 import SOURCE_SPECS, STITCH_BOUNDARY_DATE
+from dkenergy_data.build.eds_prices_v1 import SOURCE_SPECS
+from dkenergy_data.price_windows import iter_price_source_windows
 from dkenergy_data.sources.energidataservice import (
     EnergiDataServiceClient,
     dataset_params,
-    iter_date_chunks,
     write_dataset_response,
     write_metadata_response,
 )
@@ -122,26 +122,6 @@ def parse_args() -> argparse.Namespace:
         help="Fetch and write a new raw batch even when the same dataset/start/end exists.",
     )
     return parser.parse_args()
-
-
-def iter_price_source_windows(
-    start: date,
-    end: date,
-    chunk_months: int,
-) -> list[tuple[str, date, date]]:
-    windows: list[tuple[str, date, date]] = []
-
-    if start < STITCH_BOUNDARY_DATE:
-        elspot_end = min(end, STITCH_BOUNDARY_DATE)
-        for window_start, window_end in iter_date_chunks(start, elspot_end, chunk_months):
-            windows.append(("Elspotprices", window_start, window_end))
-
-    if end > STITCH_BOUNDARY_DATE:
-        day_ahead_start = max(start, STITCH_BOUNDARY_DATE)
-        for window_start, window_end in iter_date_chunks(day_ahead_start, end, chunk_months):
-            windows.append(("DayAheadPrices", window_start, window_end))
-
-    return windows
 
 
 def existing_raw_batch_paths(

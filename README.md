@@ -8,6 +8,11 @@ the hosting costs were too high. There is no longer a live public dashboard.
 The forecasting code and AWS deployment configuration remain in this repository;
 see [Run locally](#run-locally) to build and view a dashboard locally.
 
+**Databricks:** the pipeline also runs on Databricks as an Asset Bundle, with
+Delta bronze/silver/gold tables, MLflow tracking, a Unity Catalog model
+registry with champion promotion, and serverless jobs for daily forecasting,
+weekly retraining and monitoring. See [databricks/README.md](databricks/README.md).
+
 The dashboard shows the previous forecast against the newly available official
 prices, tomorrow's forecast, and rolling 30-day diagnostics for the production
 model and three simple baselines. It is generated as a static HTML page.
@@ -146,11 +151,13 @@ locally.
 
 ```text
 config/                fixed production model declaration
+databricks/            Databricks bundle resources, job entry points and SQL
 docs/                  contracts, evidence, operations, and codebase tour
 infra/aws/             compact Terraform stack and deployment procedure
 notebooks/             analytical and model-development narratives
 scripts/               command-line entry points
 src/dkenergy_data/     external data ingestion and normalization
+src/dkenergy_databricks/ Databricks layer: Delta I/O, MLflow model, monitoring
 src/dkenergy_forecast/ forecasting, evaluation, publication, and dashboard code
 tests/                  unit, contract, workflow, and infrastructure tests
 ```
