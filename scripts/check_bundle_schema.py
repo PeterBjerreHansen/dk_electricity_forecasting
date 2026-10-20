@@ -11,6 +11,7 @@ catches misspelled or misplaced fields in CI without them. Usage:
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -22,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main() -> None:
-    schema = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    schema = _python_patterns(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")))
     validator = jsonschema.Draft7Validator(schema)
 
     root_config = yaml.safe_load((ROOT / "databricks.yml").read_text(encoding="utf-8"))
@@ -43,6 +44,27 @@ def main() -> None:
         raise SystemExit(f"{errors} bundle schema error(s)")
     print(f"Bundle configuration matches the schema ({len(files)} files)")
 
+
+def _python_patterns(node: object) -> object:
+    """Rewrite the schema's Go regex classes (``\\p{L}``, ``\\p{N}``) for Python's ``re``.
+
+    Variable names in bundle files are ASCII, so ASCII ranges are enough.
+    """
+
+    if isinstance(node, dict):
+        output = {key: _python_patterns(value) for key, value in node.items()}
+        pattern = output.get("pattern")
+        if isinstance(pattern, str):
+            output["pattern"] = (
+                pattern.replace("[\\p{L}\\p{N}]", "[A-Za-z0-9]")
+                .replace("\\p{L}", "[A-Za-z]")
+                .replace("\\p{N}", "[0-9]")
+            )
+            re.compile(output["pattern"])
+        return output
+    if isinstance(node, list):
+        return [_python_patterns(value) for value in node]
+    return node
 
 if __name__ == "__main__":
     main()
