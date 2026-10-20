@@ -3,17 +3,14 @@
 Daily hourly day-ahead price forecasts for Denmark's DK1 and DK2 bidding zones,
 with uncertainty intervals and transparent model diagnostics.
 
-**[Open the live DK1/DK2 forecast](https://dk-energy-forecasts-site-653044339519.s3.eu-central-1.amazonaws.com/index.html)**
+**Hosting status:** The AWS-hosted forecast website has been shut down because
+the hosting costs were too high. There is no longer a live public dashboard.
+The forecasting code and AWS deployment configuration remain in this repository;
+see [Run locally](#run-locally) to build and view a dashboard locally.
 
-The page currently uses S3's HTTPS object endpoint while AWS completes the
-account verification required for CloudFront. The URL will move to the shorter
-CloudFront HTTPS endpoint after verification; the forecast itself is already
-live and updated by the same daily pipeline.
-
-The page shows the previous forecast against the newly available official
+The dashboard shows the previous forecast against the newly available official
 prices, tomorrow's forecast, and rolling 30-day diagnostics for the production
-model and three simple baselines. It is rebuilt each morning before the
-day-ahead auction; no Python server remains running after publication.
+model and three simple baselines. It is generated as a static HTML page.
 
 ## What is being forecast?
 
@@ -24,7 +21,7 @@ transitions correctly produce 23 or 25.
 
 The configured production release is a weather-aware Chronos-2 model with a
 fixed LoRA adapter. A deterministic weighted median is the only publication
-fallback. The live path does not tune, retrain, rank, or promote models.
+fallback. The publication path does not tune, retrain, rank, or promote models.
 
 ## Current model evidence
 
@@ -48,6 +45,9 @@ October 2025, and electricity-price regimes can shift quickly.
 
 ## How it works
 
+The former AWS deployment used the architecture below. Its configuration is
+retained as a reference for anyone who wants to deploy their own instance.
+
 ```text
 EventBridge Scheduler · 10:00 Europe/Copenhagen
                          │
@@ -61,13 +61,13 @@ prices + weather → features → fixed model → immutable forecast run
                                       │
                                       ▼
                        S3 HTTPS object endpoint
-                    (CloudFront after verification)
 ```
 
-One daily batch is enough because the public product changes only when a new
-forecast is produced. Static HTML keeps the deployment cheap and legible: no
+One daily batch is enough because the dashboard changes only when a new
+forecast is produced. The architecture uses static HTML with no
 always-on application server, load balancer, database, automatic retraining,
-or model-promotion service.
+or model-promotion service. AWS hosting still incurs costs, which led to the
+public website being shut down.
 
 A completed forecast is an immutable directory:
 
@@ -139,8 +139,8 @@ uv run --locked --extra dev python scripts/build_static_dashboard.py \
 uv run --locked --extra dev python -m http.server 8000 --directory build/static-dashboard
 ```
 
-Open `http://127.0.0.1:8000/`. Python is used to build the file, not to serve
-the deployed page.
+Open `http://127.0.0.1:8000/`. This command serves the generated static page
+locally.
 
 ## Repository guide
 
